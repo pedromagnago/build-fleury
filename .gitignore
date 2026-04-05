@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.*.local
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Agent / AI workspace
+.agent/
+.gemini/
+.temp_ag_kit/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Temp files
+tmp/
+~$*
+
+# Excel data files (not source code)
+*.xlsx

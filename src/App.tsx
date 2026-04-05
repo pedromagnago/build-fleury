@@ -1,0 +1,106 @@
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { AuthProvider } from '@/contexts/AuthContext'
+import { ProjectProvider } from '@/contexts/ProjectContext'
+import { ProtectedRoute } from '@/components/ProtectedRoute'
+import { ProjectGate } from '@/components/ProjectGate'
+import { AppLayout } from '@/components/layout/AppLayout'
+import { Toaster } from 'sonner'
+
+import Login from '@/pages/Login'
+import Register from '@/pages/Register'
+import Onboarding from '@/pages/Onboarding'
+import ProjectSelector from '@/pages/ProjectSelector'
+import Dashboard from '@/pages/Dashboard'
+import Configuracoes from '@/pages/Configuracoes'
+import CronogramaPage from '@/pages/CronogramaPage'
+import ComprasPage from '@/pages/ComprasPage'
+import ImportacaoPage from '@/pages/ImportacaoPage'
+import PagamentosPage from '@/pages/PagamentosPage'
+import DocumentosPage from '@/pages/DocumentosPage'
+import AuditoriaPage from '@/pages/AuditoriaPage'
+import AvancoFisicoPage from '@/pages/AvancoFisicoPage'
+import MedicoesPage from '@/pages/MedicoesPage'
+import ConciliacaoPage from '@/pages/ConciliacaoPage'
+import SimuladorPage from '@/pages/SimuladorPage'
+import RelatoriosPage from '@/pages/RelatoriosPage'
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 60 * 1000,
+      retry: 1,
+    },
+  },
+})
+
+export default function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <ProjectProvider>
+          <BrowserRouter>
+            <Routes>
+              {/* Public routes */}
+              <Route path="/login" element={<Login />} />
+              <Route path="/register" element={<Register />} />
+
+              {/* Protected: Onboarding (no project needed) */}
+              <Route
+                path="/onboarding"
+                element={
+                  <ProtectedRoute>
+                    <Onboarding />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Protected: Project selector */}
+              <Route
+                path="/projetos"
+                element={
+                  <ProtectedRoute>
+                    <ProjectSelector />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Protected routes with project gate */}
+              <Route
+                element={
+                  <ProjectGate>
+                    <AppLayout />
+                  </ProjectGate>
+                }
+              >
+                <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/cronograma" element={<CronogramaPage />} />
+                <Route path="/compras" element={<ComprasPage />} />
+                <Route path="/pagamentos" element={<PagamentosPage />} />
+                <Route path="/documentos" element={<DocumentosPage />} />
+                <Route path="/auditoria" element={<AuditoriaPage />} />
+                <Route path="/avanco" element={<AvancoFisicoPage />} />
+                <Route path="/medicoes" element={<MedicoesPage />} />
+                <Route path="/conciliacao" element={<ConciliacaoPage />} />
+                <Route path="/simulador" element={<SimuladorPage />} />
+                <Route path="/relatorios" element={<RelatoriosPage />} />
+                <Route path="/importacao" element={<ImportacaoPage />} />
+                <Route path="/configuracoes" element={<Configuracoes />} />
+              </Route>
+
+              {/* Default redirect */}
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            </Routes>
+          </BrowserRouter>
+          <Toaster
+            position="top-right"
+            richColors
+            toastOptions={{
+              style: { fontFamily: 'Inter, system-ui, sans-serif' },
+            }}
+          />
+        </ProjectProvider>
+      </AuthProvider>
+    </QueryClientProvider>
+  )
+}
