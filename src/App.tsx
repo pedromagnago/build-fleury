@@ -2,10 +2,12 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { ProjectProvider } from '@/contexts/ProjectContext'
+import { TourProvider } from '@/contexts/TourContext'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { ProjectGate } from '@/components/ProjectGate'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { Toaster } from 'sonner'
+import '@/lib/tours/tour.css'
 
 import Login from '@/pages/Login'
 import Register from '@/pages/Register'
@@ -24,6 +26,7 @@ import MedicoesPage from '@/pages/MedicoesPage'
 import ConciliacaoPage from '@/pages/ConciliacaoPage'
 import SimuladorPage from '@/pages/SimuladorPage'
 import RelatoriosPage from '@/pages/RelatoriosPage'
+import MutuosPage from '@/pages/MutuosPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -39,6 +42,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <ProjectProvider>
+          <TourProvider>
           <BrowserRouter>
             <Routes>
               {/* Public routes */}
@@ -77,6 +81,7 @@ export default function App() {
                 <Route path="/cronograma" element={<CronogramaPage />} />
                 <Route path="/compras" element={<ComprasPage />} />
                 <Route path="/pagamentos" element={<PagamentosPage />} />
+                <Route path="/mutuos" element={<MutuosPage />} />
                 <Route path="/documentos" element={<DocumentosPage />} />
                 <Route path="/auditoria" element={<AuditoriaPage />} />
                 <Route path="/avanco" element={<AvancoFisicoPage />} />
@@ -99,6 +104,7 @@ export default function App() {
               style: { fontFamily: 'Inter, system-ui, sans-serif' },
             }}
           />
+          </TourProvider>
         </ProjectProvider>
       </AuthProvider>
     </QueryClientProvider>

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useMedicoes, useCreateMedicao, useUpdateMedicao, type Medicao } from '@/hooks/useOperacional'
@@ -7,13 +7,16 @@ import { supabase } from '@/lib/supabase'
 import { formatCurrency, formatDate, formatPercent } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
 import { exportToExcel } from '@/lib/exportExcel'
+import { parseComposicaoMedicoes, importComposicaoToEtapas } from '@/lib/composicaoParser'
 import BulkActionBar from '@/components/BulkActionBar'
 import { useSelection } from '@/hooks/useSelection'
 import { toast } from 'sonner'
 import {
   ClipboardCheck, Plus, X, Check, Search, CalendarClock,
-  Download, Flag, ArrowRight,
+  Download, Flag, ArrowRight, Upload
 } from 'lucide-react'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   pendente: { label: 'Pendente', color: 'bg-slate-500/10 text-slate-500' },
@@ -23,6 +26,8 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
 }
 
 export default function MedicoesPage() {
+  const { restartTour } = useTour('medicoes', pageTours.medicoes)
+
   const { currentCompany } = useProject()
   const qc = useQueryClient()
   const { data: medicoes = [], isLoading } = useMedicoes()
@@ -31,6 +36,31 @@ export default function MedicoesPage() {
   const [showForm, setShowForm] = useState(false)
   const [search, setSearch] = useState('')
   const selection = useSelection()
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [isImporting, setIsImporting] = useState(false)
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file || !currentCompany) return
+    try {
+      setIsImporting(true)
+      const buffer = await file.arrayBuffer()
+      const parsed = parseComposicaoMedicoes(buffer)
+      if (medicoes.length > 0 && !window.confirm(`Atenção: Já existem ${medicoes.length} medições carregadas. A reimportação só deve ser feita se as medições não tiverem parcelas/avanços associados já faturados. Deseja substituir as distribuições e valores bancários?`)) {
+        return
+      }
+      const result = await importComposicaoToEtapas(parsed, currentCompany.id, medicoes.length > 0)
+      toast.success(`Planilha carregada. Etapas atualizadas: ${result.etapasAtualizadas}, Criadas: ${result.etapasCriadas}. Medições: ${result.medicoes}`)
+      qc.invalidateQueries({ queryKey: ['etapas'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+    } catch (err: any) {
+      toast.error('Erro ao importar: ' + err.message)
+    } finally {
+      setIsImporting(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
 
   // Bulk action modals
   const [bulkModal, setBulkModal] = useState<'status' | 'adiar' | 'avanco' | null>(null)
@@ -74,7 +104,7 @@ export default function MedicoesPage() {
 
   return (
     <div>
-      <PageHeader title="Medições" description="Controle de medições do contrato" icon={ClipboardCheck} />
+      <PageHeader title="Medições" description="Controle de medições do contrato" icon={ClipboardCheck} onHelp={restartTour} />
 
       <div className="mb-6 grid grid-cols-3 gap-4">
         <div className="rounded-xl border bg-card p-4">
@@ -96,6 +126,11 @@ export default function MedicoesPage() {
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar..." className="w-full rounded-lg border bg-background py-2 pl-9 pr-3 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" />
         </div>
+        <input type="file" accept=".xlsx" className="hidden" ref={fileRef} onChange={handleFileUpload} />
+        <button onClick={() => fileRef.current?.click()} disabled={isImporting} className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50">
+          {isImporting ? <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" /> : <Upload className="h-4 w-4" />}
+          Importar CEF
+        </button>
         <button onClick={() => setShowForm(true)} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
           <Plus className="h-4 w-4" /> Nova Medição
         </button>

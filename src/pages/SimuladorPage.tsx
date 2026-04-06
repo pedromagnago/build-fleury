@@ -1,696 +1,340 @@
-import { useState, useMemo, useRef, useCallback } from 'react'
+import { useState, useMemo } from 'react'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { useSimulador } from '@/hooks/useSimulador'
-import { formatCurrency, formatDate } from '@/lib/utils'
-import { localDate } from '@/lib/parcelas'
-import type { CashFlowPoint, SimMetrics, SimEtapa, ParcelaImpacto } from '@/lib/simuladorEngine'
-import {
-  ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
-  ResponsiveContainer, ReferenceLine, Legend,
-} from 'recharts'
-import {
-  FlaskConical, Plus, ChevronDown, ChevronRight, GripHorizontal,
-  Undo2, Redo2, RotateCcw, Play, GitCompareArrows, CalendarClock,
-  TrendingUp, TrendingDown, AlertTriangle, CheckCircle2, X, Clock, ArrowRight,
-} from 'lucide-react'
+import { useProject } from '@/contexts/ProjectContext'
+import { useParcelas } from '@/hooks/useFinanceiro'
+import { useEtapas } from '@/hooks/useEtapas'
+import { useItensCompra, usePedidos } from '@/hooks/useCompras'
+import { useMedicoes, useDistribuicao } from '@/hooks/useOperacional'
+import { useMutuos } from '@/hooks/useMutuos'
+import { formatCurrency } from '@/lib/utils'
+import { parsearCondicao } from '@/lib/parcelas'
+import { Table, ChevronRight, ChevronDown, X, Download } from 'lucide-react'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
-const DAY_MS = 86_400_000
+const localDate = (iso: string) => {
+  if (!iso) return new Date()
+  const [y, m, d] = iso.split('-').map(Number)
+  return new Date(y ?? 2024, (m ?? 1) - 1, d ?? 1)
+}
 
-// ═══════════════════════════════════════════════════════════════
-// Main Page
-// ═══════════════════════════════════════════════════════════════
+const fc = (v: number) => v === 0 ? '-' : formatCurrency(v)
+
+type Override = { newDate?: string; newValue?: number }
+
+type Item = {
+  id: string
+  desc: string
+  valor: number
+  data: string
+  tipo: 'entrada' | 'firme' | 'bruto'
+  modified?: boolean
+  meta?: { cat?: string; etapa?: string; forn?: string; item?: string; orig?: number }
+}
 
 export default function SimuladorPage() {
-  const sim = useSimulador()
-  const [showCompare, setShowCompare] = useState(false)
-  const [showApply, setShowApply] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [showNewForm, setShowNewForm] = useState(false)
-  const [applyConfirm, setApplyConfirm] = useState('')
+  const { restartTour } = useTour('simulador', pageTours.simulador)
 
-  const isCustom = sim.state.cenarioTipo === 'custom'
-  const hasChanges = sim.state.adjustments.length > 0
+  const { currentCompany } = useProject()
+  const { data: parcelas = [] } = useParcelas()
+  const { data: medicoes = [] } = useMedicoes()
+  const { data: itens = [] } = useItensCompra()
+  const { data: pedidos = [] } = usePedidos()
+  const { data: etapas = [] } = useEtapas()
+  const { data: mutuos = [] } = useMutuos()
+  const { data: distribuicoes = [] } = useDistribuicao()
 
-  return (
-    <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden">
-      {/* ═══ TOP BAR ═══ */}
-      <div className="flex flex-wrap items-center gap-3 border-b bg-card px-4 py-3">
-        <PageHeader title="Simulador" description="E se...?" icon={FlaskConical} />
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {/* Scenario selector */}
-          <select
-            value={sim.state.cenarioId ?? '__base__'}
-            onChange={(e) => sim.loadCenario(e.target.value === '__base__' ? null : e.target.value)}
-            className="rounded-lg border bg-background px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary"
-          >
-            <option value="__base__">📊 Base (Real)</option>
-            {sim.cenariosList.map((c: any) => (
-              <option key={c.id} value={c.id}>
-                {c.tipo === 'aplicado' ? '✅' : '🔬'} {c.nome}
-              </option>
-            ))}
-          </select>
+  const [overrides, setOverrides] = useState<Record<string, Override>>({})
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [editing, setEditing] = useState<Item | null>(null)
 
-          {/* New scenario */}
-          {showNewForm ? (
-            <div className="flex items-center gap-1.5">
-              <input
-                autoFocus value={newName} onChange={(e) => setNewName(e.target.value)}
-                placeholder="Nome do cenário"
-                className="w-40 rounded-lg border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && newName.trim()) {
-                    sim.salvarCenario.mutate(newName.trim())
-                    setNewName(''); setShowNewForm(false)
-                  }
-                }}
-              />
-              <button onClick={() => { if (newName.trim()) { sim.salvarCenario.mutate(newName.trim()); setNewName(''); setShowNewForm(false) } }}
-                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90">Salvar</button>
-              <button onClick={() => setShowNewForm(false)} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
-            </div>
-          ) : (
-            <button onClick={() => setShowNewForm(true)} className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium hover:bg-accent">
-              <Plus className="h-3.5 w-3.5" /> Novo cenário
-            </button>
-          )}
+  const toggle = (k: string) => setExpanded(p => ({ ...p, [k]: !p[k] }))
 
-          <button onClick={() => setShowCompare(!showCompare)} className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium hover:bg-accent">
-            <GitCompareArrows className="h-3.5 w-3.5" /> Comparar
-          </button>
-
-          {/* Apply to real */}
-          {(isCustom || hasChanges) && (
-            <button onClick={() => setShowApply(true)} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700">
-              <Play className="h-3.5 w-3.5" /> Aplicar ao real
-            </button>
-          )}
-
-          {/* Changes badge */}
-          {sim.numChanges > 0 && (
-            <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary">
-              {sim.numChanges} alteração{sim.numChanges > 1 ? 'ões' : ''}
-            </span>
-          )}
-
-          {/* Undo/Redo */}
-          <div className="flex items-center border-l pl-2">
-            <button onClick={sim.undo} disabled={sim.state.undoStack.length === 0}
-              className="rounded-md p-1.5 hover:bg-accent disabled:opacity-30" title="Ctrl+Z"><Undo2 className="h-3.5 w-3.5" /></button>
-            <button onClick={sim.redo} disabled={sim.state.redoStack.length === 0}
-              className="rounded-md p-1.5 hover:bg-accent disabled:opacity-30" title="Ctrl+Shift+Z"><Redo2 className="h-3.5 w-3.5" /></button>
-            {hasChanges && (
-              <button onClick={sim.reset} className="rounded-md p-1.5 hover:bg-accent" title="Restaurar tudo"><RotateCcw className="h-3.5 w-3.5" /></button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* ═══ FIRST ACCESS BANNER ═══ */}
-      {sim.isBase && sim.cenariosList.length === 0 && (
-        <div className="mx-4 mt-3 flex items-center gap-3 rounded-xl border border-primary/20 bg-primary/5 p-4">
-          <FlaskConical className="h-8 w-8 text-primary" />
-          <div className="flex-1">
-            <p className="text-sm font-semibold">Este é o fluxo de caixa atual do seu projeto.</p>
-            <p className="text-xs text-muted-foreground">Crie um cenário para testar mudanças no cronograma sem afetar os dados reais.</p>
-          </div>
-          <button onClick={() => setShowNewForm(true)} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
-            Criar meu primeiro cenário
-          </button>
-        </div>
-      )}
-
-      {/* ═══ MAIN SPLIT ═══ */}
-      <div className="flex flex-1 gap-0 overflow-hidden max-lg:flex-col">
-        {/* LEFT PANEL */}
-        <div className="flex w-full flex-col overflow-y-auto border-r lg:w-[45%]">
-          <QuickActions onMove={sim.moverTodasEtapas} />
-          <AccordionSection title="Cronograma" icon={<CalendarClock className="h-4 w-4" />} defaultOpen>
-            <MiniGantt etapas={sim.cenarioSnapshot.etapas} medicoes={sim.cenarioSnapshot.medicoes} onMove={sim.moverEtapa} />
-          </AccordionSection>
-          <AccordionSection title="Negociações" icon={<GripHorizontal className="h-4 w-4" />}>
-            <NegociacoesPanel fornecedores={sim.cenarioSnapshot.fornecedores} onAlter={sim.alterarCondFornecedor} />
-          </AccordionSection>
-          <AccordionSection title="Medições" icon={<Clock className="h-4 w-4" />}>
-            <MedicoesPanel medicoes={sim.cenarioSnapshot.medicoes} onAdiar={sim.adiarMedicao} />
-          </AccordionSection>
-        </div>
-
-        {/* RIGHT PANEL */}
-        <div className="flex w-full flex-col overflow-y-auto lg:w-[55%]">
-          {showCompare ? (
-            <CompareView sim={sim} />
-          ) : (
-            <>
-              <CashFlowChart baseCF={sim.baseCashFlow} cenarioCF={sim.cenarioCashFlow} />
-              <MetricCards base={sim.baseMetrics} cenario={sim.cenarioMetrics} />
-              <ImpactTable impacto={sim.impacto} />
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* ═══ APPLY MODAL ═══ */}
-      {showApply && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="mx-4 w-full max-w-md rounded-2xl bg-card p-6 shadow-xl">
-            <h3 className="text-lg font-bold">Aplicar cenário ao cronograma real</h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Isso vai alterar o cronograma real do projeto.{' '}
-              <b>{sim.cenarioSnapshot.etapas.filter(e => e.modified).length} etapas</b> serão movidas e{' '}
-              <b>{sim.cenarioSnapshot.parcelas.filter(p => p.modified).length} parcelas</b> recalculadas.
-            </p>
-            <div className="mt-4">
-              <label className="block text-xs font-medium text-muted-foreground mb-1">
-                Digite <b>APLICAR</b> para confirmar
-              </label>
-              <input value={applyConfirm} onChange={e => setApplyConfirm(e.target.value)}
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary" />
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => { setShowApply(false); setApplyConfirm('') }}
-                className="rounded-lg border px-4 py-2 text-sm hover:bg-accent">Cancelar</button>
-              <button disabled={applyConfirm !== 'APLICAR'}
-                onClick={() => { sim.aplicarAoReal.mutate(); setShowApply(false); setApplyConfirm('') }}
-                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-40">
-                Confirmar aplicação
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Quick Actions
-// ═══════════════════════════════════════════════════════════════
-
-function QuickActions({ onMove }: { onMove: (d: number) => void }) {
-  return (
-    <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Atalhos:</span>
-      {[{ label: '-1 sem', d: -7 }, { label: '+1 sem', d: 7 }, { label: '+2 sem', d: 14 }].map(({ label, d }) => (
-        <button key={d} onClick={() => onMove(d)}
-          className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${d > 0 ? 'hover:border-red-300 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950' : 'hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950'}`}>
-          {label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Accordion
-// ═══════════════════════════════════════════════════════════════
-
-function AccordionSection({ title, icon, defaultOpen = false, children }: {
-  title: string; icon?: React.ReactNode; defaultOpen?: boolean; children: React.ReactNode
-}) {
-  const [open, setOpen] = useState(defaultOpen)
-  return (
-    <div className="border-b">
-      <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm font-semibold hover:bg-accent/30">
-        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        {icon} {title}
-      </button>
-      {open && <div className="px-4 pb-4">{children}</div>}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Mini Gantt
-// ═══════════════════════════════════════════════════════════════
-
-function MiniGantt({ etapas, medicoes, onMove }: {
-  etapas: SimEtapa[]; medicoes: any[]; onMove: (id: string, delta: number) => void
-}) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [batchDays, setBatchDays] = useState('')
-  const [editingEtapa, setEditingEtapa] = useState<string | null>(null)
-  const [editDays, setEditDays] = useState('')
-
-  // Calculate time range
-  const withDates = etapas.filter(e => e.sim_data_inicio)
-  if (withDates.length === 0) {
-    return <p className="py-6 text-center text-xs text-muted-foreground">Nenhuma etapa com data planejada</p>
-  }
-
-  const allStarts = withDates.map(e => localDate(e.sim_data_inicio!).getTime())
-  const allEnds = withDates.map(e => e.sim_data_fim ? localDate(e.sim_data_fim).getTime() : localDate(e.sim_data_inicio!).getTime() + 30 * DAY_MS)
-  const minDate = Math.min(...allStarts) - 7 * DAY_MS
-  const maxDate = Math.max(...allEnds) + 14 * DAY_MS
-  const totalDays = Math.max(30, Math.round((maxDate - minDate) / DAY_MS))
-  const pxPerDay = 4
-
-  const toggleSelect = (id: string) => {
-    const n = new Set(selected)
-    n.has(id) ? n.delete(id) : n.add(id)
-    setSelected(n)
-  }
-
-  const batchMove = () => {
-    const d = parseInt(batchDays)
-    if (isNaN(d)) return
-    selected.forEach(id => onMove(id, d))
-    setBatchDays('')
-  }
-
-  return (
-    <div>
-      {/* Batch actions */}
-      {selected.size > 0 && (
-        <div className="mb-3 flex items-center gap-2 rounded-lg bg-muted/50 p-2 text-xs">
-          <span className="font-medium">{selected.size} selecionada(s)</span>
-          <input type="number" placeholder="±dias" value={batchDays} onChange={e => setBatchDays(e.target.value)}
-            className="w-16 rounded border bg-background px-2 py-1 text-xs focus:outline-none"
-            onKeyDown={e => e.key === 'Enter' && batchMove()} />
-          <button onClick={batchMove} className="rounded bg-primary px-2 py-1 text-[10px] font-medium text-primary-foreground">Mover</button>
-          <button onClick={() => { selected.forEach(id => onMove(id, 0)); setSelected(new Set()) }}
-            className="rounded border px-2 py-1 text-[10px]">Restaurar</button>
-        </div>
-      )}
-
-      {/* Gantt */}
-      <div className="overflow-x-auto rounded-lg border">
-        <div style={{ minWidth: totalDays * pxPerDay + 200 }}>
-          {/* Header weeks */}
-          <div className="flex h-6 border-b bg-muted/30">
-            <div className="w-[200px] shrink-0" />
-            <div className="relative flex-1">
-              {Array.from({ length: Math.ceil(totalDays / 7) }).map((_, i) => {
-                const d = new Date(minDate + i * 7 * DAY_MS)
-                return (
-                  <div key={i} className="absolute top-0 text-[9px] text-muted-foreground" style={{ left: i * 7 * pxPerDay }}>
-                    {String(d.getDate()).padStart(2, '0')}/{String(d.getMonth() + 1).padStart(2, '0')}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-
-          {/* Etapa rows */}
-          {etapas.map(et => {
-            const hasOrigDate = !!et.data_inicio_plan
-            const hasSimDate = !!et.sim_data_inicio
-            if (!hasOrigDate) return null
-
-            const origStart = (localDate(et.data_inicio_plan!).getTime() - minDate) / DAY_MS
-            const origEnd = et.data_fim_plan ? (localDate(et.data_fim_plan).getTime() - minDate) / DAY_MS : origStart + 14
-            const origW = Math.max(2, origEnd - origStart)
-
-            const simStart = hasSimDate ? (localDate(et.sim_data_inicio!).getTime() - minDate) / DAY_MS : origStart
-            const simEnd = et.sim_data_fim ? (localDate(et.sim_data_fim!).getTime() - minDate) / DAY_MS : simStart + origW
-            const simW = Math.max(2, simEnd - simStart)
-
-            return (
-              <div key={et.id} className="group flex h-9 items-center border-b hover:bg-muted/20">
-                {/* Label */}
-                <div className="flex w-[200px] shrink-0 items-center gap-1.5 px-2">
-                  <input type="checkbox" checked={selected.has(et.id)} onChange={() => toggleSelect(et.id)}
-                    className="h-3 w-3 rounded accent-primary" />
-                  <span className="truncate text-[11px] font-medium">{et.codigo} {et.nome}</span>
-                  {et.modified && <span className="ml-auto text-[9px] font-bold text-emerald-600">{et.delta_dias > 0 ? '+' : ''}{et.delta_dias}d</span>}
-                </div>
-
-                {/* Bars */}
-                <div className="relative flex-1">
-                  {/* Original (gray dashed) */}
-                  <div className="absolute top-[14px] h-[3px] rounded-full border border-dashed border-muted-foreground/30 bg-muted-foreground/10"
-                    style={{ left: origStart * pxPerDay, width: origW * pxPerDay }} />
-
-                  {/* Simulated bar */}
-                  <div
-                    className={`absolute top-[10px] h-[11px] cursor-grab rounded-md shadow-sm transition-all duration-200 ${et.modified ? 'bg-emerald-500/80 ring-1 ring-emerald-400' : 'bg-sky-500/70'}`}
-                    style={{ left: simStart * pxPerDay, width: simW * pxPerDay }}
-                    title={et.modified ? `${et.delta_dias > 0 ? '+' : ''}${et.delta_dias} dias` : 'Arrastar para mover'}
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      const startX = e.clientX
-                      const handleMove = (ev: MouseEvent) => {
-                        const dx = ev.clientX - startX
-                        const deltaDays = Math.round(dx / pxPerDay)
-                        if (deltaDays !== 0) onMove(et.id, et.delta_dias + deltaDays)
-                      }
-                      const handleUp = () => { document.removeEventListener('mousemove', handleMove); document.removeEventListener('mouseup', handleUp) }
-                      document.addEventListener('mousemove', handleMove)
-                      document.addEventListener('mouseup', handleUp)
-                    }}
-                  />
-
-                  {/* Quick edit icon */}
-                  <button
-                    className="absolute top-[6px] opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary text-[10px]"
-                    style={{ left: (simStart + simW) * pxPerDay + 6 }}
-                    onClick={() => { setEditingEtapa(editingEtapa === et.id ? null : et.id); setEditDays(String(et.delta_dias || '')) }}
-                  >⋯</button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Quick edit popover */}
-      {editingEtapa && (
-        <div className="mt-2 rounded-lg border bg-card p-3 shadow-md">
-          <div className="mb-2 text-xs font-semibold">{etapas.find(e => e.id === editingEtapa)?.nome}</div>
-          <div className="flex items-center gap-2">
-            <input type="number" value={editDays} onChange={e => setEditDays(e.target.value)} placeholder="±dias"
-              className="w-20 rounded border bg-background px-2 py-1 text-sm focus:outline-none"
-              onKeyDown={e => { if (e.key === 'Enter') { onMove(editingEtapa!, parseInt(editDays) || 0); setEditingEtapa(null) } }} />
-            <button onClick={() => { onMove(editingEtapa!, parseInt(editDays) || 0); setEditingEtapa(null) }}
-              className="rounded bg-primary px-3 py-1 text-xs text-primary-foreground">Aplicar</button>
-            <button onClick={() => { onMove(editingEtapa!, 0); setEditingEtapa(null) }}
-              className="rounded border px-3 py-1 text-xs">Restaurar</button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Negociações Panel
-// ═══════════════════════════════════════════════════════════════
-
-function NegociacoesPanel({ fornecedores, onAlter }: {
-  fornecedores: any[]; onAlter: (id: string, cond: string) => void
-}) {
-  if (fornecedores.length === 0) return <p className="py-4 text-center text-xs text-muted-foreground">Nenhum fornecedor cadastrado</p>
-
-  return (
-    <div className="space-y-2">
-      {fornecedores.map(f => (
-        <div key={f.id} className={`flex items-center gap-3 rounded-lg border p-2.5 text-sm ${f.modified ? 'border-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20' : ''}`}>
-          <div className="flex-1">
-            <p className="font-medium text-[12px]">{f.nome}</p>
-            <p className="text-[10px] text-muted-foreground">Atual: {f.cond_pagamento_padrao || 'à vista'}</p>
-          </div>
-          <input
-            defaultValue={f.sim_cond_pagamento ?? f.cond_pagamento_padrao ?? ''}
-            placeholder="Ex: 30/60/90"
-            className="w-28 rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-            onBlur={(e) => {
-              const val = e.target.value.trim()
-              if (val && val !== (f.cond_pagamento_padrao ?? '')) onAlter(f.id, val)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-            }}
-          />
-          {f.modified && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-medium text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">alterado</span>}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Medições Panel
-// ═══════════════════════════════════════════════════════════════
-
-function MedicoesPanel({ medicoes, onAdiar }: {
-  medicoes: any[]; onAdiar: (id: string, data: string) => void
-}) {
-  const futuras = medicoes.filter(m => m.status !== 'liberada' && m.status !== 'paga')
-  if (futuras.length === 0) return <p className="py-4 text-center text-xs text-muted-foreground">Nenhuma medição futura</p>
-
-  return (
-    <div className="space-y-2">
-      {futuras.map(m => (
-        <div key={m.id} className={`flex items-center gap-3 rounded-lg border p-2.5 ${m.modified ? 'border-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20' : ''}`}>
-          <div className="flex-1">
-            <p className="text-xs font-medium">Medição {m.numero}</p>
-            <p className="text-[10px] text-muted-foreground">{formatCurrency(m.valor_planejado)} | Prevista: {formatDate(m.data_prevista)}</p>
-          </div>
-          <input type="date" defaultValue={m.sim_data_prevista}
-            className="rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-            onChange={(e) => { if (e.target.value) onAdiar(m.id, e.target.value) }} />
-          {m.modified && <span className="text-[9px] font-bold text-amber-600">
-            {m.delta_dias > 0 ? '+' : ''}{m.delta_dias}d
-          </span>}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Cash Flow Chart
-// ═══════════════════════════════════════════════════════════════
-
-function CashFlowChart({ baseCF, cenarioCF }: { baseCF: CashFlowPoint[]; cenarioCF: CashFlowPoint[] }) {
-  const [viewMode, setViewMode] = useState<'consolidado' | 'maturidade'>('consolidado')
-
-  // Merge base and cenário into chart data
-  const chartData = useMemo(() => {
-    const baseMap = new Map(baseCF.map(p => [p.date, p]))
-    const cenarioMap = new Map(cenarioCF.map(p => [p.date, p]))
-    const allDates = new Set([...baseMap.keys(), ...cenarioMap.keys()])
-    return [...allDates].sort().map(date => {
-      const b = baseMap.get(date)
-      const c = cenarioMap.get(date)
+  // Semanas (24 = ~6 meses)
+  const weeks = useMemo(() => {
+    const now = new Date()
+    const dow = now.getDay()
+    const mon = new Date(now)
+    mon.setDate(now.getDate() - (dow === 0 ? 6 : dow - 1))
+    mon.setHours(0, 0, 0, 0)
+    return Array.from({ length: 24 }, (_, i) => {
+      const s = new Date(mon); s.setDate(mon.getDate() + i * 7)
+      const e = new Date(s); e.setDate(s.getDate() + 6)
       return {
-        date,
-        label: `${date.slice(8, 10)}/${date.slice(5, 7)}`,
-        saldoBase: b?.saldo ?? null,
-        saldoCenario: c?.saldo ?? null,
-        saidasFirme: c ? -(c.saidasFirme) : null,
-        saidasBruto: c ? -(c.saidasBruto) : null,
-        entradas: c?.entradas ?? null,
+        s, e,
+        iso0: s.toISOString().split('T')[0]!,
+        iso1: e.toISOString().split('T')[0]!,
+        lbl: `${String(s.getDate()).padStart(2, '0')}/${String(s.getMonth() + 1).padStart(2, '0')}`,
       }
     })
-  }, [baseCF, cenarioCF])
+  }, [])
 
-  if (chartData.length === 0) {
-    return (
-      <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
-        Sem dados de fluxo de caixa. Cadastre etapas com datas e itens de compra.
-      </div>
-    )
+  // Montar todos os items do fluxo
+  const items = useMemo(() => {
+    const ov = (id: string, date: string, val: number) => {
+      const o = overrides[id]
+      return {
+        d: o?.newDate || date,
+        v: o?.newValue ?? val,
+        mod: !!(o?.newDate || o?.newValue !== undefined),
+      }
+    }
+    const all: Item[] = []
+
+    // Entradas: medições
+    medicoes.filter(m => m.status !== 'liberada' && m.data_prevista).forEach(m => {
+      const { d, v, mod } = ov(`med-${m.id}`, m.data_prevista, m.valor_planejado)
+      all.push({ id: `med-${m.id}`, desc: `Medição nº ${m.numero}`, valor: Number(v), data: d, tipo: 'entrada', modified: mod, meta: { cat: 'Cliente', orig: m.valor_planejado } })
+    })
+
+    // Entradas: mútuos captação
+    mutuos.filter(m => m.status !== 'quitado' && m.data_captacao).forEach(m => {
+      const { d, v, mod } = ov(`mutcap-${m.id}`, m.data_captacao, m.valor_captado)
+      all.push({ id: `mutcap-${m.id}`, desc: `Mútuo: ${m.nome}`, valor: Number(v), data: d, tipo: 'entrada', modified: mod, meta: { cat: m.tipo, orig: m.valor_captado } })
+    })
+
+    // Saídas firmes: parcelas
+    parcelas.filter(p => p.status !== 'paga' && p.data_vencimento).forEach(p => {
+      const calcVal = Number(p.valor) - Number(p.valor_pago || 0)
+      const { d, v, mod } = ov(`par-${p.id}`, p.data_vencimento, calcVal)
+      const ped = pedidos.find(pd => pd.id === p.pedido_id)
+      const itemObj = itens.find(i => i.id === ped?.item_compra_id)
+      const etapaObj = etapas.find(et => et.id === itemObj?.etapa_id)
+      all.push({
+        id: `par-${p.id}`, desc: `Parc ${p.numero_parcela} — ${ped?.fornecedor_nome || ''}`, valor: Number(v), data: d, tipo: 'firme', modified: mod,
+        meta: { cat: itemObj?.categoria || 'Obra', etapa: etapaObj?.nome, forn: ped?.fornecedor_nome, item: ped?.item_descricao || itemObj?.descricao, orig: calcVal }
+      })
+    })
+
+    // Saídas firmes: parcelas de mútuo (devolução)
+    mutuos.forEach(m => {
+      ;(m.parcelas || []).filter((p: any) => p.status !== 'paga' && p.data_vencimento).forEach((p: any) => {
+        const calcVal = Number(p.valor) - Number(p.valor_pago || 0)
+        const { d, v, mod } = ov(`mutpar-${p.id}`, p.data_vencimento, calcVal)
+        all.push({ id: `mutpar-${p.id}`, desc: `Mútuo Parc ${p.numero_parcela} — ${m.nome}`, valor: Number(v), data: d, tipo: 'firme', modified: mod, meta: { cat: m.tipo, forn: m.nome, orig: calcVal } })
+      })
+    })
+
+    // Saídas brutas: itens sem pedido (cronograma)
+    const pedMap = new Map<string, number>()
+    pedidos.forEach(p => pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + Number(p.valor_total_real || 0)))
+
+    itens.forEach(item => {
+      const comPed = Math.min(pedMap.get(item.id) || 0, Number(item.valor_total_orcado))
+      const semPed = Math.max(0, Number(item.valor_total_orcado) - comPed - Number(item.valor_consumido))
+      if (semPed <= 0) return
+      const etapa = etapas.find(e => e.id === item.etapa_id)
+      const dataOrig = etapa?.data_inicio_plan || ''
+      if (!dataOrig) return
+      const dias = parsearCondicao(item.cond_pagamento || '')
+      const nParts = dias.length
+      const dists = distribuicoes.filter(dd => dd.etapa_id === item.etapa_id)
+      const casasT = etapa?.casas_total || 1
+
+      const pushBruto = (baseDate: string, ratio: number, suffix: string, dIdx: number) => {
+        const valDist = semPed * ratio
+        if (valDist <= 0) return
+        const perPart = valDist / nParts
+        dias.forEach((dd, pIdx) => {
+          const dt = localDate(baseDate); dt.setDate(dt.getDate() + dd)
+          const dKey = dt.toISOString().split('T')[0]!
+          const iid = `bruto-${item.id}-${dIdx}-${pIdx}`
+          const { d, v, mod } = ov(iid, dKey, perPart)
+          all.push({
+            id: iid, desc: `${item.descricao}${suffix}`, valor: Number(v), data: d, tipo: 'bruto', modified: mod,
+            meta: { cat: item.categoria || 'Obra', etapa: etapa?.nome, forn: item.fornecedor_nome || '', item: item.descricao, orig: perPart }
+          })
+        })
+      }
+
+      if (dists.length > 0) {
+        dists.forEach((dist, dIdx) => pushBruto(dist.data_inicio || dataOrig, dist.casas_planejadas / casasT, ` (${dist.casas_planejadas}un)`, dIdx))
+      } else {
+        pushBruto(dataOrig, 1, '', 0)
+      }
+    })
+
+    return all
+  }, [parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, overrides])
+
+  // Grid semanal
+  const grid = useMemo(() => {
+    let acum = currentCompany?.saldo_inicial_caixa || 0
+    parcelas.filter(p => p.status === 'paga').forEach(p => { acum -= Number(p.valor_pago) })
+
+    const firstWeekStart = weeks[0]?.iso0 || ''
+    const past = items.filter(i => i.data < firstWeekStart)
+    acum += past.filter(i => i.tipo === 'entrada').reduce((s, i) => s + i.valor, 0)
+    acum -= past.filter(i => i.tipo === 'firme').reduce((s, i) => s + i.valor, 0)
+    acum -= past.filter(i => i.tipo === 'bruto').reduce((s, i) => s + i.valor, 0)
+
+    return weeks.map(w => {
+      const inW = (d: string) => { if (!d) return false; const t = localDate(d).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() }
+      const ent = items.filter(i => i.tipo === 'entrada' && inW(i.data))
+      const fir = items.filter(i => i.tipo === 'firme' && inW(i.data))
+      const bru = items.filter(i => i.tipo === 'bruto' && inW(i.data))
+      const sEnt = ent.reduce((s, i) => s + i.valor, 0)
+      const sFir = fir.reduce((s, i) => s + i.valor, 0)
+      const sBru = bru.reduce((s, i) => s + i.valor, 0)
+      const delta = sEnt - sFir - sBru
+      acum += delta
+      return { ...w, sEnt, sFir, sBru, delta, acum, ent, fir, bru }
+    })
+  }, [weeks, items, currentCompany, parcelas])
+
+  const numOv = Object.keys(overrides).length
+
+  // Sub-linhas de detalhamento
+  const subRows = (tipo: 'entrada' | 'firme' | 'bruto') => {
+    const filtered = items.filter(i => i.tipo === tipo && weeks.some(w => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() }))
+    // agrupar por desc para reduzir linhas
+    const groups = new Map<string, Item[]>()
+    filtered.forEach(i => {
+      const k = i.desc
+      if (!groups.has(k)) groups.set(k, [])
+      groups.get(k)!.push(i)
+    })
+    return Array.from(groups.entries()).map(([desc, its]) => (
+      <tr key={desc} className="border-b border-muted/40 hover:bg-muted/20 text-[11px]">
+        <td className="sticky left-0 z-10 bg-card border-r px-3 py-1.5 pl-8 truncate max-w-[220px] font-medium text-foreground/70" title={desc}>
+          {its[0]!.modified && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5 -mt-0.5" />}
+          {desc}
+        </td>
+        {grid.map((w, ci) => {
+          const match = its.filter(i => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() })
+          const sum = match.reduce((s, i) => s + i.valor, 0)
+          return (
+            <td 
+              key={ci} 
+              className={`border-r px-2 py-1.5 text-right tabular-nums cursor-pointer hover:bg-primary/5 ${match.some(m => m.modified) ? 'bg-amber-50/60 dark:bg-amber-900/10' : ''}`}
+              onClick={() => match.length > 0 && setEditing(match[0] ?? null)}
+            >
+              {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
+            </td>
+          )
+        })}
+      </tr>
+    ))
   }
 
   return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Fluxo de Caixa Projetado</h3>
-        <div className="flex rounded-lg border text-[10px]">
-          <button onClick={() => setViewMode('consolidado')}
-            className={`px-2.5 py-1 font-medium transition-colors ${viewMode === 'consolidado' ? 'bg-primary/10 text-primary' : 'hover:bg-accent'}`}>Consolidado</button>
-          <button onClick={() => setViewMode('maturidade')}
-            className={`px-2.5 py-1 font-medium transition-colors ${viewMode === 'maturidade' ? 'bg-primary/10 text-primary' : 'hover:bg-accent'}`}>Por maturidade</button>
-        </div>
-      </div>
-      <ResponsiveContainer width="100%" height={280}>
-        <ComposedChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-          <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
-          <XAxis dataKey="label" tick={{ fontSize: 9 }} interval="preserveStartEnd" />
-          <YAxis tick={{ fontSize: 9 }} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} />
-          <RTooltip
-            contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid var(--border)' }}
-            formatter={(value: number, name: string) => [formatCurrency(value), name]}
-            labelFormatter={(label: string) => `Semana de ${label}`}
-          />
-          <ReferenceLine y={0} stroke="#ef4444" strokeDasharray="4 4" strokeWidth={1.5} />
-
-          {viewMode === 'consolidado' ? (
-            <>
-              <Line type="monotone" dataKey="saldoBase" name="Base" stroke="#9ca3af" strokeDasharray="6 3" strokeWidth={2} dot={false} animationDuration={300} />
-              <Area type="monotone" dataKey="saldoCenario" name="Cenário" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.12} strokeWidth={2} dot={false} animationDuration={300} />
-            </>
-          ) : (
-            <>
-              <Line type="monotone" dataKey="saldoBase" name="Base" stroke="#9ca3af" strokeDasharray="6 3" strokeWidth={2} dot={false} />
-              <Area type="monotone" dataKey="saidasFirme" name="Saídas Firmes" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} strokeWidth={1.5} dot={false} stackId="saidas" />
-              <Area type="monotone" dataKey="saidasBruto" name="Saídas Projetadas" stroke="#93c5fd" fill="#93c5fd" fillOpacity={0.1} strokeWidth={1.5} strokeDasharray="4 2" dot={false} stackId="saidas" />
-              <Area type="monotone" dataKey="entradas" name="Entradas" stroke="#10b981" fill="#10b981" fillOpacity={0.1} strokeWidth={1.5} dot={false} />
-            </>
-          )}
-          <Legend wrapperStyle={{ fontSize: 10 }} />
-        </ComposedChart>
-      </ResponsiveContainer>
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Metric Cards
-// ═══════════════════════════════════════════════════════════════
-
-function MetricCards({ base, cenario }: { base: SimMetrics; cenario: SimMetrics }) {
-  const cards = [
-    {
-      label: 'Saldo mínimo', value: formatCurrency(cenario.saldoMinimo.valor),
-      sub: cenario.saldoMinimo.data ? formatDate(cenario.saldoMinimo.data) : '—',
-      delta: cenario.saldoMinimo.valor - base.saldoMinimo.valor,
-      better: cenario.saldoMinimo.valor >= base.saldoMinimo.valor,
-    },
-    {
-      label: 'Dias negativos', value: `${cenario.diasNegativos}`,
-      sub: base.diasNegativos !== cenario.diasNegativos ? `vs ${base.diasNegativos} base` : 'igual ao base',
-      delta: base.diasNegativos - cenario.diasNegativos,
-      better: cenario.diasNegativos <= base.diasNegativos,
-    },
-    {
-      label: 'Pior semana', value: formatCurrency(cenario.piorSemana.valor),
-      sub: cenario.piorSemana.semana ? formatDate(cenario.piorSemana.semana) : '—',
-      delta: base.piorSemana.valor - cenario.piorSemana.valor,
-      better: cenario.piorSemana.valor <= base.piorSemana.valor,
-    },
-    {
-      label: 'Data crítica', value: cenario.dataCritica ? formatDate(cenario.dataCritica) : 'Nenhuma',
-      sub: cenario.dataCritica ? 'Primeiro saldo negativo' : 'Sempre positivo',
-      delta: cenario.dataCritica ? -1 : (base.dataCritica ? 1 : 0),
-      better: !cenario.dataCritica || (!base.dataCritica && !cenario.dataCritica),
-    },
-  ]
-
-  return (
-    <div className="grid grid-cols-2 gap-3 px-4 lg:grid-cols-4">
-      {cards.map(c => (
-        <div key={c.label} className={`rounded-xl border p-3 ${c.delta > 0 ? 'border-emerald-200 bg-emerald-50/50 dark:bg-emerald-950/20' : c.delta < 0 ? 'border-red-200 bg-red-50/50 dark:bg-red-950/20' : ''}`}>
-          <p className="text-[10px] font-medium text-muted-foreground">{c.label}</p>
-          <div className="mt-1 flex items-center gap-1">
-            {c.delta > 0 && <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />}
-            {c.delta < 0 && <TrendingDown className="h-3.5 w-3.5 text-red-500" />}
-            {c.delta === 0 && <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />}
-            <span className="text-sm font-bold">{c.value}</span>
-          </div>
-          <p className="mt-0.5 text-[9px] text-muted-foreground">{c.sub}</p>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Impact Table
-// ═══════════════════════════════════════════════════════════════
-
-function ImpactTable({ impacto }: { impacto: ParcelaImpacto[] }) {
-  const [onlyChanged, setOnlyChanged] = useState(true)
-  const shown = onlyChanged ? impacto.filter(p => p.delta_dias !== 0) : impacto
-
-  const totalVal = shown.reduce((s, p) => s + p.valor, 0)
-
-  return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Parcelas afetadas ({shown.length})</h3>
-        <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-          <input type="checkbox" checked={onlyChanged} onChange={e => setOnlyChanged(e.target.checked)} className="h-3 w-3 accent-primary" />
-          Só alteradas
-        </label>
-      </div>
-      {shown.length === 0 ? (
-        <p className="py-4 text-center text-xs text-muted-foreground">Nenhuma parcela alterada neste cenário.</p>
-      ) : (
+    <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-background">
+      {/* Popover de edição */}
+      {editing && (
         <>
-          <div className="max-h-52 overflow-auto rounded-lg border">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-muted text-left">
-                <tr>
-                  <th className="px-3 py-1.5">Fornecedor</th>
-                  <th className="px-3 py-1.5">Etapa</th>
-                  <th className="px-3 py-1.5 text-right">Valor</th>
-                  <th className="px-3 py-1.5">Base → Cenário</th>
-                  <th className="px-3 py-1.5 text-right">Delta</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {shown.slice(0, 50).map((p, i) => (
-                  <tr key={i} className="hover:bg-muted/20">
-                    <td className="px-3 py-1.5 font-medium">{p.fornecedor_nome}</td>
-                    <td className="px-3 py-1.5">{p.etapa_nome}</td>
-                    <td className="px-3 py-1.5 text-right">{formatCurrency(p.valor)}</td>
-                    <td className="px-3 py-1.5">
-                      <span className="text-muted-foreground">{formatDate(p.vencimento_base)}</span>
-                      <ArrowRight className="mx-1 inline h-3 w-3 text-muted-foreground" />
-                      <span className="font-medium">{formatDate(p.vencimento_cenario)}</span>
-                    </td>
-                    <td className={`px-3 py-1.5 text-right font-bold ${p.delta_dias > 0 ? 'text-red-500' : p.delta_dias < 0 ? 'text-emerald-500' : ''}`}>
-                      {p.delta_dias > 0 ? '+' : ''}{p.delta_dias}d
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="fixed inset-0 z-40 bg-black/20" onClick={() => setEditing(null)} />
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[340px] rounded-lg border bg-card p-4 shadow-2xl">
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <p className="text-[10px] text-muted-foreground uppercase font-bold">{editing.meta?.cat}</p>
+                <p className="text-sm font-semibold truncate">{editing.desc}</p>
+                {editing.meta?.etapa && <p className="text-[10px] text-muted-foreground">Etapa: {editing.meta.etapa}</p>}
+                {editing.meta?.item && <p className="text-[10px] text-muted-foreground">Item: {editing.meta.item}</p>}
+              </div>
+              <button onClick={() => setEditing(null)} className="p-1 rounded hover:bg-muted"><X className="h-3.5 w-3.5" /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] uppercase font-semibold text-muted-foreground block mb-1">Valor (R$)</label>
+                <input type="number" value={editing.valor} onChange={e => { setOverrides(p => ({ ...p, [editing.id]: { ...p[editing.id], newValue: Number(e.target.value) } })); setEditing({ ...editing, valor: Number(e.target.value), modified: true }) }} className="w-full border rounded px-2 py-1.5 text-sm bg-background focus:ring-1 focus:ring-primary focus:outline-none" />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-semibold text-muted-foreground block mb-1">Data</label>
+                <input type="date" value={editing.data} onChange={e => { setOverrides(p => ({ ...p, [editing.id]: { ...p[editing.id], newDate: e.target.value } })); setEditing({ ...editing, data: e.target.value, modified: true }) }} className="w-full border rounded px-2 py-1.5 text-sm bg-background focus:ring-1 focus:ring-primary focus:outline-none" />
+              </div>
+            </div>
+            {editing.modified && editing.meta?.orig !== undefined && (
+              <p className="text-[10px] text-muted-foreground mt-2">Original: <span className="line-through">{formatCurrency(editing.meta.orig)}</span></p>
+            )}
+            <button onClick={() => setEditing(null)} className="w-full mt-3 bg-primary text-primary-foreground rounded py-1.5 text-xs font-semibold hover:bg-primary/90">OK</button>
           </div>
-          <p className="mt-2 text-[10px] text-muted-foreground">
-            {shown.length} parcelas alteradas | {formatCurrency(totalVal)} deslocados
-          </p>
         </>
       )}
-    </div>
-  )
-}
 
-// ═══════════════════════════════════════════════════════════════
-// Compare View
-// ═══════════════════════════════════════════════════════════════
+      {/* Header */}
+      <div className="flex items-center justify-between border-b bg-card px-4 py-3 shrink-0">
+        <PageHeader title="Simulador de Fluxo de Caixa" description="Clique nas setas para expandir. Clique num valor para simular." icon={Table} onHelp={restartTour} />
+        {numOv > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-800">{numOv} simulações</span>
+            <button onClick={() => setOverrides({})} className="text-[10px] underline text-muted-foreground">Limpar</button>
+            <button className="flex items-center gap-1 bg-emerald-600 text-white rounded px-3 py-1.5 text-[10px] font-semibold hover:bg-emerald-700"><Download className="h-3 w-3" /> Exportar</button>
+          </div>
+        )}
+      </div>
 
-function CompareView({ sim }: { sim: ReturnType<typeof useSimulador> }) {
-  const colors = ['#3b82f6', '#10b981', '#f97316']
-
-  // For simplicity, compare Base vs current scenario
-  const chartData = useMemo(() => {
-    const baseMap = new Map(sim.baseCashFlow.map(p => [p.date, p]))
-    const cenMap = new Map(sim.cenarioCashFlow.map(p => [p.date, p]))
-    const allDates = new Set([...baseMap.keys(), ...cenMap.keys()])
-    return [...allDates].sort().map(date => ({
-      date, label: `${date.slice(8, 10)}/${date.slice(5, 7)}`,
-      base: baseMap.get(date)?.saldo ?? null,
-      cenario: cenMap.get(date)?.saldo ?? null,
-    }))
-  }, [sim.baseCashFlow, sim.cenarioCashFlow])
-
-  const bm = sim.baseMetrics
-  const cm = sim.cenarioMetrics
-
-  const rows = [
-    { label: 'Saldo mínimo', base: formatCurrency(bm.saldoMinimo.valor), cen: formatCurrency(cm.saldoMinimo.valor), better: cm.saldoMinimo.valor >= bm.saldoMinimo.valor },
-    { label: 'Dias negativos', base: String(bm.diasNegativos), cen: String(cm.diasNegativos), better: cm.diasNegativos <= bm.diasNegativos },
-    { label: 'Data crítica', base: bm.dataCritica ? formatDate(bm.dataCritica) : '—', cen: cm.dataCritica ? formatDate(cm.dataCritica) : '—', better: !cm.dataCritica },
-    { label: 'Custo total', base: formatCurrency(bm.custoTotal), cen: formatCurrency(cm.custoTotal), better: cm.custoTotal <= bm.custoTotal },
-  ]
-
-  return (
-    <div className="p-4">
-      <h3 className="mb-3 text-sm font-semibold">Comparação: Base vs {sim.state.cenarioNome}</h3>
-      <ResponsiveContainer width="100%" height={250}>
-        <ComposedChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-          <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
-          <XAxis dataKey="label" tick={{ fontSize: 9 }} interval="preserveStartEnd" />
-          <YAxis tick={{ fontSize: 9 }} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} />
-          <RTooltip contentStyle={{ fontSize: 11, borderRadius: 8 }} formatter={(v: number) => formatCurrency(v)} />
-          <ReferenceLine y={0} stroke="#ef4444" strokeDasharray="4 4" />
-          <Line type="monotone" dataKey="base" name="Base" stroke="#9ca3af" strokeDasharray="6 3" strokeWidth={2} dot={false} />
-          <Line type="monotone" dataKey="cenario" name={sim.state.cenarioNome} stroke={colors[0]} strokeWidth={2} dot={false} />
-          <Legend wrapperStyle={{ fontSize: 10 }} />
-        </ComposedChart>
-      </ResponsiveContainer>
-
-      <table className="mt-4 w-full text-xs">
-        <thead>
-          <tr className="border-b">
-            <th className="pb-2 text-left font-semibold">Métrica</th>
-            <th className="pb-2 text-right font-semibold">Base</th>
-            <th className="pb-2 text-right font-semibold">{sim.state.cenarioNome}</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {rows.map(r => (
-            <tr key={r.label}>
-              <td className="py-2 font-medium">{r.label}</td>
-              <td className="py-2 text-right text-muted-foreground">{r.base}</td>
-              <td className={`py-2 text-right font-bold ${r.better ? 'text-emerald-600' : 'text-red-500'}`}>{r.cen}</td>
+      {/* Tabela */}
+      <div className="flex-1 overflow-auto">
+        <table className="border-collapse text-xs min-w-max">
+          <thead className="sticky top-0 z-30 bg-muted/80 backdrop-blur">
+            <tr className="border-b">
+              <th className="sticky left-0 z-40 bg-muted/90 border-r px-3 py-2.5 text-left text-[10px] font-bold uppercase text-muted-foreground tracking-wider w-[220px] min-w-[220px]">Categoria</th>
+              {grid.map((w, i) => (
+                <th key={i} className="border-r px-2 py-2.5 text-center font-medium w-[110px] min-w-[110px]">
+                  <div className="text-[9px] text-muted-foreground">S{i + 1}</div>
+                  <div className="text-[10px] mt-0.5">{w.lbl}</div>
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {/* ENTRADAS */}
+            <tr className="border-b bg-emerald-50/40 dark:bg-emerald-950/10 font-semibold cursor-pointer hover:bg-emerald-50/60" onClick={() => toggle('ent')}>
+              <td className="sticky left-0 z-10 bg-emerald-50/60 dark:bg-emerald-950/20 border-r px-3 py-2.5 flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
+                {expanded.ent ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                (+) Entradas
+              </td>
+              {grid.map((w, i) => (
+                <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{fc(w.sEnt)}</td>
+              ))}
+            </tr>
+            {expanded.ent && subRows('entrada')}
+
+            {/* SAÍDAS FIRMES */}
+            <tr className="border-b bg-red-50/40 dark:bg-red-950/10 font-semibold cursor-pointer hover:bg-red-50/60" onClick={() => toggle('fir')}>
+              <td className="sticky left-0 z-10 bg-red-50/60 dark:bg-red-950/20 border-r px-3 py-2.5 flex items-center gap-1.5 text-red-700 dark:text-red-400">
+                {expanded.fir ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                (-) Saídas Firmes
+              </td>
+              {grid.map((w, i) => (
+                <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-red-700 dark:text-red-400">{fc(w.sFir)}</td>
+              ))}
+            </tr>
+            {expanded.fir && subRows('firme')}
+
+            {/* SAÍDAS BRUTAS */}
+            <tr className="border-b bg-orange-50/40 dark:bg-orange-950/10 font-semibold cursor-pointer hover:bg-orange-50/60" onClick={() => toggle('bru')}>
+              <td className="sticky left-0 z-10 bg-orange-50/60 dark:bg-orange-950/20 border-r px-3 py-2.5 flex items-center gap-1.5 text-orange-700 dark:text-orange-400">
+                {expanded.bru ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                (-) Previsto (Bruto)
+              </td>
+              {grid.map((w, i) => (
+                <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-orange-700 dark:text-orange-400">{fc(w.sBru)}</td>
+              ))}
+            </tr>
+            {expanded.bru && subRows('bruto')}
+
+            {/* SEPARADOR */}
+            <tr className="h-1.5 bg-muted/30"><td colSpan={25} /></tr>
+
+            {/* SALDO SEMANA */}
+            <tr className="border-y font-semibold bg-muted/10">
+              <td className="sticky left-0 z-10 bg-muted/20 border-r px-3 py-2.5 text-[10px] uppercase text-muted-foreground font-bold">Saldo na Semana</td>
+              {grid.map((w, i) => (
+                <td key={i} className={`border-r px-2 py-2.5 text-right tabular-nums ${w.delta < 0 ? 'text-red-600' : ''}`}>{formatCurrency(w.delta)}</td>
+              ))}
+            </tr>
+
+            {/* SALDO ACUMULADO */}
+            <tr className="border-b-2 border-primary/30 font-bold text-sm bg-primary/5">
+              <td className="sticky left-0 z-10 bg-primary/10 border-r px-3 py-3 text-primary uppercase text-[11px]">💰 Saldo Projetado</td>
+              {grid.map((w, i) => (
+                <td key={i} className={`border-r px-2 py-3 text-right tabular-nums ${w.acum < 0 ? 'text-red-600 bg-red-50/50 dark:bg-red-950/20' : ''}`}>{formatCurrency(w.acum)}</td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

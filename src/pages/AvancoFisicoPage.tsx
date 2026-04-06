@@ -4,8 +4,12 @@ import { useAvancos, useCreateAvanco } from '@/hooks/useOperacional'
 import { useEtapas } from '@/hooks/useEtapas'
 import { formatDate } from '@/lib/utils'
 import { HardHat, Plus, X, Check, Search, TrendingUp } from 'lucide-react'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 export default function AvancoFisicoPage() {
+  const { restartTour } = useTour('avanco', pageTours.avanco)
+
   const { data: avancos = [], isLoading } = useAvancos()
   const { data: etapas = [] } = useEtapas()
   const createAvanco = useCreateAvanco()
@@ -38,7 +42,7 @@ export default function AvancoFisicoPage() {
 
   return (
     <div>
-      <PageHeader title="Avanço Físico" description="Registro de progresso por etapa" icon={HardHat} />
+      <PageHeader title="Avanço Físico" description="Registro de progresso por etapa" icon={HardHat} onHelp={restartTour} />
 
       {/* Etapa progress cards */}
       {etapaSummary.length > 0 && (

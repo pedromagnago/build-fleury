@@ -13,7 +13,7 @@ import { toast } from 'sonner'
 import {
   buildBaseSnapshot, applyAdjustments, computeCashFlow, computeMetrics,
   diffParcelas, countChanges,
-  type SimSnapshot, type Adjustment, type CashFlowPoint, type SimMetrics, type ParcelaImpacto,
+  type Adjustment,
 } from '@/lib/simuladorEngine'
 
 // ═══════════════════════════════════════════════════════════════

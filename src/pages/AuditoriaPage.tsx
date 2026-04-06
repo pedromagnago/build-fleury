@@ -7,6 +7,8 @@ import BulkActionBar from '@/components/BulkActionBar'
 import { useSelection } from '@/hooks/useSelection'
 import { toast } from 'sonner'
 import { Shield, Search, Database, User, Info, Download, Filter } from 'lucide-react'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 const ACAO_CONFIG: Record<string, { label: string; color: string }> = {
   INSERT: { label: 'Criar', color: 'bg-emerald-500/10 text-emerald-600' },
@@ -21,6 +23,8 @@ const ACAO_CONFIG: Record<string, { label: string; color: string }> = {
 type QuickFilter = '' | 'INSERT' | 'UPDATE' | 'DELETE' | 'BULK'
 
 export default function AuditoriaPage() {
+  const { restartTour } = useTour('auditoria', pageTours.auditoria)
+
   const { data: logs = [], isLoading } = useAuditLogs()
   const [search, setSearch] = useState('')
   const [filterTabela, setFilterTabela] = useState('')
@@ -65,10 +69,10 @@ export default function AuditoriaPage() {
 
   return (
     <div>
-      <PageHeader title="Auditoria" description="Registro de alterações no sistema" icon={Shield} />
+      <PageHeader title="Auditoria" description="Registro de alterações no sistema" icon={Shield} onHelp={restartTour} />
 
       {/* Quick filters */}
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div id="tour-audit-indicators" className="mb-3 flex flex-wrap items-center gap-2">
         <QuickFilterBtn label="Todos" count={stats.total} active={filterAcao === ''} onClick={() => setFilterAcao('')} />
         <QuickFilterBtn label="Criar" count={stats.creates} active={filterAcao === 'INSERT'} onClick={() => setFilterAcao('INSERT')} color="emerald" />
         <QuickFilterBtn label="Editar" count={stats.updates} active={filterAcao === 'UPDATE'} onClick={() => setFilterAcao('UPDATE')} color="blue" />

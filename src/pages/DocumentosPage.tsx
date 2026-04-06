@@ -13,6 +13,8 @@ import {
   FileText, Upload, Download, Trash2, Eye, Search,
   FileSpreadsheet, Image, File, Plus, X, CheckCircle2, RotateCw,
 } from 'lucide-react'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 interface Documento {
   id: string
@@ -129,6 +131,8 @@ function formatBytes(bytes: number | null): string {
 }
 
 export default function DocumentosPage() {
+  const { restartTour } = useTour('documentos', pageTours.documentos)
+
   const { currentCompany } = useProject()
   const qc = useQueryClient()
   const { data: documentos = [], isLoading } = useDocumentos()
@@ -244,10 +248,10 @@ export default function DocumentosPage() {
 
   return (
     <div {...getRootProps()}>
-      <PageHeader title="Documentos" description="Gestão de documentos do projeto" icon={FileText} />
+      <PageHeader title="Documentos" description="Gestão de documentos do projeto" icon={FileText} onHelp={restartTour} />
 
       {/* Search & Filters */}
-      <div className="mb-4 flex gap-3">
+      <div id="tour-docs-upload" className="mb-4 flex gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar documentos..." className="w-full rounded-lg border bg-background py-2 pl-9 pr-3 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" />

@@ -15,6 +15,8 @@ export interface Etapa {
   data_fim_real: string | null
   casas_total: number
   valor_total_orcado: number
+  faturamento_valor_total?: number | null
+  faturamento_preco_unitario?: number | null
   status: 'futuro' | 'em_andamento' | 'concluido' | 'atrasado'
   depende_de: string | null
   observacoes: string | null
@@ -100,8 +102,17 @@ export function useDeleteEtapa() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      const { data: row } = await supabase.from('etapas').select('company_id, nome').eq('id', id).single()
       const { error } = await supabase.from('etapas').delete().eq('id', id)
       if (error) throw error
+      if (row) {
+        const { data: { user } } = await supabase.auth.getUser()
+        await supabase.from('audit_logs').insert({
+          user_id: user?.id, company_id: row.company_id,
+          acao: 'DELETE', tabela: 'etapas', registro_id: id,
+          dados: { nome: row.nome },
+        })
+      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['etapas'] })

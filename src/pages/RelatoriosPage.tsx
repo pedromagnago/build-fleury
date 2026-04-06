@@ -7,10 +7,14 @@ import { useEtapas } from '@/hooks/useEtapas'
 import { useItensCompra } from '@/hooks/useCompras'
 import { formatCurrency, formatPercent, formatDate } from '@/lib/utils'
 import { FileBarChart, Download, Printer } from 'lucide-react'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 type ReportType = 'orcamento' | 'financeiro' | 'medicoes' | 'cronograma'
 
 export default function RelatoriosPage() {
+  const { restartTour } = useTour('relatorios', pageTours.relatorios)
+
   const [activeReport, setActiveReport] = useState<ReportType>('orcamento')
   const { data: kpis } = useDashboardKPIs()
   const { data: parcelas = [] } = useParcelas()
@@ -66,10 +70,10 @@ export default function RelatoriosPage() {
 
   return (
     <div>
-      <PageHeader title="Relatórios" description="Exportação e visualização de dados" icon={FileBarChart} />
+      <PageHeader title="Relatórios" description="Exportação e visualização de dados" icon={FileBarChart} onHelp={restartTour} />
 
       <div className="mb-4 flex items-center justify-between">
-        <div className="flex gap-1 rounded-lg border bg-card p-1">
+        <div id="tour-rel-types" className="flex gap-1 rounded-lg border bg-card p-1">
           {reports.map((r) => (
             <button key={r.key} onClick={() => setActiveReport(r.key)}
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${activeReport === r.key ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
@@ -77,7 +81,7 @@ export default function RelatoriosPage() {
             </button>
           ))}
         </div>
-        <div className="flex gap-2">
+        <div id="tour-rel-export" className="flex gap-2">
           <button onClick={handleExportCSV} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-accent">
             <Download className="h-4 w-4" /> CSV
           </button>

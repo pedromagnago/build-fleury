@@ -21,6 +21,8 @@ import {
   CheckCircle2, CreditCard, Search, CalendarClock,
   Calendar, Users, Upload, Paperclip, ChevronDown, ChevronRight, Trash2
 } from 'lucide-react'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -42,6 +44,8 @@ type Tab = 'parcelas' | 'agenda' | 'por_fornecedor' | 'contas'
 // Main
 // ---------------------------------------------------------------------------
 export default function PagamentosPage() {
+  const { restartTour } = useTour('pagamentos', pageTours.pagamentos)
+
   const [tab, setTab] = useState<Tab>('parcelas')
   const [search, setSearch] = useState('')
 
@@ -54,9 +58,9 @@ export default function PagamentosPage() {
 
   return (
     <div>
-      <PageHeader title="Pagamentos" description="Parcelas, agenda e contas bancárias" icon={Wallet} />
+      <PageHeader title="Pagamentos" description="Parcelas, agenda e contas bancárias" icon={Wallet} onHelp={restartTour} />
 
-      <div className="mb-5 flex gap-1 overflow-x-auto rounded-lg border bg-card p-1">
+      <div id="tour-pag-filters" className="mb-5 flex gap-1 overflow-x-auto rounded-lg border bg-card p-1">
         {TABS.map((t) => (
           <button
             key={t.key}

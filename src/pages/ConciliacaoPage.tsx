@@ -4,8 +4,12 @@ import { useMovimentacoes, useCreateMovimentacao, useUpdateMovimentacao } from '
 import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { ArrowLeftRight, Plus, X, Check, Search, CheckCircle2, CircleDot } from 'lucide-react'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 export default function ConciliacaoPage() {
+  const { restartTour } = useTour('conciliacao', pageTours.conciliacao)
+
   const { data: movs = [], isLoading } = useMovimentacoes()
   const { data: contas = [] } = useContasBancarias()
   const createMov = useCreateMovimentacao()
@@ -54,7 +58,7 @@ export default function ConciliacaoPage() {
 
   return (
     <div>
-      <PageHeader title="Conciliação" description="Movimentações bancárias" icon={ArrowLeftRight} />
+      <PageHeader title="Conciliação" description="Movimentações bancárias" icon={ArrowLeftRight} onHelp={restartTour} />
 
       <div className="mb-6 grid grid-cols-4 gap-4">
         <div className="rounded-xl border bg-card p-4">

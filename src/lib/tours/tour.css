@@ -1,0 +1,100 @@
+/* Driver.js Theme Overrides for Build Fleury */
+.driver-popover.bf-tour-popover {
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 16px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  padding: 20px;
+  max-width: 340px;
+}
+
+.driver-popover.bf-tour-popover .driver-popover-title {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: hsl(var(--foreground));
+  margin-bottom: 6px;
+}
+
+.driver-popover.bf-tour-popover .driver-popover-description {
+  font-size: 13px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.driver-popover.bf-tour-popover .driver-popover-progress-text {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.driver-popover.bf-tour-popover .driver-popover-navigation-btns {
+  gap: 6px;
+}
+
+.driver-popover.bf-tour-popover .driver-popover-prev-btn {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: 'Inter', system-ui, sans-serif;
+  text-shadow: none;
+}
+
+.driver-popover.bf-tour-popover .driver-popover-next-btn,
+.driver-popover.bf-tour-popover .driver-popover-done-btn {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border: none;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Inter', system-ui, sans-serif;
+  text-shadow: none;
+}
+
+.driver-popover.bf-tour-popover .driver-popover-next-btn:hover,
+.driver-popover.bf-tour-popover .driver-popover-done-btn:hover {
+  opacity: 0.9;
+}
+
+.driver-popover.bf-tour-popover .driver-popover-close-btn {
+  color: hsl(var(--muted-foreground));
+}
+
+.driver-popover.bf-tour-popover .driver-popover-arrow-side-bottom .driver-popover-arrow,
+.driver-popover.bf-tour-popover .driver-popover-arrow-side-top .driver-popover-arrow,
+.driver-popover.bf-tour-popover .driver-popover-arrow-side-left .driver-popover-arrow,
+.driver-popover.bf-tour-popover .driver-popover-arrow-side-right .driver-popover-arrow {
+  border-color: hsl(var(--border));
+}
+
+/* Product Tour transition banner */
+.tour-transition-banner {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100000;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--primary) / 0.3);
+  border-radius: 16px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  animation: slide-up 0.3s ease-out;
+  max-width: 480px;
+}
+
+@keyframes slide-up {
+  from { transform: translateX(-50%) translateY(20px); opacity: 0; }
+  to { transform: translateX(-50%) translateY(0); opacity: 1; }
+}

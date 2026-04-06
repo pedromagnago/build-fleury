@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Menu, Bell } from 'lucide-react'
+import { TourFAB } from '@/components/TourDrawer'
+import { ProductTourBanner } from '@/components/ProductTourBanner'
 
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -33,6 +35,10 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Tour System */}
+      <TourFAB />
+      <ProductTourBanner />
     </div>
   )
 }

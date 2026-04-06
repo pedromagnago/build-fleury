@@ -4,15 +4,15 @@ import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/ui/PageHeader'
 import {
   useItensCompra, useFornecedores, useCreateItemCompra, useUpdateItemCompra, useDeleteItemCompra,
-  useCreateFornecedor, usePedidos, useCreatePedido, useUpdatePedido, useDeletePedido,
+  useCreateFornecedor, usePedidos, useCreatePedidoLote, useUpdatePedido, useDeletePedido,
   type ItemCompra, type Pedido, type Fornecedor,
 } from '@/hooks/useCompras'
-import { useParcelas, type Parcela } from '@/hooks/useFinanceiro'
+import { useParcelas } from '@/hooks/useFinanceiro'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useProject } from '@/contexts/ProjectContext'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
-import { gerarParcelas, parsearCondicao, localDate } from '@/lib/parcelas'
+import { gerarParcelas, localDate } from '@/lib/parcelas'
 import { toast } from 'sonner'
 import GerarPedidosWizard from '@/components/GerarPedidosWizard'
 import BulkActionBar from '@/components/BulkActionBar'
@@ -28,6 +28,8 @@ import {
   ShoppingCart, Plus, X, Check, Pencil, Package, Truck, Users,
   Search, BarChart3, ChevronDown, ChevronRight, CalendarClock, Trash2, Boxes,
 } from 'lucide-react'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,6 +58,8 @@ function toBRLInput(v: number | string): string {
 type Tab = 'itens' | 'pedidos' | 'fornecedores' | 'curva_abc' | 'por_fornecedor'
 
 export default function Compras() {
+  const { restartTour } = useTour('compras', pageTours.compras)
+
   const [searchParams] = useSearchParams()
   const initialEtapa = searchParams.get('etapa')
   const [tab, setTab] = useState<Tab>('itens')
@@ -73,7 +77,7 @@ export default function Compras() {
   return (
     <div>
       <div className="flex items-start justify-between">
-        <PageHeader title="Compras" description="Itens, pedidos, fornecedores e análises" icon={ShoppingCart} />
+        <PageHeader title="Compras" description="Itens, pedidos, fornecedores e análises" icon={ShoppingCart} onHelp={restartTour} />
         <button
           onClick={() => setShowWizard(true)}
           className="mt-1 flex shrink-0 items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 transition-colors"
@@ -85,7 +89,7 @@ export default function Compras() {
       {showWizard && <GerarPedidosWizard onClose={() => setShowWizard(false)} />}
 
       {/* Tabs */}
-      <div className="mb-5 flex gap-1 overflow-x-auto rounded-lg border bg-card p-1">
+      <div id="tour-compras-tabs" className="mb-5 flex gap-1 overflow-x-auto rounded-lg border bg-card p-1">
         {TABS.map((t) => (
           <button
             key={t.key}
@@ -105,7 +109,7 @@ export default function Compras() {
       {/* Search (not for charts) */}
       {(tab === 'itens' || tab === 'pedidos' || tab === 'fornecedores') && (
         <div className="mb-4 flex gap-3">
-          <div className="relative flex-1">
+          <div id="tour-compras-filters" className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="text"
@@ -135,6 +139,8 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
   const { data: itens = [], isLoading } = useItensCompra()
   const { data: etapas = [] } = useEtapas()
   const { data: fornecedores = [] } = useFornecedores()
+  const { data: parcelas = [] } = useParcelas()
+  const { data: pedidos = [] } = usePedidos()
   const createItem = useCreateItemCompra()
   const updateItem = useUpdateItemCompra()
   const deleteItem = useDeleteItemCompra()
@@ -227,16 +233,21 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
   })
 
   const totals = filtered.reduce(
-    (acc, i) => ({ orcado: acc.orcado + i.valor_total_orcado, consumido: acc.consumido + i.valor_consumido }),
-    { orcado: 0, consumido: 0 }
+    (acc, i) => {
+      const itemConsumido = pedidos.filter(p => p.item_compra_id === i.id).reduce((s, p) => s + (p.valor_total_real || 0), 0)
+      const pago = parcelas.filter(p => p.item_compra_id === i.id).reduce((s, p) => s + (p.valor_pago || 0), 0)
+      return { orcado: acc.orcado + i.valor_total_orcado, consumido: acc.consumido + itemConsumido, pago: acc.pago + pago }
+    },
+    { orcado: 0, consumido: 0, pago: 0 }
   )
 
   return (
     <>
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
         <MiniCard label="Itens" value={String(filtered.length)} />
         <MiniCard label="Orçado" value={formatCurrency(totals.orcado)} />
         <MiniCard label="Consumido" value={formatCurrency(totals.consumido)} accent="amber" />
+        <MiniCard label="Pago" value={formatCurrency(totals.pago)} accent="blue" />
         <MiniCard label="Saldo" value={formatCurrency(totals.orcado - totals.consumido)} accent={totals.orcado - totals.consumido >= 0 ? 'emerald' : 'red'} />
       </div>
 
@@ -294,12 +305,17 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fornecedor</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orçado</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Consumido</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pago</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Saldo</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {filtered.map((item) => (
+              {filtered.map((item) => {
+                const itemConsumido = pedidos.filter(p => p.item_compra_id === item.id).reduce((s, p) => s + (p.valor_total_real || 0), 0)
+                const itemPago = parcelas.filter(p => p.item_compra_id === item.id).reduce((s, p) => s + (p.valor_pago || 0), 0)
+                const saldoReal = item.valor_total_orcado - itemConsumido
+                return (
                 <tr key={item.id} className="group hover:bg-muted/20">
                   <td className="px-2 py-2.5 text-center">
                     <input type="checkbox" checked={selection.isSelected(item.id)}
@@ -329,8 +345,9 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                     )}
                   </td>
                   <td className="px-3 py-2.5 text-right text-xs">{formatCurrency(item.valor_total_orcado)}</td>
-                  <td className="px-3 py-2.5 text-right text-xs text-amber-500">{formatCurrency(item.valor_consumido)}</td>
-                  <td className={`px-3 py-2.5 text-right text-xs font-medium ${item.valor_saldo >= 0 ? '' : 'text-red-500'}`}>{formatCurrency(item.valor_saldo)}</td>
+                  <td className="px-3 py-2.5 text-right text-xs text-amber-500">{formatCurrency(itemConsumido)}</td>
+                  <td className="px-3 py-2.5 text-right text-xs text-blue-500 font-medium">{formatCurrency(itemPago)}</td>
+                  <td className={`px-3 py-2.5 text-right text-xs font-medium ${saldoReal >= 0 ? '' : 'text-red-500'}`}>{formatCurrency(saldoReal)}</td>
                   <td className="px-3 py-2.5 text-center">
                     <div className="flex items-center justify-center gap-0.5">
                       <button onClick={() => startEdit(item)} className="rounded-md p-1 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent" title="Editar"><Pencil className="h-3.5 w-3.5" /></button>
@@ -338,7 +355,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                     </div>
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
@@ -361,7 +378,7 @@ function PedidosTab({ search }: { search: string }) {
   const { data: pedidos = [], isLoading } = usePedidos()
   const { data: itens = [] } = useItensCompra()
   const { data: fornecedores = [] } = useFornecedores()
-  const createPedido = useCreatePedido()
+  // createPedido not used directly — bulk creation handled by createPedidoLote
   const updatePedido = useUpdatePedido()
   const deletePedido = useDeletePedido()
   
@@ -371,57 +388,92 @@ function PedidosTab({ search }: { search: string }) {
   const [editingPedido, setEditingPedido] = useState<Pedido | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
-  const emptyForm = { item_compra_id: '', casas_lote: '', qtd_lote: '', valor_unitario_real: '', valor_total_real: '', fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as const }
-  const [form, setForm] = useState(emptyForm)
+  const emptyGlobal = { numero_pedido: '', fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'] }
+  const [globalForm, setGlobalForm] = useState(emptyGlobal)
 
-  // -- Auto-calculate valor_total
-  const selectedItem = itens.find((i) => i.id === (editingPedido?.item_compra_id ?? form.item_compra_id))
-  const casasLote = parseInt(form.casas_lote) || 0
-  const qtdPorCasa = selectedItem?.qtd_por_casa ?? 0
-  const precoUnit = parseBRL(form.valor_unitario_real)
-  const qtdLoteCalc = casasLote * qtdPorCasa
-  const valorTotalCalc = qtdLoteCalc * precoUnit
+  interface LoteItem {
+    id: string
+    item_compra_id: string
+    casas_lote: string
+    valor_unitario_real: string
+  }
+  const [loteItems, setLoteItems] = useState<LoteItem[]>([{ id: crypto.randomUUID(), item_compra_id: '', casas_lote: '', valor_unitario_real: '' }])
 
-  // -- Casas restantes calculation
-  const casasDoItem = useMemo(() => {
-    if (!selectedItem) return { total: 0, used: 0, remaining: 0 }
-    const total = currentCompany?.qtd_casas ?? 64
-    const used = pedidos
-      .filter((p) => p.item_compra_id === selectedItem.id && p.id !== editingPedido?.id)
-      .reduce((s, p) => s + (p.casas_lote ?? 0), 0)
-    return { total, used, remaining: total - used }
-  }, [selectedItem, pedidos, currentCompany, editingPedido])
+  const createPedidoLote = useCreatePedidoLote()
+
+  // -- Auto-calculate valor_total do lote
+  const calculatedItems = useMemo(() => {
+    return loteItems.map(li => {
+      const selectedItem = itens.find((i) => i.id === li.item_compra_id)
+      const casasLote = parseInt(li.casas_lote) || 0
+      const qtdPorCasa = selectedItem?.qtd_por_casa ?? 0
+      const precoUnit = parseBRL(li.valor_unitario_real)
+      const qtdLoteCalc = casasLote * qtdPorCasa
+      const valorTotalCalc = qtdLoteCalc * precoUnit
+
+      let used = 0
+      if (selectedItem) {
+        used = pedidos
+          .filter((p) => p.item_compra_id === selectedItem.id && p.id !== editingPedido?.id)
+          .reduce((s, p) => s + (p.casas_lote ?? 0), 0)
+      }
+      const remaining = selectedItem ? (currentCompany?.qtd_casas ?? 64) - used : 0
+
+      return {
+        ...li,
+        selectedItem,
+        qtdPorCasa,
+        casasLote,
+        precoUnit,
+        qtdLoteCalc,
+        valorTotalCalc,
+        used,
+        remaining
+      }
+    })
+  }, [loteItems, itens, pedidos, currentCompany, editingPedido])
+
+  const valorTotalLote = calculatedItems.reduce((acc, curr) => acc + curr.valorTotalCalc, 0)
 
   // -- Parcela preview
   const parcelaPreview = useMemo(() => {
-    if (valorTotalCalc <= 0 || !form.cond_pagamento || !form.data_entrega_prevista) return []
+    if (valorTotalLote <= 0 || !globalForm.cond_pagamento || !globalForm.data_entrega_prevista) return []
     return gerarParcelas({
       pedidoId: 'preview',
       companyId: 'preview',
-      valorTotal: valorTotalCalc,
-      condPagamento: form.cond_pagamento,
-      dataEntrega: localDate(form.data_entrega_prevista),
+      valorTotal: valorTotalLote,
+      condPagamento: globalForm.cond_pagamento,
+      dataEntrega: localDate(globalForm.data_entrega_prevista),
     })
-  }, [valorTotalCalc, form.cond_pagamento, form.data_entrega_prevista])
+  }, [valorTotalLote, globalForm.cond_pagamento, globalForm.data_entrega_prevista])
+
+  const addLoteItem = () => setLoteItems(prev => [...prev, { id: crypto.randomUUID(), item_compra_id: '', casas_lote: '', valor_unitario_real: '' }])
+  const removeLoteItem = (id: string) => setLoteItems(prev => prev.filter(i => i.id !== id))
+  const updateLoteItem = (id: string, field: keyof LoteItem, value: string) => {
+    setLoteItems(prev => prev.map(i => i.id === id ? { ...i, [field]: value } : i))
+  }
 
   const startEdit = (p: Pedido) => {
     setEditingPedido(p)
-    setForm({
-      item_compra_id: p.item_compra_id,
-      casas_lote: p.casas_lote?.toString() ?? '',
-      qtd_lote: p.qtd_lote?.toString() ?? '',
-      valor_unitario_real: p.valor_unitario_real ? toBRLInput(p.valor_unitario_real) : '',
-      valor_total_real: p.valor_total_real ? toBRLInput(p.valor_total_real) : '',
+    setGlobalForm({
+      numero_pedido: p.numero_pedido?.toString() ?? '',
       fornecedor_id: p.fornecedor_id ?? '',
       cond_pagamento: p.cond_pagamento ?? '',
       data_entrega_prevista: p.data_entrega_prevista ?? '',
       status: p.status,
     })
+    setLoteItems([{
+      id: crypto.randomUUID(),
+      item_compra_id: p.item_compra_id,
+      casas_lote: p.casas_lote?.toString() ?? '',
+      valor_unitario_real: p.valor_unitario_real ? toBRLInput(p.valor_unitario_real) : ''
+    }])
     setShowForm(true)
   }
 
   const resetForm = () => {
-    setForm(emptyForm)
+    setGlobalForm(emptyGlobal)
+    setLoteItems([{ id: crypto.randomUUID(), item_compra_id: '', casas_lote: '', valor_unitario_real: '' }])
     setEditingPedido(null)
     setShowForm(false)
   }
@@ -430,37 +482,35 @@ function PedidosTab({ search }: { search: string }) {
     e.preventDefault()
     if (!currentCompany) return
 
-    const payload = {
-      item_compra_id: form.item_compra_id,
-      casas_lote: casasLote || null,
-      qtd_lote: qtdLoteCalc || null,
-      valor_unitario_real: precoUnit || null,
-      valor_total_real: valorTotalCalc || null,
-      fornecedor_id: form.fornecedor_id || null,
-      cond_pagamento: form.cond_pagamento || null,
-      data_entrega_prevista: form.data_entrega_prevista || null,
-      status: form.status,
-    }
-
     if (editingPedido) {
-      // Update existing pedido
+      // Editar um item único
+      const li = calculatedItems[0]!
+      const payload = {
+        item_compra_id: li.item_compra_id,
+        numero_pedido: globalForm.numero_pedido ? Number(globalForm.numero_pedido) : null,
+        casas_lote: li.casasLote || null,
+        qtd_lote: li.qtdLoteCalc || null,
+        valor_unitario_real: li.precoUnit || null,
+        valor_total_real: li.valorTotalCalc || null,
+        fornecedor_id: globalForm.fornecedor_id || null,
+        cond_pagamento: globalForm.cond_pagamento || null,
+        data_entrega_prevista: globalForm.data_entrega_prevista || null,
+        status: globalForm.status,
+      }
       await updatePedido.mutateAsync({ id: editingPedido.id, ...payload })
 
-      // If conditions changed, regenerate parcelas
-      const condChanged = editingPedido.cond_pagamento !== form.cond_pagamento
-      const dateChanged = editingPedido.data_entrega_prevista !== form.data_entrega_prevista
-      const valorChanged = (editingPedido.valor_total_real ?? 0) !== valorTotalCalc
+      const condChanged = editingPedido.cond_pagamento !== globalForm.cond_pagamento
+      const dateChanged = editingPedido.data_entrega_prevista !== globalForm.data_entrega_prevista
+      const valorChanged = (editingPedido.valor_total_real ?? 0) !== li.valorTotalCalc
 
-      if ((condChanged || dateChanged || valorChanged) && valorTotalCalc > 0 && form.cond_pagamento && form.data_entrega_prevista) {
-        // Delete unpaid parcelas
+      if ((condChanged || dateChanged || valorChanged) && li.valorTotalCalc > 0 && globalForm.cond_pagamento && globalForm.data_entrega_prevista) {
         await supabase.from('parcelas').delete().eq('pedido_id', editingPedido.id).neq('status', 'paga')
-        // Regenerate
         const parcelas = gerarParcelas({
           pedidoId: editingPedido.id,
           companyId: currentCompany.id,
-          valorTotal: valorTotalCalc,
-          condPagamento: form.cond_pagamento,
-          dataEntrega: localDate(form.data_entrega_prevista),
+          valorTotal: li.valorTotalCalc,
+          condPagamento: globalForm.cond_pagamento,
+          dataEntrega: localDate(globalForm.data_entrega_prevista),
         })
         if (parcelas.length > 0) {
           await supabase.from('parcelas').insert(parcelas)
@@ -469,23 +519,48 @@ function PedidosTab({ search }: { search: string }) {
         qc.invalidateQueries({ queryKey: ['parcelas'] })
       }
     } else {
-      // Create new pedido
-      const pedido = await createPedido.mutateAsync(payload)
+      // Lote insert
+      const validItems = calculatedItems.filter(li => li.item_compra_id && li.valorTotalCalc > 0)
+      if (validItems.length === 0) {
+        toast.error('Nenhum item válido com valor maior que zero inserido.')
+        return
+      }
 
-      if (valorTotalCalc > 0 && form.cond_pagamento && form.data_entrega_prevista && pedido) {
-        const parcelas = gerarParcelas({
-          pedidoId: pedido.id,
-          companyId: currentCompany.id,
-          valorTotal: valorTotalCalc,
-          condPagamento: form.cond_pagamento,
-          dataEntrega: localDate(form.data_entrega_prevista),
-        })
-        if (parcelas.length > 0) {
-          const { error } = await supabase.from('parcelas').insert(parcelas)
+      // 1. Inserir todos os itens de pedido
+      const payloads = validItems.map(li => ({
+        item_compra_id: li.item_compra_id,
+        numero_pedido: globalForm.numero_pedido ? Number(globalForm.numero_pedido) : null,
+        casas_lote: li.casasLote || null,
+        qtd_lote: li.qtdLoteCalc || null,
+        valor_unitario_real: li.precoUnit || null,
+        valor_total_real: li.valorTotalCalc || null,
+        fornecedor_id: globalForm.fornecedor_id || null,
+        cond_pagamento: globalForm.cond_pagamento || null,
+        data_entrega_prevista: globalForm.data_entrega_prevista || null,
+        status: globalForm.status,
+      }))
+
+      const createdPedidos = await createPedidoLote.mutateAsync(payloads)
+
+      // 2. Gerar parcelas proporcionais
+      if (globalForm.cond_pagamento && globalForm.data_entrega_prevista && createdPedidos && createdPedidos.length > 0) {
+        let allParcelas: ReturnType<typeof gerarParcelas> = []
+        for (const p of createdPedidos) {
+          const parcelas = gerarParcelas({
+            pedidoId: p.id,
+            companyId: currentCompany.id,
+            valorTotal: p.valor_total_real || 0,
+            condPagamento: p.cond_pagamento!,
+            dataEntrega: localDate(p.data_entrega_prevista!),
+          })
+          allParcelas = allParcelas.concat(parcelas)
+        }
+        if (allParcelas.length > 0) {
+          const { error } = await supabase.from('parcelas').insert(allParcelas)
           if (error) {
-            toast.error('Pedido criado mas erro ao gerar parcelas: ' + error.message)
+            toast.error('Pedidos criados mas erro ao gerar parcelas: ' + error.message)
           } else {
-            toast.success(`Pedido criado com ${parcelas.length} parcela(s) gerada(s)`)
+            toast.success(`Lote de pedidos criado com ${allParcelas.length} parcela(s) gerada(s)`)
             qc.invalidateQueries({ queryKey: ['parcelas'] })
           }
         }
@@ -507,11 +582,23 @@ function PedidosTab({ search }: { search: string }) {
     pago: 'bg-green-500/10 text-green-600',
   }
 
-  const filtered = pedidos.filter((p) =>
-    (p.item_descricao ?? '').toLowerCase().includes(search.toLowerCase()) ||
-    (p.item_codigo ?? '').toLowerCase().includes(search.toLowerCase()) ||
-    (p.fornecedor_nome ?? '').toLowerCase().includes(search.toLowerCase())
-  )
+  const filtered = pedidos.filter((p) => {
+    const s = search.toLowerCase()
+    return (
+      (p.item_descricao ?? '').toLowerCase().includes(s) ||
+      (p.item_codigo ?? '').toLowerCase().includes(s) ||
+      (p.fornecedor_nome ?? '').toLowerCase().includes(s) ||
+      (p.numero_pedido?.toString() ?? '').includes(s)
+    )
+  })
+
+  // Ordenar usando numero_pedido (decrescente) como primeiro criterio, seguido por created_at
+  filtered.sort((a, b) => {
+    const numA = a.numero_pedido ?? 0
+    const numB = b.numero_pedido ?? 0
+    if (numA !== numB) return numB - numA
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  })
 
   const totals = filtered.reduce((acc, p) => ({ valor: acc.valor + (p.valor_total_real ?? 0), casas: acc.casas + (p.casas_lote ?? 0) }), { valor: 0, casas: 0 })
 
@@ -539,76 +626,106 @@ function PedidosTab({ search }: { search: string }) {
             <button onClick={resetForm} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
           </div>
           <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="grid gap-3 md:grid-cols-3">
-              <div>
-                <label className={LABEL}>Item de Compra *</label>
-                <select value={form.item_compra_id} onChange={(e) => setForm((p) => ({ ...p, item_compra_id: e.target.value }))} required disabled={!!editingPedido} className={`${INPUT} ${editingPedido ? 'opacity-50' : ''}`}>
-                  <option value="">Selecione</option>
-                  {itens.map((i) => <option key={i.id} value={i.id}>{i.codigo} - {i.descricao}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className={LABEL}>Fornecedor</label>
-                <select value={form.fornecedor_id} onChange={(e) => setForm((p) => ({ ...p, fornecedor_id: e.target.value }))} className={INPUT}>
-                  <option value="">Selecione</option>
-                  {fornecedores.map((f) => <option key={f.id} value={f.id}>{f.nome}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className={LABEL}>Data Entrega Prevista</label>
-                <input type="date" value={form.data_entrega_prevista} onChange={(e) => setForm((p) => ({ ...p, data_entrega_prevista: e.target.value }))} className={INPUT} />
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-4">
-              <div>
-                <label className={LABEL}>Casas do Lote</label>
-                <input type="number" value={form.casas_lote} onChange={(e) => setForm((p) => ({ ...p, casas_lote: e.target.value }))} className={INPUT} />
-                {selectedItem && (
-                  <p className={`mt-0.5 text-[10px] ${casasDoItem.remaining <= 0 ? 'text-red-500' : 'text-muted-foreground'}`}>
-                    {casasDoItem.remaining <= 0
-                      ? '⚠ Todas as casas já têm pedido'
-                      : `${casasDoItem.remaining} casas restantes (${casasDoItem.used}/${casasDoItem.total} cobertas)`}
-                  </p>
-                )}
-              </div>
-              <div>
-                <label className={LABEL}>Qtd/Casa (auto)</label>
-                <input type="text" readOnly value={qtdPorCasa || '—'} className={`${INPUT} bg-muted/30`} />
-              </div>
-              <div>
-                <label className={LABEL}>Preço Unit. Negociado (R$)</label>
-                <input type="text" value={form.valor_unitario_real} onChange={(e) => setForm((p) => ({ ...p, valor_unitario_real: e.target.value }))} placeholder="0,00" className={INPUT} />
-              </div>
-              <div>
-                <label className={LABEL}>Cond. Pagamento</label>
-                <input type="text" value={form.cond_pagamento} onChange={(e) => setForm((p) => ({ ...p, cond_pagamento: e.target.value }))} placeholder="30/60" className={INPUT} />
+            <div className="mb-4 rounded-lg border border-primary/10 bg-muted/20 p-4">
+              <div className="grid gap-4 md:grid-cols-4">
+                <div>
+                  <label className={LABEL}>Num. Pedido</label>
+                  <input type="text" value={globalForm.numero_pedido} onChange={(e) => setGlobalForm((p) => ({ ...p, numero_pedido: e.target.value }))} placeholder="Ex: 1" className={INPUT} />
+                </div>
+                <div>
+                  <label className={LABEL}>Fornecedor</label>
+                  <select value={globalForm.fornecedor_id} onChange={(e) => setGlobalForm((p) => ({ ...p, fornecedor_id: e.target.value }))} className={INPUT}>
+                    <option value="">Selecione</option>
+                    {fornecedores.map((f) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className={LABEL}>Data Entrega Prevista</label>
+                  <input type="date" value={globalForm.data_entrega_prevista} onChange={(e) => setGlobalForm((p) => ({ ...p, data_entrega_prevista: e.target.value }))} className={INPUT} />
+                </div>
+                <div>
+                  <label className={LABEL}>Cond. Pagamento</label>
+                  <input type="text" value={globalForm.cond_pagamento} onChange={(e) => setGlobalForm((p) => ({ ...p, cond_pagamento: e.target.value }))} placeholder="30/60" className={INPUT} />
+                </div>
               </div>
             </div>
 
-            {/* Auto-calc summary */}
-            {valorTotalCalc > 0 && (
-              <div className="rounded-lg bg-muted/30 p-3">
-                <div className="flex items-center gap-4 text-xs">
-                  <span className="text-muted-foreground">{casasLote} casas × {qtdPorCasa} un/casa = <strong>{qtdLoteCalc} un</strong></span>
-                  <span className="text-muted-foreground">× {formatCurrency(precoUnit)} = <strong className="text-foreground">{formatCurrency(valorTotalCalc)}</strong></span>
+            <div className="mb-3 flex items-center justify-between pl-1">
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Itens do Pedido</h4>
+              {!editingPedido && (
+                <button type="button" onClick={addLoteItem} className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10">
+                  <Plus className="h-3 w-3" /> Adicionar Linha
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-3 pb-3">
+              {calculatedItems.map((li, idx) => (
+                <div key={li.id} className="relative rounded-lg border border-border/60 bg-background p-4 shadow-sm transition-colors hover:border-primary/30">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Item {idx + 1}</span>
+                    {!editingPedido && calculatedItems.length > 1 && (
+                      <button type="button" onClick={() => removeLoteItem(li.id)} className="flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-12 md:gap-4">
+                    <div className="sm:col-span-4">
+                      <label className={LABEL}>Item de Compra *</label>
+                      <select value={li.item_compra_id} onChange={(e) => updateLoteItem(li.id, 'item_compra_id', e.target.value)} required disabled={!!editingPedido} className={`${INPUT} ${editingPedido ? 'opacity-50' : ''}`}>
+                        <option value="">Selecione</option>
+                        {itens.map((i) => <option key={i.id} value={i.id}>{i.codigo} - {i.descricao}</option>)}
+                      </select>
+                    </div>
+                    <div className="sm:col-span-2">
+                       <label className={LABEL}>Casas do Lote</label>
+                       <input type="number" value={li.casas_lote} onChange={(e) => updateLoteItem(li.id, 'casas_lote', e.target.value)} className={INPUT} />
+                       {li.selectedItem && (
+                         <p className={`mt-1 text-[10px] leading-tight ${li.remaining <= 0 ? 'font-semibold text-red-500' : 'text-muted-foreground'}`}>
+                           {li.remaining <= 0 ? '⚠ Lote cheio' : `${li.remaining} restantes\n(${li.used}/${li.selectedItem.qtd_por_casa})`}
+                         </p>
+                       )}
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className={LABEL}>Qtd (auto)</label>
+                      <input type="text" readOnly value={li.qtdPorCasa ? `${li.casasLote}x${li.qtdPorCasa}` : '—'} className={`${INPUT} bg-muted/40 text-muted-foreground`} />
+                    </div>
+                    <div className="sm:col-span-2">
+                       <label className={LABEL}>Valor Un. (R$)</label>
+                       <input type="text" value={li.valor_unitario_real} onChange={(e) => updateLoteItem(li.id, 'valor_unitario_real', e.target.value)} placeholder="0,00" className={INPUT} />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className={LABEL}>Total Item</label>
+                      <input type="text" readOnly value={li.valorTotalCalc > 0 ? formatCurrency(li.valorTotalCalc) : '—'} className={`${INPUT} bg-primary/5 text-right font-semibold text-primary`} />
+                    </div>
+                  </div>
                 </div>
+              ))}
+            </div>
+
+            {/* Auto-calc summary TOTAL */}
+            {valorTotalLote > 0 && (
+              <div className="mt-2 flex items-center justify-between rounded-lg bg-emerald-500/10 p-4 border border-emerald-500/20">
+                <span className="text-sm font-semibold tracking-wide text-emerald-800 dark:text-emerald-400">TOTAL DO PEDIDO</span>
+                <strong className="text-xl text-emerald-700 dark:text-emerald-400">{formatCurrency(valorTotalLote)}</strong>
               </div>
             )}
 
             {/* Parcela preview */}
             {parcelaPreview.length > 0 && (
-              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
-                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-primary">
-                  Preview das parcelas ({parcelaPreview.length}x)
+              <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-4">
+                <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-primary">
+                  Preview de Parcelas Geradas ({parcelaPreview.length}x)
                 </p>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 text-xs">
                   {parcelaPreview.map((p, i) => (
-                    <div key={i} className="rounded-md border bg-card px-2.5 py-1.5 text-[11px]">
-                      <span className="font-semibold text-primary">P{p.numero_parcela}</span>
-                      <span className="mx-1 text-muted-foreground">—</span>
-                      <span className="font-medium">{formatCurrency(p.valor)}</span>
-                      <span className="mx-1 text-muted-foreground">em</span>
-                      <span>{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</span>
+                    <div key={i} className="flex items-center rounded-md border bg-card px-3 py-1.5 shadow-sm">
+                      <span className="font-bold text-primary">P{p.numero_parcela}</span>
+                      <span className="mx-2 text-muted-foreground opacity-50">|</span>
+                      <span className="font-semibold">{formatCurrency(p.valor)}</span>
+                      <span className="mx-2 text-muted-foreground">em</span>
+                      <span className="font-medium text-foreground">{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</span>
                     </div>
                   ))}
                 </div>
@@ -616,10 +733,10 @@ function PedidosTab({ search }: { search: string }) {
             )}
 
             {editingPedido && (
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="mt-2 grid gap-3 md:grid-cols-3">
                 <div>
-                  <label className={LABEL}>Status</label>
-                  <select value={form.status} onChange={(e) => setForm((p) => ({ ...p, status: e.target.value as Pedido['status'] }))} className={INPUT}>
+                  <label className={LABEL}>Status do Pedido</label>
+                  <select value={globalForm.status} onChange={(e) => setGlobalForm((p) => ({ ...p, status: e.target.value as Pedido['status'] }))} className={INPUT}>
                     <option value="planejado">Planejado</option>
                     <option value="pedido_enviado">Enviado</option>
                     <option value="entregue">Entregue</option>
@@ -629,10 +746,10 @@ function PedidosTab({ search }: { search: string }) {
               </div>
             )}
 
-            <div className="flex justify-end gap-2 pt-1">
-              <button type="button" onClick={resetForm} className="rounded-lg border px-4 py-2 text-sm hover:bg-accent">Cancelar</button>
-              <button type="submit" disabled={createPedido.isPending || updatePedido.isPending} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
-                <Check className="h-4 w-4" />{editingPedido ? 'Salvar Alterações' : 'Criar Pedido + Parcelas'}
+            <div className="mt-4 flex justify-end gap-3 border-t pt-4">
+              <button type="button" onClick={resetForm} className="rounded-lg border px-5 py-2.5 text-sm font-medium hover:bg-accent/50">Cancelar</button>
+              <button type="submit" disabled={createPedidoLote.isPending || updatePedido.isPending} className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-50">
+                <Check className="h-4 w-4" />{editingPedido ? 'Salvar Alteração' : 'Finalizar Pedido + Parcelas'}
               </button>
             </div>
           </form>
@@ -668,6 +785,7 @@ function PedidosTab({ search }: { search: string }) {
                     onChange={() => selection.toggleAll(filtered.map(p => p.id))}
                     className="h-3.5 w-3.5 rounded accent-primary" />
                 </th>
+                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-20">Num</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fornecedor</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Casas</th>
@@ -688,6 +806,15 @@ function PedidosTab({ search }: { search: string }) {
                       className="h-3.5 w-3.5 rounded accent-primary" />
                   </td>
                   <td className="px-3 py-2.5">
+                    {p.numero_pedido != null ? (
+                      <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-1 text-xs font-bold text-primary">
+                        #{p.numero_pedido}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5">
                     <div className="text-xs font-medium">{p.item_descricao ?? '—'}</div>
                     <div className="font-mono text-[10px] text-muted-foreground">{p.item_codigo ?? ''}</div>
                   </td>
@@ -699,7 +826,7 @@ function PedidosTab({ search }: { search: string }) {
                   <td className="px-3 py-2.5 text-center text-xs">{p.data_entrega_prevista ? localDate(p.data_entrega_prevista).toLocaleDateString('pt-BR') : '—'}</td>
                   <td className="px-3 py-2.5 text-center">
                     <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold ${statusColors[p.status] ?? ''}`}>
-                      {p.status === 'pedido_enviado' ? 'Enviado' : p.status === 'planejado' ? 'Plan.' : p.status.charAt(0).toUpperCase() + p.status.slice(1)}
+                      {p.status === 'confirmado' ? 'Confirmado' : p.status === 'planejado' ? 'Plan.' : p.status.charAt(0).toUpperCase() + p.status.slice(1)}
                     </span>
                   </td>
                   <td className="px-3 py-2.5 text-center">

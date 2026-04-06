@@ -20,6 +20,7 @@ export interface Parcela {
   created_at: string
   // Joined
   pedido_item?: string
+  item_compra_id?: string | null
 }
 
 export interface ContaBancaria {
@@ -45,7 +46,7 @@ export function useParcelas() {
       if (!companyId) return []
       const { data, error } = await supabase
         .from('parcelas')
-        .select('*, pedidos(itens_compra(descricao))')
+        .select('*, pedidos(item_compra_id, itens_compra(descricao))')
         .eq('company_id', companyId)
         .is('deleted_at', null)
         .order('data_vencimento', { ascending: true })
@@ -54,7 +55,11 @@ export function useParcelas() {
       return (data ?? []).map((p: Record<string, unknown>) => {
         const pedido = p.pedidos as Record<string, unknown> | null
         const item = pedido?.itens_compra as Record<string, string> | null
-        return { ...p, pedido_item: item?.descricao ?? null }
+        return { 
+          ...p, 
+          pedido_item: item?.descricao ?? null,
+          item_compra_id: (pedido?.item_compra_id as string) ?? null
+        }
       }) as Parcela[]
     },
     enabled: !!companyId,
@@ -111,8 +116,17 @@ export function useDeleteParcela() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      const { data: row } = await supabase.from('parcelas').select('company_id, valor, numero_parcela').eq('id', id).single()
       const { error } = await supabase.from('parcelas').delete().eq('id', id)
       if (error) throw error
+      if (row) {
+        const { data: { user } } = await supabase.auth.getUser()
+        await supabase.from('audit_logs').insert({
+          user_id: user?.id, company_id: row.company_id,
+          acao: 'DELETE', tabela: 'parcelas', registro_id: id,
+          dados: { valor: row.valor, numero_parcela: row.numero_parcela },
+        })
+      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['parcelas'] })

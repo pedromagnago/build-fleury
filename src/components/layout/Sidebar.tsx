@@ -8,6 +8,7 @@ import {
   CalendarRange,
   ShoppingCart,
   CreditCard,
+  Landmark,
   FileText,
   Shield,
   TrendingUp,
@@ -22,20 +23,40 @@ import {
   HardHat,
 } from 'lucide-react'
 
-const menuItems = [
-  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/cronograma', icon: CalendarRange, label: 'Cronograma' },
-  { to: '/compras', icon: ShoppingCart, label: 'Compras' },
-  { to: '/pagamentos', icon: CreditCard, label: 'Pagamentos' },
-  { to: '/documentos', icon: FileText, label: 'Documentos' },
-  { to: '/auditoria', icon: Shield, label: 'Auditoria' },
-  { to: '/avanco', icon: TrendingUp, label: 'Avanço Físico' },
-  { to: '/medicoes', icon: Ruler, label: 'Medições' },
-  { to: '/conciliacao', icon: ArrowLeftRight, label: 'Conciliação' },
-  { to: '/simulador', icon: FlaskConical, label: 'Simulador' },
-  { to: '/relatorios', icon: BarChart3, label: 'Relatórios' },
-  { to: '/importacao', icon: Upload, label: 'Importação' },
-  { to: '/configuracoes', icon: Settings, label: 'Configurações' },
+const sections = [
+  {
+    label: 'Visão Geral',
+    items: [
+      { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+    ],
+  },
+  {
+    label: 'Planejamento',
+    items: [
+      { to: '/cronograma', icon: CalendarRange, label: 'Cronograma' },
+      { to: '/compras', icon: ShoppingCart, label: 'Compras' },
+      { to: '/avanco', icon: TrendingUp, label: 'Avanço Físico' },
+      { to: '/medicoes', icon: Ruler, label: 'Medições' },
+    ],
+  },
+  {
+    label: 'Financeiro',
+    items: [
+      { to: '/pagamentos', icon: CreditCard, label: 'Pagamentos' },
+      { to: '/mutuos', icon: Landmark, label: 'Capital de Giro' },
+      { to: '/conciliacao', icon: ArrowLeftRight, label: 'Conciliação' },
+      { to: '/simulador', icon: FlaskConical, label: 'Simulador' },
+    ],
+  },
+  {
+    label: 'Gestão',
+    items: [
+      { to: '/documentos', icon: FileText, label: 'Documentos' },
+      { to: '/auditoria', icon: Shield, label: 'Auditoria' },
+      { to: '/relatorios', icon: BarChart3, label: 'Relatórios' },
+      { to: '/importacao', icon: Upload, label: 'Importação' },
+    ],
+  },
 ]
 
 interface SidebarProps {
@@ -94,27 +115,53 @@ export function Sidebar({ open, onClose }: SidebarProps) {
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto p-3">
-          <ul className="space-y-0.5">
-            {menuItems.map((item) => (
-              <li key={item.to}>
-                <NavLink
-                  to={item.to}
-                  onClick={onClose}
-                  className={({ isActive }) =>
-                    cn(
-                      'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                      isActive
-                        ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                        : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
-                    )
-                  }
-                >
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  {item.label}
-                </NavLink>
-              </li>
-            ))}
-          </ul>
+          {sections.map((section) => (
+            <div key={section.label} className="mb-3">
+              <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/40">
+                {section.label}
+              </p>
+              <ul className="space-y-0.5">
+                {section.items.map((item) => (
+                  <li key={item.to}>
+                    <NavLink
+                      to={item.to}
+                      onClick={onClose}
+                      className={({ isActive }) =>
+                        cn(
+                          'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                          isActive
+                            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                            : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+                        )
+                      }
+                    >
+                      <item.icon className="h-4 w-4 shrink-0" />
+                      {item.label}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+
+          {/* Settings — always at the bottom of nav */}
+          <div className="mt-1 border-t border-sidebar-border/50 pt-2">
+            <NavLink
+              to="/configuracoes"
+              onClick={onClose}
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                    : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+                )
+              }
+            >
+              <Settings className="h-4 w-4 shrink-0" />
+              Configurações
+            </NavLink>
+          </div>
         </nav>
 
         {/* User info */}

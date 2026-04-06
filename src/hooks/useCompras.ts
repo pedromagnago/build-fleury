@@ -125,8 +125,17 @@ export function useDeleteFornecedor() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (id: string) => {
+      const { data: row } = await supabase.from('fornecedores').select('company_id, nome').eq('id', id).single()
       const { error } = await supabase.from('fornecedores').delete().eq('id', id)
       if (error) throw error
+      if (row) {
+        const { data: { user } } = await supabase.auth.getUser()
+        await supabase.from('audit_logs').insert({
+          user_id: user?.id, company_id: row.company_id,
+          acao: 'DELETE', tabela: 'fornecedores', registro_id: id,
+          dados: { nome: row.nome },
+        })
+      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['fornecedores'] })
@@ -281,6 +290,29 @@ export function useCreatePedido() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['pedidos'] })
       toast.success('Pedido criado')
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
+export function useCreatePedidoLote() {
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
+
+  return useMutation({
+    mutationFn: async (pedidos: Partial<Pedido>[]) => {
+      if (!currentCompany) throw new Error('No company')
+      const payloads = pedidos.map((p) => ({ ...p, company_id: currentCompany.id }))
+      const { data, error } = await supabase
+        .from('pedidos')
+        .insert(payloads)
+        .select()
+      if (error) throw error
+      return data as Pedido[]
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['pedidos'] })
+      toast.success(`${data.length} pedidos criados no lote`)
     },
     onError: (err: Error) => toast.error(err.message),
   })

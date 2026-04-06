@@ -285,3 +285,93 @@ export function useAuditLogs() {
     enabled: !!currentCompany,
   })
 }
+
+
+export interface Distribuicao {
+  id: string
+  company_id: string
+  etapa_id: string
+  medicao_numero: number
+  casas_planejadas: number
+  data_inicio: string | null
+  data_fim: string | null
+  casas_realizadas: number
+  valor_liberado_faturamento?: number | null
+}
+
+export function useDistribuicao() {
+  const { currentCompany } = useProject()
+  const cid = currentCompany?.id
+  return useQuery({
+    queryKey: ['cronograma_distribuicao', cid],
+    queryFn: async () => {
+      if (!cid) return []
+      const { data, error } = await supabase
+        .from('cronograma_distribuicao')
+        .select('*')
+        .eq('company_id', cid)
+        .order('medicao_numero')
+      if (error) throw error
+      return (data ?? []) as Distribuicao[]
+    },
+    enabled: !!cid,
+  })
+}
+
+export function useCreateDistribuicao() {
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
+  return useMutation({
+    mutationFn: async (d: Partial<Distribuicao>) => {
+      if (!currentCompany) throw new Error('No company')
+      const { data, error } = await supabase
+        .from('cronograma_distribuicao')
+        .insert({ ...d, company_id: currentCompany.id })
+        .select()
+        .single()
+      if (error) throw error
+      return data as Distribuicao
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] }); toast.success('Distribuição criada') },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
+export function useUpdateDistribuicao() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, ...updates }: Partial<Distribuicao> & { id: string }) => {
+      const { data, error } = await supabase
+        .from('cronograma_distribuicao')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single()
+      if (error) throw error
+      return data as Distribuicao
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] }); toast.success('Distribuição atualizada') },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
+export function useDeleteDistribuicao() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { data: row } = await supabase.from('cronograma_distribuicao').select('company_id, etapa_id').eq('id', id).single()
+      const { error } = await supabase.from('cronograma_distribuicao').delete().eq('id', id)
+      if (error) throw error
+      if (row) {
+        const { data: { user } } = await supabase.auth.getUser()
+        await supabase.from('audit_logs').insert({
+          user_id: user?.id, company_id: row.company_id,
+          acao: 'DELETE', tabela: 'cronograma_distribuicao', registro_id: id,
+          dados: { etapa_id: row.etapa_id },
+        })
+      }
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] }); toast.success('Distribuição removida') },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}

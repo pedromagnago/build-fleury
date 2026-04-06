@@ -13,6 +13,8 @@ import {
   ArrowRight, ShoppingCart, Calendar, BarChart3, Plus, Trash2,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 // ═══════════════════════════════════════════════════════════════
 // Shared types & helpers
@@ -144,6 +146,8 @@ function formatError(err: unknown): string {
 type Tab = 'dados' | 'pedidos' | 'medicoes' | 'distribuicao' | 'logs'
 
 export default function ImportacaoPage() {
+  const { restartTour } = useTour('importacao', pageTours.importacao)
+
   const [tab, setTab] = useState<Tab>('dados')
 
   const tabs: { key: Tab; label: string; icon: typeof Upload }[] = [
@@ -156,10 +160,10 @@ export default function ImportacaoPage() {
 
   return (
     <div>
-      <PageHeader title="Importação" description="Importe dados via CSV ou Excel" icon={Upload} />
+      <PageHeader title="Importação" description="Importe dados via CSV ou Excel" icon={Upload} onHelp={restartTour} />
 
       {/* Tabs */}
-      <div className="mb-5 flex gap-1 border-b">
+      <div id="tour-import-tabs" className="mb-5 flex gap-1 border-b">
         {tabs.map((t) => (
           <button
             key={t.key}

@@ -3,25 +3,28 @@ import { useQuery } from '@tanstack/react-query'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useProject } from '@/contexts/ProjectContext'
 import { useDashboardKPIs } from '@/hooks/useFinanceiro'
-import { useParcelas, useContasBancarias } from '@/hooks/useFinanceiro'
-import { useEtapas, type Etapa } from '@/hooks/useEtapas'
+import { useParcelas } from '@/hooks/useFinanceiro'
+import { useEtapas } from '@/hooks/useEtapas'
 import { useItensCompra, usePedidos } from '@/hooks/useCompras'
-import { useMedicoes, useAvancos } from '@/hooks/useOperacional'
+import { useMedicoes, useAvancos, useDistribuicao } from '@/hooks/useOperacional'
+import { useMutuos } from '@/hooks/useMutuos'
 import { supabase } from '@/lib/supabase'
-import { localDate } from '@/lib/parcelas'
+import { localDate, parsearCondicao } from '@/lib/parcelas'
 import { formatCurrency, formatPercent } from '@/lib/utils'
 import {
-  LayoutDashboard, DollarSign, TrendingUp, TrendingDown,
+  LayoutDashboard, TrendingUp, TrendingDown,
   Target, PiggyBank, AlertTriangle, Calendar,
   BarChart3, FileText, ArrowDown, Clock, CheckCircle2,
   ShieldCheck, Layers,
 } from 'lucide-react'
 import {
-  AreaChart, Area, LineChart, Line, BarChart, Bar, Cell,
+  AreaChart, Area, LineChart, Line, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   ReferenceLine, PieChart, Pie,
 } from 'recharts'
 import OnboardingPanel from '@/components/OnboardingPanel'
+import { useTour } from '@/lib/tours/useTour'
+import { pageTours } from '@/lib/tours/page-tours'
 
 // ═══════════════════════════════════════════════════════════════
 // Main Dashboard
@@ -29,6 +32,7 @@ import OnboardingPanel from '@/components/OnboardingPanel'
 export default function Dashboard() {
   const { currentCompany } = useProject()
   const { data: kpis, isLoading } = useDashboardKPIs()
+  const { restartTour } = useTour('dashboard', pageTours.dashboard)
 
   if (isLoading) {
     return (
@@ -54,16 +58,20 @@ export default function Dashboard() {
 
   return (
     <div>
-      <PageHeader title="Dashboard" description={projectName} icon={LayoutDashboard} />
+      <PageHeader title="Dashboard" description={projectName} icon={LayoutDashboard} onHelp={restartTour} />
 
       {/* Onboarding Panel */}
-      <OnboardingPanel />
+      <div id="tour-onboarding-panel">
+        <OnboardingPanel />
+      </div>
 
       {/* ROW 1: Regra de Ouro — 3-segment bar */}
-      <RegraDeOuro orcado={kpis.totalOrcado} consumido={kpis.totalConsumido} firme={kpis.planejadoFirme} bruto={kpis.planejadoBruto} />
+      <div id="tour-regra-ouro">
+        <RegraDeOuro orcado={kpis.totalOrcado} consumido={kpis.totalConsumido} firme={kpis.planejadoFirme} bruto={kpis.planejadoBruto} />
+      </div>
 
       {/* ROW 2: 5 KPI Cards */}
-      <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div id="tour-kpi-cards" className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard label="Orçamento Total" value={formatCurrency(kpis.totalOrcado)} icon={Target} accent="blue" />
         <KpiCard label="Total Consumido" value={formatCurrency(kpis.totalConsumido)} icon={PiggyBank} accent="amber" sub={formatPercent(kpis.percentualConsumido)} />
         <KpiCard label="Saldo Disponível" value={formatCurrency(kpis.saldoOrcamento)} icon={kpis.saldoOrcamento >= 0 ? TrendingUp : TrendingDown} accent={kpis.saldoOrcamento >= 0 ? 'emerald' : 'red'} />
@@ -72,7 +80,7 @@ export default function Dashboard() {
       </div>
 
       {/* ROW 3: Fluxo de Caixa (2/3) + Maturidade Donut (1/3) */}
-      <div className="mb-5 grid gap-3 lg:grid-cols-3">
+      <div id="tour-fluxo-caixa" className="mb-5 grid gap-3 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <FluxoCaixaWidget />
         </div>
@@ -186,6 +194,8 @@ function FluxoCaixaWidget() {
   const { data: itens = [] } = useItensCompra()
   const { data: pedidos = [] } = usePedidos()
   const { data: etapas = [] } = useEtapas()
+  const { data: mutuos = [] } = useMutuos()
+  const { data: distribuicoes = [] } = useDistribuicao()
   const [viewMode, setViewMode] = useState<'consolidado' | 'maturidade'>('maturidade')
 
   const chartData = useMemo(() => {
@@ -206,16 +216,48 @@ function FluxoCaixaWidget() {
       pedidosPorItem.set(p.item_compra_id, (pedidosPorItem.get(p.item_compra_id) ?? 0) + (p.valor_total_real ?? 0))
     }
 
-    // Build bruto events on etapa dates
+    // Build bruto events on etapa dates pulverizados
     const brutoByDate = new Map<string, number>()
     for (const item of itens) {
       const comPedido = Math.min(pedidosPorItem.get(item.id) ?? 0, item.valor_total_orcado)
       const semPedido = Math.max(0, item.valor_total_orcado - comPedido - item.valor_consumido)
       if (semPedido <= 0) continue
       const etapa = etapas.find((e) => e.id === item.etapa_id)
-      const dateKey = etapa?.data_inicio_plan ?? ''
-      if (!dateKey) continue
-      brutoByDate.set(dateKey, (brutoByDate.get(dateKey) ?? 0) + semPedido)
+      const dataOriginal = etapa?.data_inicio_plan ?? ''
+      if (!dataOriginal) continue
+      
+      const condicaoRaw = item.cond_pagamento || ''
+      const diasCondicao = parsearCondicao(condicaoRaw)
+      const particulas = diasCondicao.length
+      
+      const distsEtapa = distribuicoes.filter(d => d.etapa_id === item.etapa_id)
+      const casasTotal = etapa?.casas_total || 1
+
+      if (distsEtapa.length > 0) {
+        distsEtapa.forEach(dist => {
+          const ratio = dist.casas_planejadas / casasTotal
+          const valorDist = semPedido * ratio
+          const baseDistDate = dist.data_inicio || dataOriginal
+          
+          if (valorDist > 0) {
+            const valorPorParticula = valorDist / particulas
+            diasCondicao.forEach((diasParaAdicionar) => {
+              const baseDate = localDate(baseDistDate)
+              baseDate.setDate(baseDate.getDate() + diasParaAdicionar)
+              const dateKey = baseDate.toISOString().split('T')[0]!
+              brutoByDate.set(dateKey, (brutoByDate.get(dateKey) ?? 0) + valorPorParticula)
+            })
+          }
+        })
+      } else {
+        const valorPorParticula = semPedido / particulas
+        diasCondicao.forEach((diasParaAdicionar) => {
+          const baseDate = localDate(dataOriginal)
+          baseDate.setDate(baseDate.getDate() + diasParaAdicionar)
+          const dateKey = baseDate.toISOString().split('T')[0]!
+          brutoByDate.set(dateKey, (brutoByDate.get(dateKey) ?? 0) + valorPorParticula)
+        })
+      }
     }
 
     for (let i = 0; i < 120; i++) {
@@ -226,10 +268,17 @@ function FluxoCaixaWidget() {
       const entradas = medicoes
         .filter((m) => m.data_prevista === iso && m.status !== 'liberada')
         .reduce((s, m) => s + m.valor_planejado, 0)
+        + mutuos
+        .filter((m) => m.data_captacao === iso && m.status !== 'quitado')
+        .reduce((s, m) => s + Number(m.valor_captado), 0)
 
       const firme = parcelas
         .filter((p) => p.data_vencimento === iso && p.status !== 'paga')
         .reduce((s, p) => s + (p.valor - p.valor_pago), 0)
+        + mutuos
+        .flatMap(m => m.parcelas ?? [])
+        .filter((p) => p.data_vencimento === iso && p.status !== 'paga')
+        .reduce((s, p) => s + (Number(p.valor) - Number(p.valor_pago || 0)), 0)
 
       const bruto = brutoByDate.get(iso) ?? 0
 
@@ -239,7 +288,7 @@ function FluxoCaixaWidget() {
 
     const step = Math.max(1, Math.floor(days.length / 30))
     return days.filter((_, i) => i % step === 0 || i === days.length - 1)
-  }, [currentCompany, parcelas, medicoes, itens, pedidos, etapas])
+  }, [currentCompany, parcelas, medicoes, itens, pedidos, etapas, mutuos])
 
   return (
     <WidgetCard title="Fluxo de Caixa Projetado (120 dias)" icon={TrendingUp}>
@@ -263,10 +312,11 @@ function FluxoCaixaWidget() {
             <YAxis tick={{ fontSize: 9 }} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} stroke="hsl(var(--muted-foreground))" />
             <Tooltip
               contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 11 }}
-              formatter={(value: unknown, name: string) => {
+              formatter={(value: unknown, name: unknown) => {
                 const v = Number(value) || 0
+                const n = String(name ?? '')
                 const labels: Record<string, string> = { saldo: 'Saldo', firme: 'Saídas Firmes', bruto: 'Saídas Projetadas', entradas: 'Entradas' }
-                return [formatCurrency(v), labels[name] ?? name]
+                return [formatCurrency(v), labels[n] ?? n]
               }}
               labelFormatter={(v: unknown) => { try { return localDate(String(v)).toLocaleDateString('pt-BR') } catch { return String(v) } }}
             />
@@ -372,8 +422,8 @@ function MaturidadeWidget({ consumido, firme, bruto, cobertura }: { consumido: n
 // ═══════════════════════════════════════════════════════════════
 function EvmWidget() {
   const { data: etapas = [] } = useEtapas()
-  const { data: parcelas = [] } = useParcelas()
   const { data: avancos = [] } = useAvancos()
+  const { data: parcelas = [] } = useParcelas()
 
   const evm = useMemo(() => {
     const today = new Date().toISOString().split('T')[0]!
@@ -500,7 +550,7 @@ function CurvaSWidget() {
             <YAxis tick={{ fontSize: 9 }} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} stroke="hsl(var(--muted-foreground))" />
             <Tooltip
               contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 11 }}
-              formatter={(v: number, name: string) => [formatCurrency(v), name === 'pv' ? 'PV (Planejado)' : name === 'ev' ? 'EV (Agregado)' : 'AC (Real)']}
+              formatter={(v: unknown, name: unknown) => [formatCurrency(Number(v) || 0), String(name) === 'pv' ? 'PV (Planejado)' : String(name) === 'ev' ? 'EV (Agregado)' : 'AC (Real)']}
             />
             <Line type="monotone" dataKey="pv" stroke="#94a3b8" strokeDasharray="6 3" strokeWidth={2} dot={false} />
             <Line type="monotone" dataKey="ev" stroke="#3b82f6" strokeWidth={2} dot={false} />
