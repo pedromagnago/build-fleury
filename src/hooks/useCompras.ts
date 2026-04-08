@@ -126,6 +126,11 @@ export function useDeleteFornecedor() {
   return useMutation({
     mutationFn: async (id: string) => {
       const { data: row } = await supabase.from('fornecedores').select('company_id, nome').eq('id', id).single()
+      
+      // Nullify references in itens_compra and pedidos to prevent FK constraint issues
+      await supabase.from('itens_compra').update({ fornecedor_id: null }).eq('fornecedor_id', id)
+      await supabase.from('pedidos').update({ fornecedor_id: null }).eq('fornecedor_id', id)
+      
       const { error } = await supabase.from('fornecedores').delete().eq('id', id)
       if (error) throw error
       if (row) {

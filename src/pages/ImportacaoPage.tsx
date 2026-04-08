@@ -352,7 +352,7 @@ function DadosBaseTab() {
 // ═══════════════════════════════════════════════════════════════
 // Tab: Pedidos (NEW)
 // ═══════════════════════════════════════════════════════════════
-const PEDIDOS_HEADERS = ['item_codigo', 'numero_pedido', 'casas_lote', 'valor_unitario_real', 'fornecedor_nome', 'cond_pagamento', 'data_entrega_prevista']
+const PEDIDOS_HEADERS = ['item_codigo', 'numero_pedido', 'casas_lote', 'fornecedor_nome', 'cond_pagamento', 'data_entrega_prevista']
 
 function PedidosTab() {
   const { currentCompany } = useProject()
@@ -363,20 +363,23 @@ function PedidosTab() {
   const [result, setResult] = useState<{ success: number; parcelas: number; errors: string[] } | null>(null)
 
   // Enrich preview rows with parcelas calculation + validation
-  type EnrichedPedido = Record<string, any> & { itemExists: boolean; valorTotal: number; parcelasPrevistas: number; itemNome: string }
+  type EnrichedPedido = Record<string, any> & { itemExists: boolean; valorTotal: number; parcelasPrevistas: number; itemNome: string; unitarioAplicado: number }
   const enrichedRows = useMemo((): EnrichedPedido[] => {
     if (!preview) return []
     return preview.rows.map((row): EnrichedPedido => {
       const itemCodigo = row['item_codigo'] ?? ''
       const item = itens.find((i) => i.codigo === itemCodigo)
       const casas = parseInt(row['casas_lote'] ?? '0') || 0
-      const unitario = parseFloat((row['valor_unitario_real'] ?? '0').replace(',', '.')) || 0
+      
+      const sheetUnitario = row['valor_unitario_real'] ? parseFloat(String(row['valor_unitario_real']).replace(',', '.')) : 0
+      const unitario = sheetUnitario > 0 ? sheetUnitario : (item?.custo_unitario_orcado ?? 0)
+      
       const qtdPorCasa = item?.qtd_por_casa ?? 1
       const valorTotal = casas * qtdPorCasa * unitario
       const cond = row['cond_pagamento'] ?? ''
       const dias = parsearCondicao(cond)
       const itemExists = !!item
-      return { ...row, itemExists, valorTotal, parcelasPrevistas: dias.length, itemNome: item?.descricao ?? '?' }
+      return { ...row, itemExists, valorTotal, parcelasPrevistas: dias.length, itemNome: item?.descricao ?? '?', unitarioAplicado: unitario }
     })
   }, [preview, itens])
 
@@ -401,17 +404,19 @@ function PedidosTab() {
           if (forn) fornecedorId = forn.id
           else {
             // Auto-create fornecedor
-            const { data: newForn } = await supabase.from('fornecedores').insert({ company_id: currentCompany.id, nome: row['fornecedor_nome'] }).select('id').single()
+            const newFornData: any = { company_id: currentCompany.id, nome: row['fornecedor_nome'] }
+            if (row['cond_pagamento']) newFornData.cond_pagamento_padrao = row['cond_pagamento']
+            const { data: newForn } = await supabase.from('fornecedores').insert(newFornData).select('id').single()
             fornecedorId = newForn?.id ?? null
           }
         }
 
         // Create pedido
         const casas = parseInt(row['casas_lote'] ?? '0') || 0
-        const unitario = parseFloat((row['valor_unitario_real'] ?? '0').replace(',', '.')) || 0
+        const unitario = row.unitarioAplicado
         const qtdPorCasa = item.qtd_por_casa ?? 1
         const qtdLote = casas * qtdPorCasa
-        const valorTotal = qtdLote * unitario
+        const valorTotal = row.valorTotal
 
         const { data: pedido, error: pedErr } = await supabase.from('pedidos').insert({
           company_id: currentCompany.id,
@@ -469,8 +474,8 @@ function PedidosTab() {
     <>
       <div className="mb-4 rounded-xl border bg-card p-4">
         <h3 className="mb-1 text-sm font-semibold">Template de Pedidos</h3>
-        <p className="mb-3 text-[10px] text-muted-foreground">Colunas: {PEDIDOS_HEADERS.join(' | ')}</p>
-        <button onClick={() => downloadTemplate('pedidos', PEDIDOS_HEADERS, ['EX-01', '1', '16', '150.00', 'Fornecedor ABC', '30/60', '2026-05-01'])}
+        <p className="mb-3 text-[10px] text-muted-foreground">Colunas: {PEDIDOS_HEADERS.join(' | ')} <br/><span className="text-blue-500">Nota: O valor unitário será puxado automaticamente do item de compra base se a coluna "valor_unitario_real" não for informada.</span></p>
+        <button onClick={() => downloadTemplate('pedidos', PEDIDOS_HEADERS, ['EX-01', '1', '16', 'Fornecedor ABC', '30/60', '2026-05-01'])}
           className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs font-medium hover:bg-accent">
           <Download className="h-3.5 w-3.5 text-primary" />Baixar template
         </button>
@@ -511,7 +516,10 @@ function PedidosTab() {
                     <td className="px-3 py-2 font-medium">{row['item_codigo']}</td>
                     <td className="px-3 py-2">{row['numero_pedido'] ?? '—'}</td>
                     <td className="px-3 py-2 text-right">{row['casas_lote']}</td>
-                    <td className="px-3 py-2 text-right">{row['valor_unitario_real']}</td>
+                    <td className="px-3 py-2 text-right">
+                      {formatCurrency(row.unitarioAplicado)}
+                      {row['valor_unitario_real'] ? <span className="block text-[9px] text-blue-500">Planilha</span> : <span className="block text-[9px] text-muted-foreground">Do Item</span>}
+                    </td>
                     <td className="px-3 py-2">{row['fornecedor_nome'] ?? '—'}</td>
                     <td className="px-3 py-2">{row['cond_pagamento'] ?? '—'}</td>
                     <td className="px-3 py-2">{row['data_entrega_prevista'] ?? '—'}</td>

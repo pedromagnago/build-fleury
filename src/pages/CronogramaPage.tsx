@@ -62,7 +62,7 @@ function startOfWeek(d: Date) { const c = new Date(d); c.setDate(c.getDate() - c
 function fmtShort(d: Date) { return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}` }
 
 // Medicao type local
-interface MedicaoLocal { id: string; numero: number; data_prevista: string | null; status: string }
+interface MedicaoLocal { id: string; numero: number; data_prevista: string | null; data_liberacao: string | null; status: string; valor_planejado: number }
 
 function useLocalMedicoes() {
   const { currentCompany } = useProject()
@@ -70,7 +70,7 @@ function useLocalMedicoes() {
     queryKey: ['medicoes', currentCompany?.id],
     queryFn: async () => {
       if (!currentCompany) return []
-      const { data, error } = await supabase.from('medicoes').select('id, numero, data_prevista, status').eq('company_id', currentCompany.id).order('numero')
+      const { data, error } = await supabase.from('medicoes').select('id, numero, data_prevista, data_liberacao, status, valor_planejado').eq('company_id', currentCompany.id).order('numero')
       if (error) throw error
       return (data ?? []) as MedicaoLocal[]
     },
@@ -205,6 +205,7 @@ export default function CronogramaPage() {
         dataInicioObras={currentCompany?.data_inicio_obras ?? null}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
+        medicoes={medicoes}
       />
 
       {/* Tab Navigation */}

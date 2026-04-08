@@ -197,118 +197,198 @@ function FluxoCaixaWidget() {
   const { data: mutuos = [] } = useMutuos()
   const { data: distribuicoes = [] } = useDistribuicao()
   const [viewMode, setViewMode] = useState<'consolidado' | 'maturidade'>('maturidade')
+  const [periodicity, setPeriodicity] = useState<'dia' | 'semana' | 'mes'>('semana')
 
   const chartData = useMemo(() => {
     if (!currentCompany) return []
     const saldoInicial = currentCompany.saldo_inicial_caixa ?? 0
 
     const today = new Date()
-    type DayRow = { date: string; saldo: number; firme: number; bruto: number; entradas: number }
-    const days: DayRow[] = []
-    let saldo = saldoInicial
+    today.setHours(0, 0, 0, 0)
+    const todayISO = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().split('T')[0]!
 
-    // Subtract already paid parcelas from initial balance
-    parcelas.filter((p) => p.status === 'paga').forEach((p) => { saldo -= p.valor_pago })
+    type Event = { date: string, type: 'entradas' | 'firme' | 'bruto', valor: number }
+    const events: Event[] = []
 
-    // Build pedido coverage map for Level 1
-    const pedidosPorItem = new Map<string, number>()
-    for (const p of pedidos) {
-      pedidosPorItem.set(p.item_compra_id, (pedidosPorItem.get(p.item_compra_id) ?? 0) + (p.valor_total_real ?? 0))
-    }
+    // 1. Entradas (Medições + Mútuos)
+    medicoes.filter((m) => m.status !== 'paga').forEach((m) => {
+      // Use data liberacao se houver, ou prevista. Se for passado, joga para hoje (vencido/atrasado)
+      let date = m.data_liberacao || m.data_prevista || todayISO
+      if (date < todayISO) date = todayISO
 
-    // Build bruto events on etapa dates pulverizados
-    const brutoByDate = new Map<string, number>()
-    for (const item of itens) {
-      const comPedido = Math.min(pedidosPorItem.get(item.id) ?? 0, item.valor_total_orcado)
-      const semPedido = Math.max(0, item.valor_total_orcado - comPedido - item.valor_consumido)
-      if (semPedido <= 0) continue
-      const etapa = etapas.find((e) => e.id === item.etapa_id)
-      const dataOriginal = etapa?.data_inicio_plan ?? ''
-      if (!dataOriginal) continue
-      
-      const condicaoRaw = item.cond_pagamento || ''
-      const diasCondicao = parsearCondicao(condicaoRaw)
-      const particulas = diasCondicao.length
-      
-      const distsEtapa = distribuicoes.filter(d => d.etapa_id === item.etapa_id)
-      const casasTotal = etapa?.casas_total || 1
-
-      if (distsEtapa.length > 0) {
-        distsEtapa.forEach(dist => {
-          const ratio = dist.casas_planejadas / casasTotal
-          const valorDist = semPedido * ratio
-          const baseDistDate = dist.data_inicio || dataOriginal
-          
-          if (valorDist > 0) {
-            const valorPorParticula = valorDist / particulas
-            diasCondicao.forEach((diasParaAdicionar) => {
-              const baseDate = localDate(baseDistDate)
-              baseDate.setDate(baseDate.getDate() + diasParaAdicionar)
-              const dateKey = baseDate.toISOString().split('T')[0]!
-              brutoByDate.set(dateKey, (brutoByDate.get(dateKey) ?? 0) + valorPorParticula)
-            })
-          }
+      const dists = distribuicoes.filter(dd => dd.medicao_numero === m.numero)
+      if (dists.length > 0) {
+        dists.forEach(dist => {
+          const valFat = Number(dist.valor_liberado_faturamento || 0)
+          if (valFat > 0) events.push({ date, type: 'entradas', valor: valFat })
         })
       } else {
-        const valorPorParticula = semPedido / particulas
-        diasCondicao.forEach((diasParaAdicionar) => {
-          const baseDate = localDate(dataOriginal)
-          baseDate.setDate(baseDate.getDate() + diasParaAdicionar)
-          const dateKey = baseDate.toISOString().split('T')[0]!
-          brutoByDate.set(dateKey, (brutoByDate.get(dateKey) ?? 0) + valorPorParticula)
+        if (m.valor_planejado > 0) events.push({ date, type: 'entradas', valor: m.valor_planejado })
+      }
+    })
+
+    mutuos.filter((m) => m.status !== 'quitado' && m.data_captacao).forEach((m) => {
+      let date = m.data_captacao || todayISO
+      if (date < todayISO) date = todayISO
+      events.push({ date, type: 'entradas', valor: Number(m.valor_captado) })
+    })
+
+    // 2. Firme (Parcelas confirmadas + de mutuo)
+    parcelas.filter((p) => p.status !== 'paga').forEach((p) => {
+      let date = p.data_vencimento || todayISO
+      if (date < todayISO) date = todayISO
+      const calcVal = Number(p.valor) - Number(p.valor_pago || 0)
+      if (calcVal > 0) events.push({ date, type: 'firme', valor: calcVal })
+    })
+    mutuos.forEach(m => {
+      ;(m.parcelas || []).filter((p: any) => p.status !== 'paga' && p.data_vencimento).forEach((p: any) => {
+        let date = p.data_vencimento || todayISO
+        if (date < todayISO) date = todayISO
+        const calcVal = Number(p.valor) - Number(p.valor_pago || 0)
+        if (calcVal > 0) events.push({ date, type: 'firme', valor: calcVal })
+      })
+    })
+
+    // 3. Bruto (Sem Pedido)
+    const pedMap = new Map<string, number>()
+    pedidos.forEach(p => pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + Number(p.valor_total_real || 0)))
+
+    itens.forEach(item => {
+      const comPed = Math.min(pedMap.get(item.id) || 0, Number(item.valor_total_orcado))
+      const semPed = Math.max(0, Number(item.valor_total_orcado) - comPed - Number(item.valor_consumido))
+      if (semPed <= 0) return
+      
+      const etapa = etapas.find(e => e.id === item.etapa_id)
+      const dataOrig = etapa?.data_inicio_plan || ''
+      if (!dataOrig) return
+      
+      const dias = parsearCondicao(item.cond_pagamento || '')
+      const nParts = dias.length
+      const dists = distribuicoes.filter(dd => dd.etapa_id === item.etapa_id)
+      const casasT = etapa?.casas_total || 1
+
+      const pushBruto = (baseDate: string, ratio: number) => {
+        const valDist = semPed * ratio
+        if (valDist <= 0) return
+        const perPart = valDist / nParts
+        dias.forEach((dd) => {
+          const dt = localDate(baseDate)
+          dt.setDate(dt.getDate() + dd)
+          let date = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().split('T')[0]!
+          if (date < todayISO) date = todayISO
+          events.push({ date, type: 'bruto', valor: perPart })
         })
+      }
+
+      if (dists.length > 0) {
+        dists.forEach(dist => pushBruto(dist.data_inicio || dataOrig, dist.casas_planejadas / casasT))
+      } else {
+        pushBruto(dataOrig, 1)
+      }
+    })
+
+    // Build buckets
+    type TimelineBucket = { dateTarget: string, dateLabel: string, entradas: number, firme: number, bruto: number, saldo: number }
+    const timeline: TimelineBucket[] = []
+
+    let acum = saldoInicial
+    parcelas.filter(p => p.status === 'paga').forEach(p => { acum -= Number(p.valor_pago) })
+
+    if (periodicity === 'dia') {
+      const step = 2 // Mostrando apenas a cada 2 dias para não amassar muito na view
+      for (let i = 0; i < 90; i += step) {
+        const d = new Date(today)
+        d.setDate(d.getDate() + i)
+        const iso = d.toISOString().split('T')[0]!
+        const dStr = iso.slice(8) + '/' + iso.slice(5, 7)
+        timeline.push({ dateTarget: iso, dateLabel: dStr, entradas: 0, firme: 0, bruto: 0, saldo: 0 })
+      }
+    } else if (periodicity === 'semana') {
+      const getMonday = (d: Date) => {
+        const d2 = new Date(d)
+        const day = d2.getDay()
+        const diff = d2.getDate() - day + (day === 0 ? -6 : 1)
+        d2.setDate(diff)
+        d2.setHours(0,0,0,0)
+        return d2
+      }
+      for (let i = 0; i < 24; i++) {
+        const d = getMonday(today)
+        d.setDate(d.getDate() + i * 7)
+        const iso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]!
+        timeline.push({ dateTarget: iso, dateLabel: `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`, entradas: 0, firme: 0, bruto: 0, saldo: 0 })
+      }
+    } else { // mes
+      for (let i = 0; i < 12; i++) {
+        const d = new Date(today.getFullYear(), today.getMonth() + i, 1)
+        const iso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]!.substring(0, 7)
+        timeline.push({ dateTarget: iso, dateLabel: d.toLocaleString('pt-BR', { month: 'short', year: '2-digit' }), entradas: 0, firme: 0, bruto: 0, saldo: 0 })
       }
     }
 
-    for (let i = 0; i < 120; i++) {
-      const d = new Date(today)
-      d.setDate(d.getDate() + i)
-      const iso = d.toISOString().split('T')[0]!
+    // Allocate events to buckets
+    events.forEach(e => {
+      let bucket
+      if (periodicity === 'dia') {
+        const idx = timeline.findIndex(t => t.dateTarget >= e.date)
+        bucket = idx !== -1 ? timeline[idx] : timeline[timeline.length - 1]
+      } else if (periodicity === 'semana') {
+        const idx = timeline.findIndex((t, i) => {
+          const next = timeline[i+1]?.dateTarget
+          return e.date >= t.dateTarget && (!next || e.date < next)
+        })
+        bucket = idx !== -1 ? timeline[idx] : timeline[timeline.length - 1]
+      } else {
+        const m = e.date.substring(0, 7)
+        bucket = timeline.find(t => t.dateTarget === m) || timeline[timeline.length - 1]
+      }
 
-      const entradas = medicoes
-        .filter((m) => m.data_prevista === iso && m.status !== 'liberada')
-        .reduce((s, m) => s + m.valor_planejado, 0)
-        + mutuos
-        .filter((m) => m.data_captacao === iso && m.status !== 'quitado')
-        .reduce((s, m) => s + Number(m.valor_captado), 0)
+      if (bucket) {
+        bucket[e.type] += e.valor
+      }
+    })
 
-      const firme = parcelas
-        .filter((p) => p.data_vencimento === iso && p.status !== 'paga')
-        .reduce((s, p) => s + (p.valor - p.valor_pago), 0)
-        + mutuos
-        .flatMap(m => m.parcelas ?? [])
-        .filter((p) => p.data_vencimento === iso && p.status !== 'paga')
-        .reduce((s, p) => s + (Number(p.valor) - Number(p.valor_pago || 0)), 0)
+    // Accumulate saldo
+    timeline.forEach(t => {
+      acum = acum + t.entradas - t.firme - t.bruto
+      t.saldo = acum
+    })
 
-      const bruto = brutoByDate.get(iso) ?? 0
-
-      saldo = saldo + entradas - firme - bruto
-      days.push({ date: iso, saldo, firme, bruto, entradas })
-    }
-
-    const step = Math.max(1, Math.floor(days.length / 30))
-    return days.filter((_, i) => i % step === 0 || i === days.length - 1)
-  }, [currentCompany, parcelas, medicoes, itens, pedidos, etapas, mutuos])
+    return timeline
+  }, [currentCompany, parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, periodicity])
 
   return (
-    <WidgetCard title="Fluxo de Caixa Projetado (120 dias)" icon={TrendingUp}>
-      {/* Toggle */}
-      <div className="mb-2 flex items-center gap-1 text-[9px]">
-        {(['consolidado', 'maturidade'] as const).map((m) => (
-          <button
-            key={m}
-            onClick={() => setViewMode(m)}
-            className={`rounded-md px-2.5 py-1 font-medium transition-colors ${viewMode === m ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
-          >
-            {m === 'consolidado' ? 'Consolidado' : 'Por Maturidade'}
-          </button>
-        ))}
+    <WidgetCard title="Fluxo de Caixa Projetado" icon={TrendingUp}>
+      {/* Toggles */}
+      <div className="mb-2 flex items-center justify-between text-[9px]">
+        <div className="flex bg-muted/50 p-0.5 rounded-md gap-0.5">
+          {(['dia', 'semana', 'mes'] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setPeriodicity(p)}
+              className={`rounded px-2.5 py-1 font-medium transition-colors ${periodicity === p ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:bg-muted/80'}`}
+            >
+              {p.charAt(0).toUpperCase() + p.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div className="flex bg-muted/50 p-0.5 rounded-md gap-0.5">
+          {(['consolidado', 'maturidade'] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setViewMode(m)}
+              className={`rounded px-2.5 py-1 font-medium transition-colors ${viewMode === m ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:bg-muted/80'}`}
+            >
+              {m === 'consolidado' ? 'Consolidado' : 'Por Maturidade'}
+            </button>
+          ))}
+        </div>
       </div>
       {chartData.length === 0 ? <EmptyChart /> : (
         <ResponsiveContainer width="100%" height={220}>
           <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />
-            <XAxis dataKey="date" tick={{ fontSize: 9 }} tickFormatter={(v: string) => `${v.slice(8)}/${v.slice(5, 7)}`} stroke="hsl(var(--muted-foreground))" />
+            <XAxis dataKey="dateLabel" tick={{ fontSize: 9 }} stroke="hsl(var(--muted-foreground))" />
             <YAxis tick={{ fontSize: 9 }} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} stroke="hsl(var(--muted-foreground))" />
             <Tooltip
               contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 11 }}
@@ -318,13 +398,14 @@ function FluxoCaixaWidget() {
                 const labels: Record<string, string> = { saldo: 'Saldo', firme: 'Saídas Firmes', bruto: 'Saídas Projetadas', entradas: 'Entradas' }
                 return [formatCurrency(v), labels[n] ?? n]
               }}
-              labelFormatter={(v: unknown) => { try { return localDate(String(v)).toLocaleDateString('pt-BR') } catch { return String(v) } }}
+              labelFormatter={(v: unknown, payload: any) => payload?.[0]?.payload?.dateLabel || String(v)}
             />
             <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="4 4" />
             {viewMode === 'consolidado' ? (
               <Area type="monotone" dataKey="saldo" stroke="#22c55e" fill="#22c55e" fillOpacity={0.15} strokeWidth={2} />
             ) : (
               <>
+                <Area type="monotone" dataKey="entradas" stroke="#22c55e" fill="#22c55e" fillOpacity={0} strokeWidth={1.5} strokeDasharray="2 2" stackId="opt" />
                 <Area type="monotone" dataKey="firme" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} strokeWidth={1.5} stackId="out" />
                 <Area type="monotone" dataKey="bruto" stroke="#94a3b8" fill="#94a3b8" fillOpacity={0.15} strokeWidth={1.5} strokeDasharray="4 2" stackId="out" />
                 <Area type="monotone" dataKey="saldo" stroke="#22c55e" fill="none" strokeWidth={2} />
@@ -335,8 +416,9 @@ function FluxoCaixaWidget() {
       )}
       {viewMode === 'maturidade' && (
         <div className="flex items-center justify-center gap-4 pt-1 text-[9px]">
-          <span className="flex items-center gap-1"><span className="inline-block h-2 w-4 rounded bg-blue-500/70" />Firme (parcelas)</span>
-          <span className="flex items-center gap-1"><span className="inline-block h-2 w-4 rounded bg-slate-400/50" style={{ borderTop: '2px dashed #94a3b8' }} />Projetado (bruto)</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-4 rounded bg-emerald-500/30" style={{ borderTop: '2px dashed #22c55e' }} />Entradas</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-4 rounded bg-blue-500/70" />Firme (S)</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-4 rounded bg-slate-400/50" style={{ borderTop: '2px dashed #94a3b8' }} />Proj (S)</span>
           <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 bg-emerald-500 rounded" />Saldo</span>
         </div>
       )}

@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import React, { useState, useMemo, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -592,13 +592,32 @@ function PedidosTab({ search }: { search: string }) {
     )
   })
 
-  // Ordenar usando numero_pedido (decrescente) como primeiro criterio, seguido por created_at
-  filtered.sort((a, b) => {
-    const numA = a.numero_pedido ?? 0
-    const numB = b.numero_pedido ?? 0
-    if (numA !== numB) return numB - numA
-    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-  })
+  const grouped = useMemo(() => {
+    const map = new Map<string, Pedido[]>()
+    filtered.forEach(p => {
+      const isNull = p.numero_pedido == null || p.numero_pedido === 0
+      const g = isNull ? `S/ Pedido (${p.id})` : `Pedido #${p.numero_pedido}`
+      if (!map.has(g)) map.set(g, [])
+      map.get(g)!.push(p)
+    })
+    
+    return Array.from(map.entries()).map(([name, items]) => {
+      return { 
+         name, 
+         items,
+         numero: items[0]?.numero_pedido ?? 0,
+         created_at: items[0]?.created_at ?? '',
+         fornecedor: items[0]?.fornecedor_nome,
+         cond_pagamento: items[0]?.cond_pagamento,
+         data_entrega: items[0]?.data_entrega_prevista,
+         status: items[0]?.status ?? 'planejado',
+         total: items.reduce((sum, i) => sum + (i.valor_total_real ?? 0), 0)
+      }
+    }).sort((a, b) => {
+      if (a.numero !== b.numero) return b.numero - a.numero
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    })
+  }, [filtered])
 
   const totals = filtered.reduce((acc, p) => ({ valor: acc.valor + (p.valor_total_real ?? 0), casas: acc.casas + (p.casas_lote ?? 0) }), { valor: 0, casas: 0 })
 
@@ -606,7 +625,7 @@ function PedidosTab({ search }: { search: string }) {
     <>
       {/* Summary cards */}
       <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <MiniCard label="Pedidos" value={String(filtered.length)} />
+        <MiniCard label="Pedidos" value={String(new Set(filtered.map(p => p.numero_pedido)).size)} />
         <MiniCard label="Casas cobertas" value={String(totals.casas)} />
         <MiniCard label="Valor total" value={formatCurrency(totals.valor)} accent="emerald" />
         <MiniCard label="Itens sem pedido" value={String(itens.filter((i) => !pedidos.some((p) => p.item_compra_id === i.id)).length)} accent="amber" />
@@ -785,61 +804,68 @@ function PedidosTab({ search }: { search: string }) {
                     onChange={() => selection.toggleAll(filtered.map(p => p.id))}
                     className="h-3.5 w-3.5 rounded accent-primary" />
                 </th>
-                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-20">Num</th>
-                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item</th>
-                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fornecedor</th>
-                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Casas</th>
-                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Qtd</th>
+                <th colSpan={2} className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pedido / Fornecedor / Item</th>
+                <th colSpan={3} className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Infos / Casas / Qtd</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Valor</th>
-                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Cond.</th>
-                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Entrega</th>
-                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Status</th>
-                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ações</th>
+                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-12">Ações</th>
               </tr>
             </thead>
-            <tbody className="divide-y">
-              {filtered.map((p) => (
-                <tr key={p.id} className="group hover:bg-muted/20">
-                  <td className="px-3 py-2.5 text-center">
-                    <input type="checkbox" checked={selection.isSelected(p.id)}
-                      onChange={() => selection.toggle(p.id)}
-                      className="h-3.5 w-3.5 rounded accent-primary" />
-                  </td>
-                  <td className="px-3 py-2.5">
-                    {p.numero_pedido != null ? (
-                      <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-1 text-xs font-bold text-primary">
-                        #{p.numero_pedido}
-                      </span>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <div className="text-xs font-medium">{p.item_descricao ?? '—'}</div>
-                    <div className="font-mono text-[10px] text-muted-foreground">{p.item_codigo ?? ''}</div>
-                  </td>
-                  <td className="px-3 py-2.5 text-xs text-muted-foreground">{p.fornecedor_nome ?? '—'}</td>
-                  <td className="px-3 py-2.5 text-right text-xs">{p.casas_lote ?? '—'}</td>
-                  <td className="px-3 py-2.5 text-right text-xs text-muted-foreground">{p.qtd_lote ?? '—'}</td>
-                  <td className="px-3 py-2.5 text-right text-xs font-medium">{p.valor_total_real != null ? formatCurrency(p.valor_total_real) : '—'}</td>
-                  <td className="px-3 py-2.5 text-center font-mono text-[10px] text-muted-foreground">{p.cond_pagamento ?? '—'}</td>
-                  <td className="px-3 py-2.5 text-center text-xs">{p.data_entrega_prevista ? localDate(p.data_entrega_prevista).toLocaleDateString('pt-BR') : '—'}</td>
-                  <td className="px-3 py-2.5 text-center">
-                    <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold ${statusColors[p.status] ?? ''}`}>
-                      {p.status === 'confirmado' ? 'Confirmado' : p.status === 'planejado' ? 'Plan.' : p.status.charAt(0).toUpperCase() + p.status.slice(1)}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2.5 text-center">
-                    <div className="flex items-center justify-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                      <button onClick={() => startEdit(p)} className="rounded-md p-1 hover:bg-accent" title="Editar">
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button onClick={() => setConfirmDelete(p.id)} className="rounded-md p-1 hover:bg-destructive/10 hover:text-destructive" title="Excluir">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+            <tbody>
+              {grouped.map(group => (
+                <React.Fragment key={group.name}>
+                  {/* Header Row */}
+                  <tr className="bg-muted/30 font-semibold border-t">
+                    <td className="px-3 py-2 text-center border-b">
+                    </td>
+                    <td className="px-3 py-2 border-b" colSpan={2}>
+                      <div className="flex items-center gap-2">
+                         <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-1 text-xs font-bold text-primary">
+                           {group.name}
+                         </span>
+                         <span className="text-[10px] text-muted-foreground">{group.fornecedor ?? '—'}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 border-b" colSpan={3}>
+                       <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                          <span>Cond: <span className="font-mono text-foreground">{group.cond_pagamento ?? '—'}</span></span>
+                          <span className="opacity-50">|</span>
+                          <span>Entr: <span className="text-foreground">{group.data_entrega ? localDate(group.data_entrega).toLocaleDateString('pt-BR') : '—'}</span></span>
+                          <span className="opacity-50">|</span>
+                          <span className={`rounded-full px-2 py-0.5 font-bold ${statusColors[group.status] ?? ''}`}>{group.status === 'confirmado' ? 'Confirmado' : group.status === 'planejado' ? 'Plan.' : group.status.charAt(0).toUpperCase() + group.status.slice(1)}</span>
+                       </div>
+                    </td>
+                    <td className="px-3 py-2 text-right border-b text-primary tracking-tight font-bold">{formatCurrency(group.total)}</td>
+                    <td className="px-3 py-2 border-b" colSpan={1}></td>
+                  </tr>
+
+                  {/* Children Rows */}
+                  {group.items.map(p => (
+                    <tr key={p.id} className="group/row hover:bg-muted/10 text-muted-foreground border-b border-border/40 last:border-0">
+                      <td className="px-3 py-2 text-center">
+                        <input type="checkbox" checked={selection.isSelected(p.id)}
+                          onChange={() => selection.toggle(p.id)}
+                          className="h-3 w-3 rounded accent-primary" />
+                      </td>
+                      <td className="px-3 py-2 pl-6" colSpan={2}>
+                        <div className="text-xs font-medium text-foreground">{p.item_descricao ?? '—'}</div>
+                        <div className="font-mono text-[10px] opacity-70">{p.item_codigo ?? ''}</div>
+                      </td>
+                      <td className="px-3 py-2 text-right text-xs" colSpan={2}>{p.casas_lote ? `${p.casas_lote} casas` : ''}</td>
+                      <td className="px-3 py-2 text-right text-xs font-mono">{p.qtd_lote ? `${p.qtd_lote} unid.` : ''}</td>
+                      <td className="px-3 py-2 text-right text-xs font-medium">{p.valor_total_real != null ? formatCurrency(p.valor_total_real) : '—'}</td>
+                      <td className="px-3 py-2 text-center">
+                        <div className="flex items-center justify-center gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
+                          <button onClick={() => startEdit(p)} className="rounded-md p-1 hover:bg-accent text-foreground" title="Editar">
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button onClick={() => setConfirmDelete(p.id)} className="rounded-md p-1 hover:bg-destructive/10 text-destructive" title="Excluir">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
