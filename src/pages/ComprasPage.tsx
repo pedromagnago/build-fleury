@@ -384,6 +384,7 @@ function PedidosTab({ search }: { search: string }) {
   
   const selection = useSelection()
 
+  const { data: etapas = [] } = useEtapas()
   const [showForm, setShowForm] = useState(false)
   const [editingPedido, setEditingPedido] = useState<Pedido | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
@@ -391,15 +392,71 @@ function PedidosTab({ search }: { search: string }) {
   const emptyGlobal = { numero_pedido: '', fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'] }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
 
+  // ─── New: Etapa-based item selector ───
+  const [etapaFilter, setEtapaFilter] = useState<string>('')
+  
   interface LoteItem {
     id: string
     item_compra_id: string
     casas_lote: string
     valor_unitario_real: string
   }
-  const [loteItems, setLoteItems] = useState<LoteItem[]>([{ id: crypto.randomUUID(), item_compra_id: '', casas_lote: '', valor_unitario_real: '' }])
+  const [loteItems, setLoteItems] = useState<LoteItem[]>([])
+
+  // Items filtered by selected etapa
+  const itensForEtapa = useMemo(() => {
+    if (!etapaFilter) return []
+    return itens.filter(i => i.etapa_id === etapaFilter)
+  }, [itens, etapaFilter])
 
   const createPedidoLote = useCreatePedidoLote()
+
+  // Toggle an item in/out of the loteItems list (checkbox behavior)
+  const toggleItemInLote = useCallback((itemId: string) => {
+    setLoteItems(prev => {
+      const exists = prev.find(li => li.item_compra_id === itemId)
+      if (exists) return prev.filter(li => li.item_compra_id !== itemId)
+      const item = itens.find(i => i.id === itemId)
+      return [...prev, {
+        id: crypto.randomUUID(),
+        item_compra_id: itemId,
+        casas_lote: '',
+        valor_unitario_real: item?.custo_unitario_orcado ? toBRLInput(item.custo_unitario_orcado) : '',
+      }]
+    })
+  }, [itens])
+
+  // Select/deselect all items of current etapa
+  const toggleAllEtapaItems = useCallback(() => {
+    const allSelected = itensForEtapa.every(i => loteItems.some(li => li.item_compra_id === i.id))
+    if (allSelected) {
+      // Remove all of this etapa
+      const etapaItemIds = new Set(itensForEtapa.map(i => i.id))
+      setLoteItems(prev => prev.filter(li => !etapaItemIds.has(li.item_compra_id)))
+    } else {
+      // Add missing ones
+      setLoteItems(prev => {
+        const existing = new Set(prev.map(li => li.item_compra_id))
+        const newItems = itensForEtapa
+          .filter(i => !existing.has(i.id))
+          .map(i => ({
+            id: crypto.randomUUID(),
+            item_compra_id: i.id,
+            casas_lote: '',
+            valor_unitario_real: i.custo_unitario_orcado ? toBRLInput(i.custo_unitario_orcado) : '',
+          }))
+        return [...prev, ...newItems]
+      })
+    }
+  }, [itensForEtapa, loteItems])
+
+  const updateLoteItem = (itemCompraId: string, field: keyof LoteItem, value: string) => {
+    setLoteItems(prev => prev.map(i => i.item_compra_id === itemCompraId ? { ...i, [field]: value } : i))
+  }
+
+  const removeLoteItem = (itemCompraId: string) => {
+    setLoteItems(prev => prev.filter(i => i.item_compra_id !== itemCompraId))
+  }
 
   // -- Auto-calculate valor_total do lote
   const calculatedItems = useMemo(() => {
@@ -447,12 +504,6 @@ function PedidosTab({ search }: { search: string }) {
     })
   }, [valorTotalLote, globalForm.cond_pagamento, globalForm.data_entrega_prevista])
 
-  const addLoteItem = () => setLoteItems(prev => [...prev, { id: crypto.randomUUID(), item_compra_id: '', casas_lote: '', valor_unitario_real: '' }])
-  const removeLoteItem = (id: string) => setLoteItems(prev => prev.filter(i => i.id !== id))
-  const updateLoteItem = (id: string, field: keyof LoteItem, value: string) => {
-    setLoteItems(prev => prev.map(i => i.id === id ? { ...i, [field]: value } : i))
-  }
-
   const startEdit = (p: Pedido) => {
     setEditingPedido(p)
     setGlobalForm({
@@ -468,12 +519,16 @@ function PedidosTab({ search }: { search: string }) {
       casas_lote: p.casas_lote?.toString() ?? '',
       valor_unitario_real: p.valor_unitario_real ? toBRLInput(p.valor_unitario_real) : ''
     }])
+    // Set etapa filter to item's etapa
+    const item = itens.find(i => i.id === p.item_compra_id)
+    if (item) setEtapaFilter(item.etapa_id)
     setShowForm(true)
   }
 
   const resetForm = () => {
     setGlobalForm(emptyGlobal)
-    setLoteItems([{ id: crypto.randomUUID(), item_compra_id: '', casas_lote: '', valor_unitario_real: '' }])
+    setLoteItems([])
+    setEtapaFilter('')
     setEditingPedido(null)
     setShowForm(false)
   }
@@ -621,6 +676,12 @@ function PedidosTab({ search }: { search: string }) {
 
   const totals = filtered.reduce((acc, p) => ({ valor: acc.valor + (p.valor_total_real ?? 0), casas: acc.casas + (p.casas_lote ?? 0) }), { valor: 0, casas: 0 })
 
+  // Etapas that have items
+  const etapasComItens = useMemo(() => {
+    const etapaIds = new Set(itens.map(i => i.etapa_id))
+    return etapas.filter(e => etapaIds.has(e.id))
+  }, [etapas, itens])
+
   return (
     <>
       {/* Summary cards */}
@@ -637,7 +698,7 @@ function PedidosTab({ search }: { search: string }) {
         </button>
       </div>
 
-      {/* Enhanced form with parcela preview */}
+      {/* Enhanced form with etapa-based item picker */}
       {showForm && (
         <div className="mb-4 rounded-xl border bg-card p-5">
           <div className="mb-3 flex items-center justify-between">
@@ -645,6 +706,7 @@ function PedidosTab({ search }: { search: string }) {
             <button onClick={resetForm} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
           </div>
           <form onSubmit={handleSubmit} className="space-y-3">
+            {/* ── Global fields ── */}
             <div className="mb-4 rounded-lg border border-primary/10 bg-muted/20 p-4">
               <div className="grid gap-4 md:grid-cols-4">
                 <div>
@@ -669,59 +731,137 @@ function PedidosTab({ search }: { search: string }) {
               </div>
             </div>
 
-            <div className="mb-3 flex items-center justify-between pl-1">
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Itens do Pedido</h4>
-              {!editingPedido && (
-                <button type="button" onClick={addLoteItem} className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10">
-                  <Plus className="h-3 w-3" /> Adicionar Linha
-                </button>
-              )}
-            </div>
-
-            <div className="space-y-3 pb-3">
-              {calculatedItems.map((li, idx) => (
-                <div key={li.id} className="relative rounded-lg border border-border/60 bg-background p-4 shadow-sm transition-colors hover:border-primary/30">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Item {idx + 1}</span>
-                    {!editingPedido && calculatedItems.length > 1 && (
-                      <button type="button" onClick={() => removeLoteItem(li.id)} className="flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-12 md:gap-4">
-                    <div className="sm:col-span-4">
-                      <label className={LABEL}>Item de Compra *</label>
-                      <select value={li.item_compra_id} onChange={(e) => updateLoteItem(li.id, 'item_compra_id', e.target.value)} required disabled={!!editingPedido} className={`${INPUT} ${editingPedido ? 'opacity-50' : ''}`}>
-                        <option value="">Selecione</option>
-                        {itens.map((i) => <option key={i.id} value={i.id}>{i.codigo} - {i.descricao}</option>)}
-                      </select>
-                    </div>
-                    <div className="sm:col-span-2">
-                       <label className={LABEL}>Casas do Lote</label>
-                       <input type="number" value={li.casas_lote} onChange={(e) => updateLoteItem(li.id, 'casas_lote', e.target.value)} className={INPUT} />
-                       {li.selectedItem && (
-                         <p className={`mt-1 text-[10px] leading-tight ${li.remaining <= 0 ? 'font-semibold text-red-500' : 'text-muted-foreground'}`}>
-                           {li.remaining <= 0 ? '⚠ Lote cheio' : `${li.remaining} restantes\n(${li.used}/${li.selectedItem.qtd_por_casa})`}
-                         </p>
-                       )}
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className={LABEL}>Qtd (auto)</label>
-                      <input type="text" readOnly value={li.qtdPorCasa ? `${li.casasLote}x${li.qtdPorCasa}` : '—'} className={`${INPUT} bg-muted/40 text-muted-foreground`} />
-                    </div>
-                    <div className="sm:col-span-2">
-                       <label className={LABEL}>Valor Un. (R$)</label>
-                       <input type="text" value={li.valor_unitario_real} onChange={(e) => updateLoteItem(li.id, 'valor_unitario_real', e.target.value)} placeholder="0,00" className={INPUT} />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className={LABEL}>Total Item</label>
-                      <input type="text" readOnly value={li.valorTotalCalc > 0 ? formatCurrency(li.valorTotalCalc) : '—'} className={`${INPUT} bg-primary/5 text-right font-semibold text-primary`} />
-                    </div>
-                  </div>
+            {/* ── STEP 1: Etapa selector + Item checkboxes ── */}
+            {!editingPedido && (
+              <div className="rounded-lg border border-border/60 bg-background p-4">
+                <div className="mb-3 flex items-center gap-3">
+                  <label className={`${LABEL} mb-0 shrink-0`}>Selecionar Etapa</label>
+                  <select
+                    value={etapaFilter}
+                    onChange={(e) => setEtapaFilter(e.target.value)}
+                    className={`${INPUT} max-w-xs`}
+                  >
+                    <option value="">— Selecione uma etapa —</option>
+                    {etapasComItens.map(e => (
+                      <option key={e.id} value={e.id}>{e.codigo} — {e.nome}</option>
+                    ))}
+                  </select>
                 </div>
-              ))}
-            </div>
+
+                {etapaFilter && itensForEtapa.length > 0 && (
+                  <div className="rounded-lg border bg-muted/10">
+                    {/* Select all header */}
+                    <div className="flex items-center gap-2 border-b bg-muted/30 px-4 py-2">
+                      <input
+                        type="checkbox"
+                        checked={itensForEtapa.length > 0 && itensForEtapa.every(i => loteItems.some(li => li.item_compra_id === i.id))}
+                        onChange={toggleAllEtapaItems}
+                        className="h-3.5 w-3.5 rounded accent-primary"
+                      />
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Selecionar todos ({itensForEtapa.length} itens)
+                      </span>
+                    </div>
+                    {/* Item list */}
+                    <div className="max-h-64 overflow-y-auto divide-y divide-border/30">
+                      {itensForEtapa.map(item => {
+                        const isChecked = loteItems.some(li => li.item_compra_id === item.id)
+                        return (
+                          <label
+                            key={item.id}
+                            className={`flex cursor-pointer items-center gap-3 px-4 py-2.5 transition-colors hover:bg-muted/20 ${isChecked ? 'bg-primary/5' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => toggleItemInLote(item.id)}
+                              className="h-3.5 w-3.5 shrink-0 rounded accent-primary"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[10px] text-muted-foreground">{item.codigo}</span>
+                                <span className="truncate text-xs font-medium">{item.descricao}</span>
+                              </div>
+                              <div className="mt-0.5 flex items-center gap-3 text-[10px] text-muted-foreground">
+                                <span className={`rounded-full px-1.5 py-0.5 font-semibold ${
+                                  item.tipo === 'MATERIAL' ? 'bg-blue-500/10 text-blue-600' :
+                                  item.tipo === 'MAO_DE_OBRA' ? 'bg-amber-500/10 text-amber-600' :
+                                  'bg-orange-500/10 text-orange-600'
+                                }`}>{item.tipo === 'MAO_DE_OBRA' ? 'M.O.' : item.tipo === 'MATERIAL' ? 'MAT' : 'EQP'}</span>
+                                {item.qtd_por_casa != null && <span>Qtd/casa: {item.qtd_por_casa}</span>}
+                                {item.custo_unitario_orcado > 0 && <span>Custo: {formatCurrency(item.custo_unitario_orcado)}</span>}
+                                {item.unidade && <span>{item.unidade}</span>}
+                              </div>
+                            </div>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+                {etapaFilter && itensForEtapa.length === 0 && (
+                  <p className="py-4 text-center text-xs text-muted-foreground">Nenhum item nesta etapa.</p>
+                )}
+              </div>
+            )}
+
+            {/* ── STEP 2: Selected items detail cards ── */}
+            {calculatedItems.length > 0 && (
+              <>
+                <div className="flex items-center justify-between pl-1 pt-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    {calculatedItems.length} ite{calculatedItems.length === 1 ? 'm' : 'ns'} selecionado{calculatedItems.length === 1 ? '' : 's'}
+                  </h4>
+                </div>
+
+                <div className="space-y-3 pb-3">
+                  {calculatedItems.map((li) => (
+                    <div key={li.id} className="relative rounded-lg border border-border/60 bg-background p-4 shadow-sm transition-colors hover:border-primary/30">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[10px] text-muted-foreground">{li.selectedItem?.codigo}</span>
+                          <span className="text-xs font-semibold">{li.selectedItem?.descricao}</span>
+                          {li.selectedItem?.etapa_nome && (
+                            <span className="rounded-full bg-muted px-2 py-0.5 text-[9px] text-muted-foreground">{li.selectedItem.etapa_nome}</span>
+                          )}
+                        </div>
+                        {!editingPedido && (
+                          <button type="button" onClick={() => removeLoteItem(li.item_compra_id)} className="flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive" title="Remover item">
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-12 md:gap-4">
+                        <div className="sm:col-span-3">
+                           <label className={LABEL}>Casas do Lote</label>
+                           <input type="number" value={li.casas_lote} onChange={(e) => updateLoteItem(li.item_compra_id, 'casas_lote', e.target.value)} className={INPUT} />
+                           {li.selectedItem && (
+                             <p className={`mt-1 text-[10px] leading-tight ${li.remaining <= 0 ? 'font-semibold text-red-500' : 'text-muted-foreground'}`}>
+                               {li.remaining <= 0 ? '⚠ Lote cheio' : `${li.remaining} restantes (${li.used} usadas)`}
+                             </p>
+                           )}
+                        </div>
+                        <div className="sm:col-span-3">
+                          <label className={LABEL}>Qtd (auto)</label>
+                          <input type="text" readOnly value={li.qtdPorCasa ? `${li.casasLote} × ${li.qtdPorCasa} = ${li.qtdLoteCalc}` : '—'} className={`${INPUT} bg-muted/40 text-muted-foreground`} />
+                        </div>
+                        <div className="sm:col-span-3">
+                           <label className={LABEL}>Valor Un. (R$)</label>
+                           <input type="text" value={li.valor_unitario_real} onChange={(e) => updateLoteItem(li.item_compra_id, 'valor_unitario_real', e.target.value)} placeholder="0,00" className={INPUT} />
+                           {li.selectedItem && li.selectedItem.custo_unitario_orcado > 0 && (
+                             <p className="mt-1 text-[10px] text-muted-foreground">Orçado: {formatCurrency(li.selectedItem.custo_unitario_orcado)}</p>
+                           )}
+                        </div>
+                        <div className="sm:col-span-3">
+                          <label className={LABEL}>Total Item</label>
+                          <input type="text" readOnly value={li.valorTotalCalc > 0 ? formatCurrency(li.valorTotalCalc) : '—'} className={`${INPUT} bg-primary/5 text-right font-semibold text-primary`} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
 
             {/* Auto-calc summary TOTAL */}
             {valorTotalLote > 0 && (
@@ -767,8 +907,8 @@ function PedidosTab({ search }: { search: string }) {
 
             <div className="mt-4 flex justify-end gap-3 border-t pt-4">
               <button type="button" onClick={resetForm} className="rounded-lg border px-5 py-2.5 text-sm font-medium hover:bg-accent/50">Cancelar</button>
-              <button type="submit" disabled={createPedidoLote.isPending || updatePedido.isPending} className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-50">
-                <Check className="h-4 w-4" />{editingPedido ? 'Salvar Alteração' : 'Finalizar Pedido + Parcelas'}
+              <button type="submit" disabled={createPedidoLote.isPending || updatePedido.isPending || calculatedItems.length === 0} className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-50">
+                <Check className="h-4 w-4" />{editingPedido ? 'Salvar Alteração' : `Finalizar Pedido (${calculatedItems.length} ite${calculatedItems.length === 1 ? 'm' : 'ns'}) + Parcelas`}
               </button>
             </div>
           </form>

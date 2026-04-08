@@ -24,7 +24,6 @@ import AuditoriaPage from '@/pages/AuditoriaPage'
 import AvancoFisicoPage from '@/pages/AvancoFisicoPage'
 // MedicoesPage removed — absorbed into CronogramaPage
 import ConciliacaoPage from '@/pages/ConciliacaoPage'
-// SimuladorPage removed — absorbed into CronogramaPage
 import RelatoriosPage from '@/pages/RelatoriosPage'
 import MutuosPage from '@/pages/MutuosPage'
 
