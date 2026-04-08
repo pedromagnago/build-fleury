@@ -7,8 +7,10 @@ import { useMedicoes, useDistribuicao } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
 import { formatCurrency } from '@/lib/utils'
 import { parsearCondicao } from '@/lib/parcelas'
-import { ChevronRight, ChevronDown, X, Download } from 'lucide-react'
+import { ChevronRight, ChevronDown, X, Download, Calendar, CalendarDays } from 'lucide-react'
 import FinancialViewFilter, { type FinancialViewMode } from './FinancialViewFilter'
+
+type Periodicity = 'dia' | 'semana'
 
 const localDate = (iso: string) => {
   if (!iso) return new Date()
@@ -52,17 +54,21 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   const [overrides, setOverrides] = useState<Record<string, Override>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editing, setEditing] = useState<Item | null>(null)
+  const [periodicity, setPeriodicity] = useState<Periodicity>('semana')
 
   const toggle = (k: string) => setExpanded(p => ({ ...p, [k]: !p[k] }))
 
+  // Generate time buckets based on periodicity
   const weeks = useMemo(() => {
-    // 1) Find the earliest date among all data (Medições, Mútuos, Parcelas, Etapas)
+    // 1) Find earliest and latest dates among all data
     let minDateMs = Date.now()
+    let maxDateMs = Date.now()
 
     const checkDate = (d?: string | null) => {
       if (!d) return
       const t = localDate(d).getTime()
       if (t < minDateMs) minDateMs = t
+      if (t > maxDateMs) maxDateMs = t
     }
 
     medicoes.forEach(m => checkDate(m.data_prevista))
@@ -70,20 +76,41 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
     parcelas.forEach(p => checkDate(p.data_vencimento))
     etapas.forEach(e => checkDate(e.data_inicio_plan))
 
-    // 2) Align to Monday of that earliest week
+    if (periodicity === 'dia') {
+      // Daily buckets: from earliest to now + 3 months
+      const startObj = new Date(minDateMs)
+      startObj.setHours(0, 0, 0, 0)
+      const endObj = new Date()
+      endObj.setMonth(endObj.getMonth() + 3)
+      endObj.setHours(0, 0, 0, 0)
+      const diffMs = endObj.getTime() - startObj.getTime()
+      const length = Math.max(30, Math.ceil(diffMs / (24 * 60 * 60 * 1000)) + 1)
+
+      return Array.from({ length }, (_, i) => {
+        const s = new Date(startObj)
+        s.setDate(startObj.getDate() + i)
+        const e = new Date(s) // same day
+        return {
+          s, e,
+          iso0: s.toISOString().split('T')[0]!,
+          iso1: s.toISOString().split('T')[0]!,
+          lbl: `${String(s.getDate()).padStart(2, '0')}/${String(s.getMonth() + 1).padStart(2, '0')}`,
+        }
+      })
+    }
+
+    // Weekly buckets (default)
     const startObj = new Date(minDateMs)
     const dowStart = startObj.getDay()
     startObj.setDate(startObj.getDate() - (dowStart === 0 ? 6 : dowStart - 1))
     startObj.setHours(0, 0, 0, 0)
 
-    // 3) Align to Monday of "now + 6 months" for the end
     const endObj = new Date()
     endObj.setMonth(endObj.getMonth() + 6)
     const dowEnd = endObj.getDay()
     endObj.setDate(endObj.getDate() - (dowEnd === 0 ? 6 : dowEnd - 1))
     endObj.setHours(0, 0, 0, 0)
 
-    // 4) Calculate number of weeks
     const diffMs = endObj.getTime() - startObj.getTime()
     const length = Math.max(24, Math.ceil(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1)
 
@@ -99,7 +126,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         lbl: `${String(s.getDate()).padStart(2, '0')}/${String(s.getMonth() + 1).padStart(2, '0')}`,
       }
     })
-  }, [medicoes, mutuos, parcelas, etapas])
+  }, [medicoes, mutuos, parcelas, etapas, periodicity])
 
   const items = useMemo(() => {
     const ov = (id: string, date: string, val: number) => {
@@ -386,9 +413,30 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         </>
       )}
 
-      {/* View Mode Filter */}
+      {/* View Mode Filter + Periodicity */}
       <div className="flex items-center justify-between mb-3">
-        <div className="text-[10px] text-muted-foreground">Visão: {viewMode === 'realizado' ? 'Apenas realizado' : viewMode === 'planejado' ? 'Realizado + Planejado' : 'Realizado + Planejado + Pedidos'}</div>
+        <div className="flex items-center gap-3">
+          <div className="text-[10px] text-muted-foreground">Visão: {viewMode === 'realizado' ? 'Apenas realizado' : viewMode === 'planejado' ? 'Realizado + Planejado' : 'Realizado + Planejado + Pedidos'}</div>
+          {/* Periodicity toggle */}
+          <div className="flex items-center rounded-lg border bg-muted/30 p-0.5 gap-0.5">
+            <button
+              onClick={() => setPeriodicity('dia')}
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-semibold transition-colors ${
+                periodicity === 'dia' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Calendar className="h-3 w-3" /> Dia
+            </button>
+            <button
+              onClick={() => setPeriodicity('semana')}
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-semibold transition-colors ${
+                periodicity === 'semana' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <CalendarDays className="h-3 w-3" /> Semana
+            </button>
+          </div>
+        </div>
         <FinancialViewFilter value={viewMode} onChange={setViewMode} />
       </div>
 
@@ -408,8 +456,8 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
             <tr className="border-b">
               <th className="sticky left-0 z-40 bg-muted/90 border-r px-3 py-2.5 text-left text-[10px] font-bold uppercase text-muted-foreground tracking-wider w-[220px] min-w-[220px]">Categoria</th>
               {grid.map((w, i) => (
-                <th key={i} className="border-r px-2 py-2.5 text-center font-medium w-[110px] min-w-[110px]">
-                  <div className="text-[9px] text-muted-foreground">S{i + 1}</div>
+                <th key={i} className={`border-r px-2 py-2.5 text-center font-medium ${periodicity === 'dia' ? 'w-[80px] min-w-[80px]' : 'w-[110px] min-w-[110px]'}`}>
+                  <div className="text-[9px] text-muted-foreground">{periodicity === 'dia' ? `D${i + 1}` : `S${i + 1}`}</div>
                   <div className="text-[10px] mt-0.5">{w.lbl}</div>
                 </th>
               ))}
