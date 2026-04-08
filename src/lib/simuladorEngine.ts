@@ -58,10 +58,16 @@ export interface SimItemCompra {
   fornecedor_nome: string | null; etapa_nome: string | null
 }
 
+export interface SimDistribuicao {
+  id: string; etapa_id: string; medicao_numero: number
+  casas_planejadas: number; casas_realizadas: number
+  valor_liberado_faturamento: number
+}
+
 export interface SimSnapshot {
   etapas: SimEtapa[]; pedidos: SimPedido[]; parcelas: SimParcela[]
   medicoes: SimMedicao[]; fornecedores: SimFornecedor[]
-  itensCompra: SimItemCompra[]; saldoInicial: number
+  itensCompra: SimItemCompra[]; distribuicao: SimDistribuicao[]; saldoInicial: number
 }
 
 export interface CashFlowPoint {
@@ -118,6 +124,7 @@ function weekKey(iso: string): string {
 export function buildBaseSnapshot(
   etapas: any[], pedidos: any[], parcelas: any[], medicoes: any[],
   fornecedores: any[], itensCompra: any[], saldoInicial: number,
+  distribuicao: any[] = [],
 ): SimSnapshot {
   return {
     etapas: etapas.map(e => ({
@@ -155,6 +162,11 @@ export function buildBaseSnapshot(
       valor_total_orcado: i.valor_total_orcado ?? 0, valor_consumido: i.valor_consumido ?? 0,
       fornecedor_nome: i.fornecedor_nome ?? null, etapa_nome: i.etapa_nome ?? null,
     })),
+    distribuicao: (distribuicao ?? []).map(d => ({
+      id: d.id, etapa_id: d.etapa_id, medicao_numero: d.medicao_numero,
+      casas_planejadas: d.casas_planejadas ?? 0, casas_realizadas: d.casas_realizadas ?? 0,
+      valor_liberado_faturamento: Number(d.valor_liberado_faturamento ?? 0),
+    })),
     saldoInicial,
   }
 }
@@ -171,6 +183,7 @@ export function applyAdjustments(base: SimSnapshot, adjustments: Adjustment[]): 
     medicoes: base.medicoes.map(m => ({ ...m, sim_data_prevista: m.data_prevista, delta_dias: 0, modified: false })),
     fornecedores: base.fornecedores.map(f => ({ ...f, sim_cond_pagamento: null, modified: false })),
     itensCompra: base.itensCompra.map(i => ({ ...i })),
+    distribuicao: base.distribuicao.map(d => ({ ...d })),
     saldoInicial: base.saldoInicial,
   }
 
@@ -259,19 +272,37 @@ export function computeCashFlow(snapshot: SimSnapshot, useSimulated: boolean): C
   const saidasFirme = new Map<string, number>()
   const saidasBruto = new Map<string, number>()
 
-  // Entradas: medições futuras
+  // Entradas: medições — granular por serviço via distribuição
+  const distByMed = new Map<number, typeof snapshot.distribuicao>()
+  for (const d of snapshot.distribuicao) {
+    const arr = distByMed.get(d.medicao_numero) ?? []
+    arr.push(d)
+    distByMed.set(d.medicao_numero, arr)
+  }
+
   for (const m of snapshot.medicoes) {
-    const val = m.valor_planejado - m.valor_liberado
-    if (val <= 0) continue
+    if (m.status === 'paga') continue
     const date = useSimulated ? m.sim_data_prevista : m.data_prevista
-    if (date) entradas.set(date, (entradas.get(date) ?? 0) + val)
+    if (!date) continue
+    const dists = distByMed.get(m.numero)
+    if (dists && dists.length > 0) {
+      // Revenue per service
+      for (const d of dists) {
+        const val = Number(d.valor_liberado_faturamento) || 0
+        if (val > 0) entradas.set(date, (entradas.get(date) ?? 0) + val)
+      }
+    } else {
+      // Fallback: flat medição value
+      const val = Number(m.valor_planejado) - Number(m.valor_liberado || 0)
+      if (val > 0) entradas.set(date, (entradas.get(date) ?? 0) + val)
+    }
   }
 
   // Nível 2 (firme): parcelas não pagas
   for (const p of snapshot.parcelas) {
     if (p.status === 'paga') continue
     const date = useSimulated ? p.sim_data_vencimento : p.data_vencimento
-    const val = useSimulated ? p.sim_valor : p.valor
+    const val = Number(useSimulated ? p.sim_valor : p.valor) || 0
     if (val > 0 && date) saidasFirme.set(date, (saidasFirme.get(date) ?? 0) + val)
   }
 
@@ -282,7 +313,7 @@ export function computeCashFlow(snapshot: SimSnapshot, useSimulated: boolean): C
   }
   for (const item of snapshot.itensCompra) {
     const comPedido = pedidosPorItem.get(item.id) ?? 0
-    const semPedido = Math.max(0, item.valor_total_orcado - comPedido - item.valor_consumido)
+    const semPedido = Math.max(0, Number(item.valor_total_orcado || 0) - comPedido - Number(item.valor_consumido || 0))
     if (semPedido <= 0) continue
     const etapa = snapshot.etapas.find(e => e.id === item.etapa_id)
     if (!etapa) continue

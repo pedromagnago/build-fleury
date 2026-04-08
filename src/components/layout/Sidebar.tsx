@@ -4,7 +4,6 @@ import { useUserRole } from '@/hooks/useUserRole'
 import { cn } from '@/lib/utils'
 import { CompanySwitcher } from './CompanySwitcher'
 import {
-  LayoutDashboard,
   CalendarRange,
   ShoppingCart,
   CreditCard,
@@ -12,9 +11,7 @@ import {
   FileText,
   Shield,
   TrendingUp,
-  Ruler,
   ArrowLeftRight,
-  FlaskConical,
   BarChart3,
   Upload,
   Settings,
@@ -25,18 +22,16 @@ import {
 
 const sections = [
   {
-    label: 'Visão Geral',
+    label: 'Principal',
     items: [
-      { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+      { to: '/cronograma', icon: CalendarRange, label: 'Painel de Bordo' },
     ],
   },
   {
-    label: 'Planejamento',
+    label: 'Operacional',
     items: [
-      { to: '/cronograma', icon: CalendarRange, label: 'Cronograma' },
       { to: '/compras', icon: ShoppingCart, label: 'Compras' },
       { to: '/avanco', icon: TrendingUp, label: 'Avanço Físico' },
-      { to: '/medicoes', icon: Ruler, label: 'Medições' },
     ],
   },
   {
@@ -45,7 +40,6 @@ const sections = [
       { to: '/pagamentos', icon: CreditCard, label: 'Pagamentos' },
       { to: '/mutuos', icon: Landmark, label: 'Capital de Giro' },
       { to: '/conciliacao', icon: ArrowLeftRight, label: 'Conciliação' },
-      { to: '/simulador', icon: FlaskConical, label: 'Simulador' },
     ],
   },
   {

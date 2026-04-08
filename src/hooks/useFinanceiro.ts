@@ -46,13 +46,15 @@ export function useParcelas() {
       if (!companyId) return []
       const { data, error } = await supabase
         .from('parcelas')
-        .select('*, pedidos(item_compra_id, itens_compra(descricao))')
+        .select('*, pedidos(item_compra_id, itens_compra(descricao, deleted_at))')
         .eq('company_id', companyId)
         .is('deleted_at', null)
         .order('data_vencimento', { ascending: true })
 
       if (error) throw error
-      return (data ?? []).map((p: Record<string, unknown>) => {
+      return (data ?? [])
+        .filter((p: any) => p.pedidos && p.pedidos.itens_compra && !p.pedidos.itens_compra.deleted_at)
+        .map((p: Record<string, unknown>) => {
         const pedido = p.pedidos as Record<string, unknown> | null
         const item = pedido?.itens_compra as Record<string, string> | null
         return { 
@@ -214,18 +216,25 @@ export function useDashboardKPIs() {
 
       const [itensRes, parcelasRes, etapasRes, pedidosRes] = await Promise.all([
         supabase.from('itens_compra').select('id, valor_total_orcado, valor_consumido').eq('company_id', companyId).is('deleted_at', null),
-        supabase.from('parcelas').select('valor, data_vencimento, status, valor_pago').eq('company_id', companyId).is('deleted_at', null),
+        supabase.from('parcelas').select('valor, data_vencimento, status, valor_pago, pedidos!inner(itens_compra(deleted_at))').eq('company_id', companyId).is('deleted_at', null),
         supabase.from('etapas').select('status').eq('company_id', companyId),
         supabase.from('pedidos').select('item_compra_id, valor_total_real').eq('company_id', companyId),
       ])
 
       const itens = (itensRes.data ?? []) as Array<{ id: string; valor_total_orcado: number; valor_consumido: number }>
-      const parcelas = (parcelasRes.data ?? []) as Array<{ valor: number; data_vencimento: string; status: string; valor_pago: number }>
+      const rawParcelas = (parcelasRes.data ?? []) as Array<any>
+      const parcelas = rawParcelas.filter(p => !p.pedidos?.itens_compra?.deleted_at).map(p => ({
+        valor: p.valor, data_vencimento: p.data_vencimento, status: p.status, valor_pago: p.valor_pago
+      })) as Array<{ valor: number; data_vencimento: string; status: string; valor_pago: number }>
       const etapas = (etapasRes.data ?? []) as Array<{ status: string }>
-      const pedidos = (pedidosRes.data ?? []) as Array<{ item_compra_id: string; valor_total_real: number }>
-
+      const rawPedidos = (pedidosRes.data ?? []) as Array<any>
+      
       const totalOrcado = itens.reduce((s, i) => s + (i.valor_total_orcado ?? 0), 0)
       const totalConsumido = itens.reduce((s, i) => s + (i.valor_consumido ?? 0), 0)
+
+      // Only count pedidos logic that map to active items
+      const validItemIds = new Set(itens.map(i => i.id));
+      const pedidos = rawPedidos.filter(p => validItemIds.has(p.item_compra_id))
 
       // Level 1/Level 2 coverage
       const pedidosPorItem = new Map<string, number>()

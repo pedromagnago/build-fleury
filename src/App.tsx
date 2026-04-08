@@ -13,7 +13,7 @@ import Login from '@/pages/Login'
 import Register from '@/pages/Register'
 import Onboarding from '@/pages/Onboarding'
 import ProjectSelector from '@/pages/ProjectSelector'
-import Dashboard from '@/pages/Dashboard'
+// Dashboard removed — redirects to /cronograma
 import Configuracoes from '@/pages/Configuracoes'
 import CronogramaPage from '@/pages/CronogramaPage'
 import ComprasPage from '@/pages/ComprasPage'
@@ -22,9 +22,9 @@ import PagamentosPage from '@/pages/PagamentosPage'
 import DocumentosPage from '@/pages/DocumentosPage'
 import AuditoriaPage from '@/pages/AuditoriaPage'
 import AvancoFisicoPage from '@/pages/AvancoFisicoPage'
-import MedicoesPage from '@/pages/MedicoesPage'
+// MedicoesPage removed — absorbed into CronogramaPage
 import ConciliacaoPage from '@/pages/ConciliacaoPage'
-import SimuladorPage from '@/pages/SimuladorPage'
+// SimuladorPage removed — absorbed into CronogramaPage
 import RelatoriosPage from '@/pages/RelatoriosPage'
 import MutuosPage from '@/pages/MutuosPage'
 
@@ -77,7 +77,7 @@ export default function App() {
                   </ProjectGate>
                 }
               >
-                <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/dashboard" element={<Navigate to="/cronograma" replace />} />
                 <Route path="/cronograma" element={<CronogramaPage />} />
                 <Route path="/compras" element={<ComprasPage />} />
                 <Route path="/pagamentos" element={<PagamentosPage />} />
@@ -85,16 +85,16 @@ export default function App() {
                 <Route path="/documentos" element={<DocumentosPage />} />
                 <Route path="/auditoria" element={<AuditoriaPage />} />
                 <Route path="/avanco" element={<AvancoFisicoPage />} />
-                <Route path="/medicoes" element={<MedicoesPage />} />
+                <Route path="/medicoes" element={<Navigate to="/cronograma" replace />} />
                 <Route path="/conciliacao" element={<ConciliacaoPage />} />
-                <Route path="/simulador" element={<SimuladorPage />} />
+                <Route path="/simulador" element={<Navigate to="/cronograma" replace />} />
                 <Route path="/relatorios" element={<RelatoriosPage />} />
                 <Route path="/importacao" element={<ImportacaoPage />} />
                 <Route path="/configuracoes" element={<Configuracoes />} />
               </Route>
 
               {/* Default redirect */}
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              <Route path="*" element={<Navigate to="/cronograma" replace />} />
             </Routes>
           </BrowserRouter>
           <Toaster

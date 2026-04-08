@@ -191,7 +191,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
       qtd_total: form.qtd_total ? parseFloat(form.qtd_total) : null,
       custo_unitario_orcado: custoUnit,
       valor_total_orcado: valorTotal,
-      valor_saldo: valorTotal,
+      // valor_saldo: GENERATED ALWAYS — auto-calculated by PostgreSQL
       fornecedor_id: form.fornecedor_id || null,
       cond_pagamento: form.cond_pagamento || null,
     }
@@ -217,7 +217,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
       const v = parseBRL(value)
       updates.custo_unitario_orcado = v
       updates.valor_total_orcado = v * (item.qtd_total ?? 0)
-      updates.valor_saldo = updates.valor_total_orcado - item.valor_consumido
+      // valor_saldo: GENERATED ALWAYS — auto-calculated by PostgreSQL
     } else if (field === 'cond_pagamento') {
       updates.cond_pagamento = value || null
     }

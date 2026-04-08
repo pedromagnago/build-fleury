@@ -15,6 +15,9 @@ import {
 import { toast } from 'sonner'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
+import { useQueryClient } from '@tanstack/react-query'
+import { parseWBSImport, buildImportPreview } from '@/lib/wbsImport'
+import ImportPreviewModal from '@/components/cronograma/ImportPreviewModal'
 
 // ═══════════════════════════════════════════════════════════════
 // Shared types & helpers
@@ -143,14 +146,15 @@ function formatError(err: unknown): string {
 // ═══════════════════════════════════════════════════════════════
 // Main page
 // ═══════════════════════════════════════════════════════════════
-type Tab = 'dados' | 'pedidos' | 'medicoes' | 'distribuicao' | 'logs'
+type Tab = 'wbs' | 'dados' | 'pedidos' | 'medicoes' | 'distribuicao' | 'logs'
 
 export default function ImportacaoPage() {
   const { restartTour } = useTour('importacao', pageTours.importacao)
 
-  const [tab, setTab] = useState<Tab>('dados')
+  const [tab, setTab] = useState<Tab>('wbs')
 
   const tabs: { key: Tab; label: string; icon: typeof Upload }[] = [
+    { key: 'wbs', label: 'WBS Completa (Excel)', icon: FileSpreadsheet },
     { key: 'dados', label: 'Dados Base', icon: FileSpreadsheet },
     { key: 'pedidos', label: 'Pedidos', icon: ShoppingCart },
     { key: 'medicoes', label: 'Medições', icon: Calendar },
@@ -177,6 +181,7 @@ export default function ImportacaoPage() {
         ))}
       </div>
 
+      {tab === 'wbs' && <WBSTab />}
       {tab === 'dados' && <DadosBaseTab />}
       {tab === 'pedidos' && <PedidosTab />}
       {tab === 'medicoes' && <MedicoesTab />}
@@ -1009,17 +1014,25 @@ function Spinner() {
 // ═══════════════════════════════════════════════════════════════
 function LogsImportacaoTab() {
   const { data: logs = [], isLoading } = useAuditLogs()
-  const importLogs = logs.filter(l => (l.dados_depois as any)?.type === 'import_lote')
+  const importLogs = logs.filter(l => {
+    const type = (l.dados_depois as any)?.type
+    return type === 'import_lote' || type === 'import_wbs'
+  })
   const [expandedLog, setExpandedLog] = useState<string | null>(null)
 
-  const downloadErrorLog = (logId: string, errors: string[]) => {
-    // Generate simple text/csv with errors
-    const content = "ERROS DE IMPORTAÇÃO\n" + errors.map(e => `"${e.replace(/"/g, '""')}"`).join("\n")
-    const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), content], { type: 'text/csv;charset=utf-8;' })
+  const downloadErrorLog = (logId: string, errors: string[], warnings?: string[]) => {
+    const lines = [
+      "═══ ERROS DE IMPORTAÇÃO ═══",
+      ...(errors.map(e => `[ERRO] ${e}`)),
+      "",
+      ...(warnings && warnings.length > 0 ? ["═══ AVISOS ═══", ...warnings.map(w => `[AVISO] ${w}`)] : []),
+    ]
+    const content = lines.join("\n")
+    const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), content], { type: 'text/plain;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `erros_importacao_${logId}.csv`
+    a.download = `erros_importacao_${logId}.txt`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -1039,16 +1052,133 @@ function LogsImportacaoTab() {
     <div className="space-y-4">
       <div className="mb-4 rounded-xl border bg-card p-4">
         <h3 className="mb-1 text-sm font-semibold">Histórico de Importações Recentes</h3>
-        <p className="text-[10px] text-muted-foreground">Estes registros mostram apenas os lotes que tiveram algum alerta ou erro para sua conferência.</p>
+        <p className="text-[10px] text-muted-foreground">Registros de todas as importações (WBS completa e lotes individuais) com detalhamento de erros e avisos.</p>
       </div>
 
       <div className="flex flex-col gap-3">
         {importLogs.map((log) => {
-          const dados = log.dados_depois as { success?: number, total?: number, errors?: string[] } | null
+          const dados = log.dados_depois as Record<string, any> | null
+          const isWbs = dados?.type === 'import_wbs'
+          const isExpanded = expandedLog === log.id
+
+          // WBS import format
+          if (isWbs) {
+            const etapas = dados?.etapas ?? { atualizadas: 0, criadas: 0 }
+            const itens = dados?.itens ?? { atualizados: 0, criados: 0 }
+            const dists = dados?.distribuicoes ?? { atualizadas: 0, criadas: 0 }
+            const errosCount = dados?.erros ?? 0
+            const avisosCount = dados?.avisos ?? 0
+            const totalLinhas = dados?.total_linhas ?? 0
+            const errors: string[] = dados?.errors ?? []
+            const warnings: string[] = dados?.warnings ?? []
+            const totalProcessado = (etapas.atualizadas + etapas.criadas) + (itens.atualizados + itens.criados) + (dists.atualizadas + dists.criadas)
+            const hasIssues = errosCount > 0 || avisosCount > 0
+
+            return (
+              <div key={log.id} className="rounded-lg border bg-card shadow-sm transition-all hover:border-primary/30">
+                <div 
+                  className="flex cursor-pointer items-center justify-between p-4"
+                  onClick={() => setExpandedLog(isExpanded ? null : log.id)}
+                >
+                  <div className="flex items-center gap-4">
+                    <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${errosCount > 0 ? 'bg-destructive/10 text-destructive' : avisosCount > 0 ? 'bg-amber-500/10 text-amber-600' : 'bg-green-500/10 text-green-600'}`}>
+                      {errosCount > 0 ? <AlertCircle className="h-5 w-5" /> : avisosCount > 0 ? <AlertCircle className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-medium">
+                        <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary mr-1.5">WBS</span>
+                        Importação Completa
+                      </h4>
+                      <p className="text-xs text-muted-foreground">{new Date(log.created_at).toLocaleString('pt-BR')}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-4 text-right">
+                    <div>
+                      <p className="text-sm font-medium">
+                        <span className="text-emerald-600">{totalProcessado}</span> processados
+                        {errosCount > 0 && <> / <span className="text-destructive">{errosCount}</span> erros</>}
+                        {avisosCount > 0 && <> / <span className="text-amber-600">{avisosCount}</span> avisos</>}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        Etapas: {etapas.atualizadas + etapas.criadas} · Itens: {itens.atualizados + itens.criados} · Dist: {dists.atualizadas + dists.criadas} · {totalLinhas} linhas lidas
+                      </p>
+                    </div>
+                    <div className="ml-2">
+                      <ArrowRight className={`h-4 w-4 text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                    </div>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="border-t bg-muted/20 p-4 space-y-4">
+                    {/* Summary grid */}
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      <div className="rounded-md border bg-card p-2.5">
+                        <p className="font-semibold text-muted-foreground text-[10px] uppercase">Etapas</p>
+                        <p className="mt-0.5">{etapas.criadas > 0 && <span className="text-emerald-600">{etapas.criadas} criadas</span>}{etapas.criadas > 0 && etapas.atualizadas > 0 && ' · '}{etapas.atualizadas > 0 && <span className="text-blue-600">{etapas.atualizadas} atualizadas</span>}{(etapas.criadas + etapas.atualizadas) === 0 && <span className="text-muted-foreground">—</span>}</p>
+                      </div>
+                      <div className="rounded-md border bg-card p-2.5">
+                        <p className="font-semibold text-muted-foreground text-[10px] uppercase">Itens de Compra</p>
+                        <p className="mt-0.5">{itens.criados > 0 && <span className="text-emerald-600">{itens.criados} criados</span>}{itens.criados > 0 && itens.atualizados > 0 && ' · '}{itens.atualizados > 0 && <span className="text-blue-600">{itens.atualizados} atualizados</span>}{(itens.criados + itens.atualizados) === 0 && <span className="text-muted-foreground">—</span>}</p>
+                      </div>
+                      <div className="rounded-md border bg-card p-2.5">
+                        <p className="font-semibold text-muted-foreground text-[10px] uppercase">Distribuições</p>
+                        <p className="mt-0.5">{dists.criadas > 0 && <span className="text-emerald-600">{dists.criadas} criadas</span>}{dists.criadas > 0 && dists.atualizadas > 0 && ' · '}{dists.atualizadas > 0 && <span className="text-blue-600">{dists.atualizadas} atualizadas</span>}{(dists.criadas + dists.atualizadas) === 0 && <span className="text-muted-foreground">—</span>}</p>
+                      </div>
+                    </div>
+
+                    {/* Errors */}
+                    {errors.length > 0 && (
+                      <div>
+                        <div className="mb-2 flex items-center justify-between">
+                          <h5 className="text-xs font-semibold uppercase text-destructive">Erros ({errors.length})</h5>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); downloadErrorLog(log.id, errors, warnings); }}
+                            className="flex items-center gap-1.5 rounded bg-muted-foreground/10 px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted-foreground/20"
+                          >
+                            <Download className="h-3.5 w-3.5" /> Exportar Log Completo
+                          </button>
+                        </div>
+                        <div className="max-h-48 overflow-y-auto rounded-md border bg-background p-3 text-xs">
+                          <ul className="space-y-1">
+                            {errors.map((erro, idx) => (
+                              <li key={idx} className="flex gap-2 border-b border-border/50 py-1 last:border-0"><span className="text-destructive font-bold shrink-0">✕</span> <span className="text-muted-foreground">{erro}</span></li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Warnings */}
+                    {warnings.length > 0 && (
+                      <div>
+                        <h5 className="mb-2 text-xs font-semibold uppercase text-amber-600">Avisos ({warnings.length})</h5>
+                        <div className="max-h-36 overflow-y-auto rounded-md border bg-background p-3 text-xs">
+                          <ul className="space-y-1">
+                            {warnings.map((aviso, idx) => (
+                              <li key={idx} className="flex gap-2 border-b border-border/50 py-1 last:border-0"><span className="text-amber-600 font-bold shrink-0">⚠</span> <span className="text-muted-foreground">{aviso}</span></li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+
+                    {!hasIssues && (
+                      <div className="flex items-center gap-2 text-xs text-emerald-600">
+                        <CheckCircle2 className="h-4 w-4" /> Importação concluída sem erros ou avisos.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          }
+
+          // Legacy import_lote format
           const successCount = dados?.success ?? 0
           const totalCount = dados?.total ?? 0
-          const errors = dados?.errors ?? []
-          const isExpanded = expandedLog === log.id
+          const errors: string[] = dados?.errors ?? []
 
           return (
             <div key={log.id} className="rounded-lg border bg-card shadow-sm transition-all hover:border-primary/30">
@@ -1085,7 +1215,7 @@ function LogsImportacaoTab() {
                       onClick={(e) => { e.stopPropagation(); downloadErrorLog(log.id, errors); }}
                       className="flex items-center gap-1.5 rounded bg-muted-foreground/10 px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted-foreground/20"
                     >
-                      <Download className="h-3.5 w-3.5" /> Baixar CSV para Correção
+                      <Download className="h-3.5 w-3.5" /> Baixar para Correção
                     </button>
                   </div>
                   <div className="max-h-60 overflow-y-auto rounded-md border bg-background p-3 text-xs">
@@ -1104,3 +1234,153 @@ function LogsImportacaoTab() {
     </div>
   )
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Tab: WBS Completa (Excel)
+// ═══════════════════════════════════════════════════════════════
+
+function downloadWBSTemplate() {
+  const wb = XLSX.utils.book_new()
+
+  // Aba 1: Etapas — mesmas colunas do exportador
+  const etapaHeaders = [
+    'Código', 'Nome', 'Status', 'Casas', 'Ordem',
+    'Receita CEF', 'Preço Unitário (Serv)', 'Qtd/Casa (Serv)', 'Unidade (Serv)',
+    'Data Início Plan', 'Data Fim Plan', 'Observações',
+  ]
+  const etapaEx1 = ['INFRA', 'Infraestrutura', 'futuro', 64, 1, 320000, 5000, 1, 'vb', '2026-01-15', '2026-06-30', '']
+  const etapaEx2 = ['SUPER', 'Superestrutura', 'futuro', 64, 2, 480000, 7500, 1, 'vb', '2026-04-01', '2026-10-30', '']
+  const wsEtapas = XLSX.utils.aoa_to_sheet([etapaHeaders, etapaEx1, etapaEx2])
+  wsEtapas['!cols'] = [10, 30, 14, 8, 8, 16, 18, 14, 12, 16, 16, 30].map(w => ({ wch: w }))
+  XLSX.utils.book_append_sheet(wb, wsEtapas, 'Etapas')
+
+  // Aba 2: Itens de Compra — mesmas colunas do exportador
+  const itemHeaders = [
+    'Etapa Cód', 'Etapa Nome', 'Item Cód', 'Descrição', 'Tipo',
+    'Qtd/Casa', 'Unidade', 'Custo Unitário',
+    'Fornecedor', 'Cond. Pagamento',
+  ]
+  const itemEx1 = ['INFRA', 'Infraestrutura', 'INFRA-001', 'Concreto Usinado FCK 25', 'MATERIAL', 2.5, 'm³', 450, 'Concreteira ABC', '30/60/90']
+  const itemEx2 = ['INFRA', 'Infraestrutura', 'INFRA-002', 'Aço CA-50', 'MATERIAL', 120, 'kg', 8.5, 'Aço Brasil', '30 DDL']
+  const itemEx3 = ['SUPER', 'Superestrutura', 'SUPER-001', 'Alvenaria Bloco 14', 'MATERIAL', 35, 'm²', 42, '', '28 DDL']
+  const wsItens = XLSX.utils.aoa_to_sheet([itemHeaders, itemEx1, itemEx2, itemEx3])
+  wsItens['!cols'] = [10, 30, 14, 30, 12, 10, 8, 14, 20, 14].map(w => ({ wch: w }))
+  XLSX.utils.book_append_sheet(wb, wsItens, 'Itens de Compra')
+
+  // Aba 3: Distribuição — mesmas colunas do exportador
+  const distHeaders = [
+    'Etapa Cód', 'Etapa Nome', 'Medição', 'Casas Planejadas',
+    'Data Início', 'Data Fim', 'Receita a Liberar',
+  ]
+  const distEx1 = ['INFRA', 'Infraestrutura', 1, 16, '2026-01-15', '2026-03-15', 80000]
+  const distEx2 = ['INFRA', 'Infraestrutura', 2, 16, '2026-03-16', '2026-05-15', 80000]
+  const distEx3 = ['INFRA', 'Infraestrutura', 3, 16, '2026-05-16', '2026-06-30', 80000]
+  const distEx4 = ['INFRA', 'Infraestrutura', 4, 16, '', '', 80000]
+  const wsDist = XLSX.utils.aoa_to_sheet([distHeaders, distEx1, distEx2, distEx3, distEx4])
+  wsDist['!cols'] = [10, 30, 10, 16, 14, 14, 16].map(w => ({ wch: w }))
+  XLSX.utils.book_append_sheet(wb, wsDist, 'Distribuição')
+
+  // Download
+  const wbOut = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
+  const blob = new Blob([wbOut], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const filename = 'template_wbs_completa.xlsx'
+
+  if ('showSaveFilePicker' in window) {
+    (window as unknown as { showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle> })
+      .showSaveFilePicker({
+        suggestedName: filename,
+        types: [{ description: 'Excel', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }],
+      })
+      .then(async (handle) => {
+        const w = await handle.createWritable(); await w.write(blob); await w.close()
+        toast.success('Template salvo!')
+      })
+      .catch((err: Error) => { if (err.name !== 'AbortError') throw err })
+    return
+  }
+
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = filename; a.style.display = 'none'
+  document.body.appendChild(a); a.click()
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url) }, 200)
+}
+
+function WBSTab() {
+  const { currentCompany } = useProject()
+  const queryClient = useQueryClient()
+  const [importPreview, setImportPreview] = useState<any | null>(null)
+  const [isWbsImporting, setIsWbsImporting] = useState(false)
+
+  const handleWbsImport = async (file: File) => {
+    if (!file || !currentCompany) return
+    try {
+      setIsWbsImporting(true)
+      const buffer = await file.arrayBuffer()
+      const { etapaRows, itemRows, distRows } = parseWBSImport(buffer)
+      const preview = await buildImportPreview(etapaRows, itemRows, distRows, currentCompany.id)
+      setImportPreview(preview)
+    } catch (err: any) {
+      toast.error('Erro ao ler arquivo WBS: ' + err.message)
+    } finally {
+      setIsWbsImporting(false)
+    }
+  }
+
+  const handleFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) handleWbsImport(file)
+  }, [currentCompany])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    const file = e.dataTransfer.files[0]
+    if (file) handleWbsImport(file)
+  }, [currentCompany])
+
+  return (
+    <>
+      <div className="mb-4 rounded-xl border bg-card p-4">
+        <h3 className="mb-1 text-sm font-semibold">Importação de WBS Completa</h3>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Importe o escopo completo do projeto em uma única planilha Excel com 3 abas: 
+          <strong> Etapas</strong>, <strong>Itens de Compra</strong> e <strong>Distribuição</strong>.
+          O template é idêntico ao formato de exportação — você pode exportar, editar no Excel e reimportar.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={downloadWBSTemplate}
+            className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs font-medium hover:bg-accent">
+            <Download className="h-3.5 w-3.5 text-primary" /> Baixar Template WBS (3 abas)
+          </button>
+        </div>
+        <div className="mt-3 rounded-lg bg-blue-500/5 p-3">
+          <p className="text-[10px] font-medium text-blue-600 dark:text-blue-400">ℹ️ Formato unificado</p>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            O template possui as mesmas colunas do Excel exportado pelo botão "Exportar" do Cronograma.
+            Preencha apenas os campos editáveis — colunas calculadas (Custo Total, Saldo, Margem) são 
+            geradas automaticamente pelo sistema e serão ignoradas na importação.
+          </p>
+        </div>
+      </div>
+
+      <DropZone onFile={handleWbsImport} handleFile={handleFile} handleDrop={handleDrop} />
+      
+      {isWbsImporting && <div className="mt-4 flex max-w-sm items-center gap-2 text-sm text-muted-foreground"><Spinner /> Carregando arquivo...</div>}
+
+      {importPreview && (
+        <ImportPreviewModal 
+          preview={importPreview} 
+          companyId={currentCompany?.id ?? ''} 
+          onClose={() => setImportPreview(null)} 
+          onDone={() => { 
+            setImportPreview(null); 
+            queryClient.invalidateQueries({ queryKey: ['etapas'] }); 
+            queryClient.invalidateQueries({ queryKey: ['itens_compra'] }); 
+          }} 
+        />
+      )}
+    </>
+  )
+}
+
+

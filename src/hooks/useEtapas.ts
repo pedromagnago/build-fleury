@@ -17,6 +17,8 @@ export interface Etapa {
   valor_total_orcado: number
   faturamento_valor_total?: number | null
   faturamento_preco_unitario?: number | null
+  faturamento_quantidade_unitaria?: number | null
+  faturamento_unidade?: string | null
   status: 'futuro' | 'em_andamento' | 'concluido' | 'atrasado'
   depende_de: string | null
   observacoes: string | null

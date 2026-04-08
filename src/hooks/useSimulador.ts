@@ -129,9 +129,12 @@ export function useSimulador() {
     queryFn: async () => {
       const { data } = await supabase
         .from('pedidos')
-        .select('*, itens_compra!inner(descricao, codigo, etapa_id), fornecedores(nome)')
+        .select('*, itens_compra(descricao, codigo, etapa_id, deleted_at, etapas(nome)), fornecedores(nome)')
         .eq('company_id', cid)
-      return (data ?? []).map((p: any) => ({
+      return (data ?? [])
+        // Garante que o pedido está vinculado a um item não deletado e a uma etapa existente
+        .filter((p: any) => p.itens_compra && !p.itens_compra.deleted_at && p.itens_compra.etapas)
+        .map((p: any) => ({
         ...p,
         etapa_id: p.itens_compra?.etapa_id ?? '',
         item_descricao: p.itens_compra?.descricao ?? '',
@@ -147,9 +150,12 @@ export function useSimulador() {
     queryFn: async () => {
       const { data } = await supabase
         .from('parcelas')
-        .select('*, pedidos(fornecedores(nome), itens_compra(descricao, etapas(nome)))')
+        .select('*, pedidos(fornecedores(nome), itens_compra(descricao, deleted_at, etapas(nome)))')
         .eq('company_id', cid).is('deleted_at', null)
-      return (data ?? []).map((p: any) => ({
+      return (data ?? [])
+        // Filtra parcelas órfãs onde o pedido, item ou etapa foram deletados
+        .filter((p: any) => p.pedidos && p.pedidos.itens_compra && !p.pedidos.itens_compra.deleted_at && p.pedidos.itens_compra.etapas)
+        .map((p: any) => ({
         ...p,
         fornecedor_nome: p.pedidos?.fornecedores?.nome ?? null,
         etapa_nome: p.pedidos?.itens_compra?.etapas?.nome ?? null,
@@ -162,6 +168,15 @@ export function useSimulador() {
     queryKey: ['sim-medicoes', cid],
     queryFn: async () => {
       const { data } = await supabase.from('medicoes').select('*').eq('company_id', cid).order('numero')
+      return data ?? []
+    },
+    enabled: !!cid, staleTime: 300_000,
+  })
+
+  const { data: distribuicaoRaw = [] } = useQuery({
+    queryKey: ['sim-distribuicao', cid],
+    queryFn: async () => {
+      const { data } = await supabase.from('cronograma_distribuicao').select('*').eq('company_id', cid)
       return data ?? []
     },
     enabled: !!cid, staleTime: 300_000,
@@ -204,8 +219,8 @@ export function useSimulador() {
   // ─── Computed ─────────────────────────────────────────
 
   const baseSnapshot = useMemo(() =>
-    buildBaseSnapshot(etapas, pedidosRaw, parcelasRaw, medicoes, fornecedores, itensCompra, currentCompany?.saldo_inicial_caixa ?? 0),
-    [etapas, pedidosRaw, parcelasRaw, medicoes, fornecedores, itensCompra, currentCompany?.saldo_inicial_caixa],
+    buildBaseSnapshot(etapas, pedidosRaw, parcelasRaw, medicoes, fornecedores, itensCompra, currentCompany?.saldo_inicial_caixa ?? 0, distribuicaoRaw),
+    [etapas, pedidosRaw, parcelasRaw, medicoes, fornecedores, itensCompra, currentCompany?.saldo_inicial_caixa, distribuicaoRaw],
   )
 
   const cenarioSnapshot = useMemo(() =>

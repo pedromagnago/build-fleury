@@ -1,5 +1,4 @@
 import { useState, useMemo } from 'react'
-import { PageHeader } from '@/components/ui/PageHeader'
 import { useProject } from '@/contexts/ProjectContext'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useEtapas } from '@/hooks/useEtapas'
@@ -8,9 +7,8 @@ import { useMedicoes, useDistribuicao } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
 import { formatCurrency } from '@/lib/utils'
 import { parsearCondicao } from '@/lib/parcelas'
-import { Table, ChevronRight, ChevronDown, X, Download } from 'lucide-react'
-import { useTour } from '@/lib/tours/useTour'
-import { pageTours } from '@/lib/tours/page-tours'
+import { ChevronRight, ChevronDown, X, Download } from 'lucide-react'
+import FinancialViewFilter, { type FinancialViewMode } from './FinancialViewFilter'
 
 const localDate = (iso: string) => {
   if (!iso) return new Date()
@@ -32,9 +30,12 @@ type Item = {
   meta?: { cat?: string; etapa?: string; forn?: string; item?: string; orig?: number }
 }
 
-export default function SimuladorPage() {
-  const { restartTour } = useTour('simulador', pageTours.simulador)
+interface SimuladorProps {
+  viewMode?: FinancialViewMode
+  onViewModeChange?: (mode: FinancialViewMode) => void
+}
 
+export default function SimuladorPanel({ viewMode: externalMode, onViewModeChange }: SimuladorProps = {}) {
   const { currentCompany } = useProject()
   const { data: parcelas = [] } = useParcelas()
   const { data: medicoes = [] } = useMedicoes()
@@ -44,22 +45,53 @@ export default function SimuladorPage() {
   const { data: mutuos = [] } = useMutuos()
   const { data: distribuicoes = [] } = useDistribuicao()
 
+  const [localMode, setLocalMode] = useState<FinancialViewMode>('pedidos')
+  const viewMode = externalMode ?? localMode
+  const setViewMode = onViewModeChange ?? setLocalMode
+
   const [overrides, setOverrides] = useState<Record<string, Override>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editing, setEditing] = useState<Item | null>(null)
 
   const toggle = (k: string) => setExpanded(p => ({ ...p, [k]: !p[k] }))
 
-  // Semanas (24 = ~6 meses)
   const weeks = useMemo(() => {
-    const now = new Date()
-    const dow = now.getDay()
-    const mon = new Date(now)
-    mon.setDate(now.getDate() - (dow === 0 ? 6 : dow - 1))
-    mon.setHours(0, 0, 0, 0)
-    return Array.from({ length: 24 }, (_, i) => {
-      const s = new Date(mon); s.setDate(mon.getDate() + i * 7)
-      const e = new Date(s); e.setDate(s.getDate() + 6)
+    // 1) Find the earliest date among all data (Medições, Mútuos, Parcelas, Etapas)
+    let minDateMs = Date.now()
+
+    const checkDate = (d?: string | null) => {
+      if (!d) return
+      const t = localDate(d).getTime()
+      if (t < minDateMs) minDateMs = t
+    }
+
+    medicoes.forEach(m => checkDate(m.data_prevista))
+    mutuos.forEach(m => { checkDate(m.data_captacao); m.parcelas?.forEach((p: any) => checkDate(p.data_vencimento)) })
+    parcelas.forEach(p => checkDate(p.data_vencimento))
+    etapas.forEach(e => checkDate(e.data_inicio_plan))
+
+    // 2) Align to Monday of that earliest week
+    const startObj = new Date(minDateMs)
+    const dowStart = startObj.getDay()
+    startObj.setDate(startObj.getDate() - (dowStart === 0 ? 6 : dowStart - 1))
+    startObj.setHours(0, 0, 0, 0)
+
+    // 3) Align to Monday of "now + 6 months" for the end
+    const endObj = new Date()
+    endObj.setMonth(endObj.getMonth() + 6)
+    const dowEnd = endObj.getDay()
+    endObj.setDate(endObj.getDate() - (dowEnd === 0 ? 6 : dowEnd - 1))
+    endObj.setHours(0, 0, 0, 0)
+
+    // 4) Calculate number of weeks
+    const diffMs = endObj.getTime() - startObj.getTime()
+    const length = Math.max(24, Math.ceil(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1)
+
+    return Array.from({ length }, (_, i) => {
+      const s = new Date(startObj)
+      s.setDate(startObj.getDate() + i * 7)
+      const e = new Date(s)
+      e.setDate(s.getDate() + 6)
       return {
         s, e,
         iso0: s.toISOString().split('T')[0]!,
@@ -67,9 +99,8 @@ export default function SimuladorPage() {
         lbl: `${String(s.getDate()).padStart(2, '0')}/${String(s.getMonth() + 1).padStart(2, '0')}`,
       }
     })
-  }, [])
+  }, [medicoes, mutuos, parcelas, etapas])
 
-  // Montar todos os items do fluxo
   const items = useMemo(() => {
     const ov = (id: string, date: string, val: number) => {
       const o = overrides[id]
@@ -81,11 +112,16 @@ export default function SimuladorPage() {
     }
     const all: Item[] = []
 
-    // Entradas: medições com granularidade por serviço
-    medicoes.filter(m => m.status !== 'paga' && m.data_prevista).forEach(m => {
+    const filterPaga = (status: string) => {
+      if (viewMode === 'realizado') return status === 'paga' || status === 'quitado';
+      // If planejado or pedidos, we want BOTH Realizado AND Planejado. 
+      // If we only wanted Planejado, a theoretical viewMode='apenas_planejado' would return status !== 'paga'
+      return true;
+    }
+
+    medicoes.filter(m => filterPaga(m.status) && m.data_prevista).forEach(m => {
       const dists = distribuicoes.filter(dd => dd.medicao_numero === m.numero)
       if (dists.length > 0) {
-        // Entradas detalhadas por serviço/etapa
         dists.forEach((dist, idx) => {
           const etapa = etapas.find(e => e.id === dist.etapa_id)
           const valFat = Number(dist.valor_liberado_faturamento || 0)
@@ -93,29 +129,29 @@ export default function SimuladorPage() {
           const iid = `med-${m.id}-srv-${idx}`
           const { d, v, mod } = ov(iid, m.data_prevista, valFat)
           all.push({
-            id: iid,
-            desc: `M${m.numero} — ${etapa?.nome || 'Serviço'}`,
+            id: iid, desc: `M${m.numero} — ${etapa?.nome || 'Serviço'}`,
             valor: Number(v), data: d, tipo: 'entrada', modified: mod,
             meta: { cat: 'Cliente', etapa: etapa?.nome, orig: valFat }
           })
         })
       } else {
-        // Fallback: valor global da medição (sem distribuição)
         const { d, v, mod } = ov(`med-${m.id}`, m.data_prevista, m.valor_planejado)
         all.push({ id: `med-${m.id}`, desc: `Medição nº ${m.numero}`, valor: Number(v), data: d, tipo: 'entrada', modified: mod, meta: { cat: 'Cliente', orig: m.valor_planejado } })
       }
     })
 
-    // Entradas: mútuos captação
-    mutuos.filter(m => m.status !== 'quitado' && m.data_captacao).forEach(m => {
+    mutuos.filter(m => m.data_captacao).forEach(m => {
+      if (viewMode === 'realizado' && m.data_captacao > new Date().toISOString().split('T')[0]!) return // very rough approximation
       const { d, v, mod } = ov(`mutcap-${m.id}`, m.data_captacao, m.valor_captado)
       all.push({ id: `mutcap-${m.id}`, desc: `Mútuo: ${m.nome}`, valor: Number(v), data: d, tipo: 'entrada', modified: mod, meta: { cat: m.tipo, orig: m.valor_captado } })
     })
 
-    // Saídas firmes: parcelas
-    parcelas.filter(p => p.status !== 'paga' && p.data_vencimento).forEach(p => {
-      const calcVal = Number(p.valor) - Number(p.valor_pago || 0)
-      const { d, v, mod } = ov(`par-${p.id}`, p.data_vencimento, calcVal)
+    const filteredParcelas = parcelas.filter(p => filterPaga(p.status) && p.data_vencimento)
+    filteredParcelas.forEach(p => {
+      // Use valor_pago if paga, otherwise full calcVal
+      const isPaga = p.status === 'paga'
+      const calcVal = isPaga ? Number(p.valor_pago || 0) : Number(p.valor) - Number(p.valor_pago || 0)
+      const { d, v, mod } = ov(`par-${p.id}`, isPaga && p.data_pagamento_real ? p.data_pagamento_real : p.data_vencimento, calcVal)
       const ped = pedidos.find(pd => pd.id === p.pedido_id)
       const itemObj = itens.find(i => i.id === ped?.item_compra_id)
       const etapaObj = etapas.find(et => et.id === itemObj?.etapa_id)
@@ -125,16 +161,15 @@ export default function SimuladorPage() {
       })
     })
 
-    // Saídas firmes: parcelas de mútuo (devolução)
     mutuos.forEach(m => {
-      ;(m.parcelas || []).filter((p: any) => p.status !== 'paga' && p.data_vencimento).forEach((p: any) => {
-        const calcVal = Number(p.valor) - Number(p.valor_pago || 0)
-        const { d, v, mod } = ov(`mutpar-${p.id}`, p.data_vencimento, calcVal)
+      ;(m.parcelas || []).filter((p: any) => filterPaga(p.status) && p.data_vencimento).forEach((p: any) => {
+        const isPaga = p.status === 'paga'
+        const calcVal = isPaga ? Number(p.valor_pago || 0) : Number(p.valor) - Number(p.valor_pago || 0)
+        const { d, v, mod } = ov(`mutpar-${p.id}`, isPaga && p.data_pagamento_real ? p.data_pagamento_real : p.data_vencimento, calcVal)
         all.push({ id: `mutpar-${p.id}`, desc: `Mútuo Parc ${p.numero_parcela} — ${m.nome}`, valor: Number(v), data: d, tipo: 'firme', modified: mod, meta: { cat: m.tipo, forn: m.nome, orig: calcVal } })
       })
     })
 
-    // Saídas brutas: itens sem pedido (cronograma)
     const pedMap = new Map<string, number>()
     pedidos.forEach(p => pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + Number(p.valor_total_real || 0)))
 
@@ -174,12 +209,10 @@ export default function SimuladorPage() {
     })
 
     return all
-  }, [parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, overrides])
+  }, [parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, overrides, viewMode])
 
-  // Grid semanal
   const grid = useMemo(() => {
     let acum = currentCompany?.saldo_inicial_caixa || 0
-    parcelas.filter(p => p.status === 'paga').forEach(p => { acum -= Number(p.valor_pago) })
 
     const firstWeekStart = weeks[0]?.iso0 || ''
     const past = items.filter(i => i.data < firstWeekStart)
@@ -203,10 +236,8 @@ export default function SimuladorPage() {
 
   const numOv = Object.keys(overrides).length
 
-  // Sub-linhas de detalhamento
   const subRows = (tipo: 'entrada' | 'firme' | 'bruto') => {
     const filtered = items.filter(i => i.tipo === tipo && weeks.some(w => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() }))
-    // agrupar por desc para reduzir linhas
     const groups = new Map<string, Item[]>()
     filtered.forEach(i => {
       const k = i.desc
@@ -223,8 +254,8 @@ export default function SimuladorPage() {
           const match = its.filter(i => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() })
           const sum = match.reduce((s, i) => s + i.valor, 0)
           return (
-            <td 
-              key={ci} 
+            <td
+              key={ci}
               className={`border-r px-2 py-1.5 text-right tabular-nums cursor-pointer hover:bg-primary/5 ${match.some(m => m.modified) ? 'bg-amber-50/60 dark:bg-amber-900/10' : ''}`}
               onClick={() => match.length > 0 && setEditing(match[0] ?? null)}
             >
@@ -237,7 +268,7 @@ export default function SimuladorPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-background">
+    <div className="flex flex-col overflow-hidden" style={{ height: 'calc(100vh - 16rem)' }}>
       {/* Popover de edição */}
       {editing && (
         <>
@@ -270,20 +301,23 @@ export default function SimuladorPage() {
         </>
       )}
 
-      {/* Header */}
-      <div className="flex items-center justify-between border-b bg-card px-4 py-3 shrink-0">
-        <PageHeader title="Simulador de Fluxo de Caixa" description="Clique nas setas para expandir. Clique num valor para simular." icon={Table} onHelp={restartTour} />
-        {numOv > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-800">{numOv} simulações</span>
-            <button onClick={() => setOverrides({})} className="text-[10px] underline text-muted-foreground">Limpar</button>
-            <button className="flex items-center gap-1 bg-emerald-600 text-white rounded px-3 py-1.5 text-[10px] font-semibold hover:bg-emerald-700"><Download className="h-3 w-3" /> Exportar</button>
-          </div>
-        )}
+      {/* View Mode Filter */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] text-muted-foreground">Visão: {viewMode === 'realizado' ? 'Apenas realizado' : viewMode === 'planejado' ? 'Realizado + Planejado' : 'Realizado + Planejado + Pedidos'}</div>
+        <FinancialViewFilter value={viewMode} onChange={setViewMode} />
       </div>
 
+      {/* Header */}
+      {numOv > 0 && (
+        <div className="flex items-center gap-2 mb-3 p-2 rounded-lg border bg-amber-50/50 dark:bg-amber-900/10">
+          <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-800">{numOv} simulações</span>
+          <button onClick={() => setOverrides({})} className="text-[10px] underline text-muted-foreground">Limpar</button>
+          <button className="flex items-center gap-1 bg-emerald-600 text-white rounded px-3 py-1.5 text-[10px] font-semibold hover:bg-emerald-700 ml-auto"><Download className="h-3 w-3" /> Exportar</button>
+        </div>
+      )}
+
       {/* Tabela */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto rounded-xl border">
         <table className="border-collapse text-xs min-w-max">
           <thead className="sticky top-0 z-30 bg-muted/80 backdrop-blur">
             <tr className="border-b">
@@ -313,7 +347,7 @@ export default function SimuladorPage() {
             <tr className="border-b bg-red-50/40 dark:bg-red-950/10 font-semibold cursor-pointer hover:bg-red-50/60" onClick={() => toggle('fir')}>
               <td className="sticky left-0 z-10 bg-red-50/60 dark:bg-red-950/20 border-r px-3 py-2.5 flex items-center gap-1.5 text-red-700 dark:text-red-400">
                 {expanded.fir ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                (-) Saídas Firmes
+                (-) Pedidos
               </td>
               {grid.map((w, i) => (
                 <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-red-700 dark:text-red-400">{fc(w.sFir)}</td>

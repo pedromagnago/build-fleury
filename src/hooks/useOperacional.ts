@@ -68,7 +68,7 @@ export interface Medicao {
   data_prevista: string
   data_liberacao: string | null
   valor_liberado: number
-  status: 'pendente' | 'enviada' | 'aprovada' | 'liberada'
+  status: 'futura' | 'em_medicao' | 'liberada' | 'paga'
   percentual_fisico_meta: number
   percentual_fisico_real: number
   observacoes: string | null

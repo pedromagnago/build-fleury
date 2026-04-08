@@ -6,6 +6,8 @@ export interface ParsedServico {
   preco_unitario: number;
   quantidade: number;
   valor_total: number;
+  unidade: string;
+  quantidade_por_casa: number;
 }
 
 export interface ParsedMedicao {
@@ -63,11 +65,18 @@ export function parseComposicaoMedicoes(file: ArrayBuffer): ComposicaoParsed {
     // Ignore lines that are just totals or non-service related
     if (String(nome).toLowerCase().includes('total')) continue;
 
+    const unidadeRaw = row[3] != null ? String(row[3]).trim().toUpperCase() : 'UND';
+    const qtdTotal = Number(row[4]) || 64;
+    const casasDefault = 64;
+    const qtdPorCasa = qtdTotal > 0 ? qtdTotal / casasDefault : 1;
+
     servicos.push({
       nome: String(nome).replace(/\n/g, ' ').trim(),
       preco_unitario: Number(row[5]) || 0,
-      quantidade: Number(row[4]) || 64,
+      quantidade: qtdTotal,
       valor_total: Number(row[6]) || 0,
+      unidade: unidadeRaw,
+      quantidade_por_casa: qtdPorCasa,
     });
   }
 
@@ -165,7 +174,9 @@ export async function importComposicaoToEtapas(
       await supabase.from('etapas')
         .update({
           faturamento_valor_total: s.valor_total,
-          faturamento_preco_unitario: s.preco_unitario
+          faturamento_preco_unitario: s.preco_unitario,
+          faturamento_quantidade_unitaria: s.quantidade_por_casa,
+          faturamento_unidade: s.unidade,
         })
         .eq('id', existingId);
       etapasAtualizadas++;
@@ -182,7 +193,9 @@ export async function importComposicaoToEtapas(
           valor_total_orcado: 0,
           status: 'futuro',
           faturamento_valor_total: s.valor_total,
-          faturamento_preco_unitario: s.preco_unitario
+          faturamento_preco_unitario: s.preco_unitario,
+          faturamento_quantidade_unitaria: s.quantidade_por_casa,
+          faturamento_unidade: s.unidade,
         })
         .select('id')
         .single();
@@ -203,7 +216,7 @@ export async function importComposicaoToEtapas(
       data_prevista: m.data_inicio,
       data_liberacao: null,
       valor_planejado: m.valor_planejado,
-      status: 'pendente',
+      status: 'futura',
       valor_liberado: 0,
       percentual_fisico_meta: 0,
       percentual_fisico_real: 0

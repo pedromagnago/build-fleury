@@ -1,0 +1,38 @@
+[
+  {
+    "Etapa Cód": "1",
+    "Etapa Nome": "ADMINISTRAÇÃO DE OBRA – ENGENHEIRO HORISTA E MESTRE DE OBRAS MENSALISTA",
+    "Item Cód": "1.1",
+    "Descrição": "Engenherio residente  - carro e gasolina incluso",
+    "Tipo": "MATERIAL",
+    "Qtd/Casa": 0,
+    "Unidade": "mês",
+    "Custo Unitário": 15000,
+    "Custo/Casa": 0,
+    "Casas": 64,
+    "Qtd Total": 4,
+    "Valor Total Orçado": 60000,
+    "Valor Consumido": 0,
+    "Saldo": 60000,
+    "Fornecedor": "",
+    "Cond. Pagamento": ""
+  },
+  {
+    "Etapa Cód": "1",
+    "Etapa Nome": "ADMINISTRAÇÃO DE OBRA – ENGENHEIRO HORISTA E MESTRE DE OBRAS MENSALISTA",
+    "Item Cód": "1.2",
+    "Descrição": "Mestre de obras",
+    "Tipo": "MAO_DE_OBRA",
+    "Qtd/Casa": 0,
+    "Unidade": "mês",
+    "Custo Unitário": 0,
+    "Custo/Casa": 0,
+    "Casas": 64,
+    "Qtd Total": 4,
+    "Valor Total Orçado": 0,
+    "Valor Consumido": 0,
+    "Saldo": 0,
+    "Fornecedor": "",
+    "Cond. Pagamento": ""
+  }
+]

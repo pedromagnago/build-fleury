@@ -382,8 +382,7 @@ function PaymentModal({
                       .from('itens_compra')
                       .update({
                         valor_consumido: (data.valor_consumido ?? 0) + valorPago,
-                        // @ts-ignore
-                        valor_saldo: (data as any).valor_total_orcado - ((data.valor_consumido ?? 0) + valorPago),
+                        // valor_saldo: GENERATED ALWAYS — auto-calculated by PostgreSQL
                       })
                       .eq('id', pedidoData.item_compra_id)
                       .then(() => {})
@@ -879,7 +878,7 @@ function BatchPaymentModal({
           if (item) {
             await supabase.from('itens_compra').update({
               valor_consumido: (item.valor_consumido ?? 0) + valorPago,
-              valor_saldo: (item.valor_total_orcado ?? 0) - ((item.valor_consumido ?? 0) + valorPago),
+              // valor_saldo: GENERATED ALWAYS — auto-calculated by PostgreSQL
             }).eq('id', pedido.item_compra_id)
           }
         }
