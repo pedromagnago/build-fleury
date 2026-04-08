@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useProject } from '@/contexts/ProjectContext'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useEtapas } from '@/hooks/useEtapas'
@@ -236,35 +236,120 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
   const numOv = Object.keys(overrides).length
 
+  // Helper: sum items in a week
+  const weekSum = (its: Item[], w: typeof grid[0]) =>
+    its.filter(i => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() }).reduce((s, i) => s + i.valor, 0)
+
+  const weekMatch = (its: Item[], w: typeof grid[0]) =>
+    its.filter(i => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() })
+
+  // 3-level hierarchy: Etapa → Fornecedor → Item
   const subRows = (tipo: 'entrada' | 'firme' | 'bruto') => {
     const filtered = items.filter(i => i.tipo === tipo && weeks.some(w => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() }))
-    const groups = new Map<string, Item[]>()
+
+    // Level 1: Group by Etapa
+    const etapaGroups = new Map<string, Item[]>()
     filtered.forEach(i => {
-      const k = i.desc
-      if (!groups.has(k)) groups.set(k, [])
-      groups.get(k)!.push(i)
+      const k = i.meta?.etapa || 'Outros'
+      if (!etapaGroups.has(k)) etapaGroups.set(k, [])
+      etapaGroups.get(k)!.push(i)
     })
-    return Array.from(groups.entries()).map(([desc, its]) => (
-      <tr key={desc} className="border-b border-muted/40 hover:bg-muted/20 text-[11px]">
-        <td className="sticky left-0 z-10 bg-card border-r px-3 py-1.5 pl-8 truncate max-w-[220px] font-medium text-foreground/70" title={desc}>
-          {its[0]!.modified && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5 -mt-0.5" />}
-          {desc}
-        </td>
-        {grid.map((w, ci) => {
-          const match = its.filter(i => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() })
-          const sum = match.reduce((s, i) => s + i.valor, 0)
-          return (
-            <td
-              key={ci}
-              className={`border-r px-2 py-1.5 text-right tabular-nums cursor-pointer hover:bg-primary/5 ${match.some(m => m.modified) ? 'bg-amber-50/60 dark:bg-amber-900/10' : ''}`}
-              onClick={() => match.length > 0 && setEditing(match[0] ?? null)}
-            >
-              {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
+
+    const rows: React.ReactNode[] = []
+
+    for (const [etapa, etapaItems] of Array.from(etapaGroups.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+      const etapaKey = `${tipo}-et-${etapa}`
+
+      // ── Etapa row ──
+      rows.push(
+        <tr key={etapaKey} className="border-b border-muted/40 hover:bg-muted/20 text-[11px] cursor-pointer" onClick={() => toggle(etapaKey)}>
+          <td className="sticky left-0 z-10 bg-card border-r px-3 py-1.5 pl-7 font-semibold text-foreground/80">
+            <span className="flex items-center gap-1.5">
+              {expanded[etapaKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+              <span className="truncate" title={etapa}>📋 {etapa}</span>
+            </span>
+          </td>
+          {grid.map((w, ci) => {
+            const sum = weekSum(etapaItems, w)
+            return (
+              <td key={ci} className="border-r px-2 py-1.5 text-right tabular-nums font-medium">
+                {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
+              </td>
+            )
+          })}
+        </tr>
+      )
+
+      if (!expanded[etapaKey]) continue
+
+      // Level 2: Group by Fornecedor within Etapa
+      const fornGroups = new Map<string, Item[]>()
+      etapaItems.forEach(i => {
+        const k = i.meta?.forn || i.meta?.cat || 'Direto'
+        if (!fornGroups.has(k)) fornGroups.set(k, [])
+        fornGroups.get(k)!.push(i)
+      })
+
+      for (const [forn, fornItems] of Array.from(fornGroups.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+        const fornKey = `${tipo}-et-${etapa}-fn-${forn}`
+
+        // ── Fornecedor row ──
+        rows.push(
+          <tr key={fornKey} className="border-b border-muted/30 hover:bg-muted/15 text-[11px] cursor-pointer" onClick={() => toggle(fornKey)}>
+            <td className="sticky left-0 z-10 bg-card border-r px-3 py-1.5 pl-11 font-medium text-foreground/70">
+              <span className="flex items-center gap-1.5">
+                {expanded[fornKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+                <span className="truncate" title={forn}>🏢 {forn}</span>
+              </span>
             </td>
+            {grid.map((w, ci) => {
+              const sum = weekSum(fornItems, w)
+              return (
+                <td key={ci} className="border-r px-2 py-1.5 text-right tabular-nums text-foreground/70">
+                  {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
+                </td>
+              )
+            })}
+          </tr>
+        )
+
+        if (!expanded[fornKey]) continue
+
+        // Level 3: Individual items within Fornecedor
+        const itemGroups = new Map<string, Item[]>()
+        fornItems.forEach(i => {
+          const k = i.desc
+          if (!itemGroups.has(k)) itemGroups.set(k, [])
+          itemGroups.get(k)!.push(i)
+        })
+
+        for (const [desc, its] of itemGroups) {
+          rows.push(
+            <tr key={`${fornKey}-${desc}`} className="border-b border-muted/20 hover:bg-muted/10 text-[11px]">
+              <td className="sticky left-0 z-10 bg-card border-r px-3 py-1.5 pl-[60px] truncate max-w-[220px] text-foreground/60" title={desc}>
+                {its[0]!.modified && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5 -mt-0.5" />}
+                {desc}
+              </td>
+              {grid.map((w, ci) => {
+                const match = weekMatch(its, w)
+                const sum = match.reduce((s, i) => s + i.valor, 0)
+                return (
+                  <td
+                    key={ci}
+                    className={`border-r px-2 py-1.5 text-right tabular-nums cursor-pointer hover:bg-primary/5 ${match.some(m => m.modified) ? 'bg-amber-50/60 dark:bg-amber-900/10' : ''}`}
+                    onClick={() => match.length > 0 && setEditing(match[0] ?? null)}
+                  >
+                    {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
+                  </td>
+                )
+              })}
+            </tr>
           )
-        })}
-      </tr>
-    ))
+        }
+      }
+    }
+
+    return rows
   }
 
   return (
