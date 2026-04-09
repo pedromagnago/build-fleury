@@ -389,7 +389,7 @@ function PedidosTab({ search }: { search: string }) {
   const [editingPedido, setEditingPedido] = useState<Pedido | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
-  const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'] }
+  const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'], observacoes: '' }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
   const [condFromForn, setCondFromForn] = useState(false)
 
@@ -525,6 +525,7 @@ function PedidosTab({ search }: { search: string }) {
       cond_pagamento: p.cond_pagamento ?? '',
       data_entrega_prevista: p.data_entrega_prevista ?? '',
       status: p.status,
+      observacoes: p.observacoes ?? '',
     })
     setLoteItems([{
       id: crypto.randomUUID(),
@@ -565,6 +566,7 @@ function PedidosTab({ search }: { search: string }) {
         cond_pagamento: globalForm.cond_pagamento || null,
         data_entrega_prevista: globalForm.data_entrega_prevista || null,
         status: globalForm.status,
+        observacoes: globalForm.observacoes || null,
       }
       await updatePedido.mutateAsync({ id: editingPedido.id, ...payload })
 
@@ -573,19 +575,31 @@ function PedidosTab({ search }: { search: string }) {
       const valorChanged = (editingPedido.valor_total_real ?? 0) !== li.valorTotalCalc
 
       if ((condChanged || dateChanged || valorChanged) && li.valorTotalCalc > 0 && globalForm.cond_pagamento && globalForm.data_entrega_prevista) {
-        await supabase.from('parcelas').delete().eq('pedido_id', editingPedido.id).neq('status', 'paga')
-        const parcelas = gerarParcelas({
-          pedidoId: editingPedido.id,
-          companyId: currentCompany.id,
-          valorTotal: li.valorTotalCalc,
-          condPagamento: globalForm.cond_pagamento,
-          dataEntrega: localDate(globalForm.data_entrega_prevista),
-        })
-        if (parcelas.length > 0) {
-          await supabase.from('parcelas').insert(parcelas)
-          toast.success(`Parcelas regeneradas (${parcelas.length})`)
+        // Check how many futuras will be recalculated
+        const { data: existingParcelas } = await supabase.from('parcelas').select('id, status').eq('pedido_id', editingPedido.id)
+        const futuras = (existingParcelas || []).filter(p => p.status !== 'paga')
+        const pagas = (existingParcelas || []).filter(p => p.status === 'paga')
+
+        if (pagas.length === (existingParcelas || []).length && (existingParcelas || []).length > 0) {
+          toast.error('Todas as parcelas já foram pagas. Não é possível recalcular.')
+        } else {
+          const shouldRecalc = futuras.length === 0 || confirm(`${futuras.length} parcela(s) futura(s) serão recalculadas. Continuar?`)
+          if (shouldRecalc) {
+            await supabase.from('parcelas').delete().eq('pedido_id', editingPedido.id).neq('status', 'paga')
+            const parcelas = gerarParcelas({
+              pedidoId: editingPedido.id,
+              companyId: currentCompany.id,
+              valorTotal: li.valorTotalCalc,
+              condPagamento: globalForm.cond_pagamento,
+              dataEntrega: localDate(globalForm.data_entrega_prevista),
+            })
+            if (parcelas.length > 0) {
+              await supabase.from('parcelas').insert(parcelas)
+              toast.success(`Parcelas regeneradas (${parcelas.length})`)
+            }
+            qc.invalidateQueries({ queryKey: ['parcelas'] })
+          }
         }
-        qc.invalidateQueries({ queryKey: ['parcelas'] })
       }
     } else {
       // Lote insert
@@ -743,6 +757,24 @@ function PedidosTab({ search }: { search: string }) {
                   <input type="text" value={globalForm.cond_pagamento} onChange={(e) => { setGlobalForm((p) => ({ ...p, cond_pagamento: e.target.value })); setCondFromForn(false) }} placeholder="30/60" className={INPUT} />
                 </div>
               </div>
+              {/* Status + Observações (edit only) */}
+              {editingPedido && (
+                <div className="mt-3 grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className={LABEL}>Status</label>
+                    <select value={globalForm.status} onChange={(e) => setGlobalForm(p => ({ ...p, status: e.target.value as Pedido['status'] }))} className={INPUT}>
+                      <option value="planejado">Planejado</option>
+                      <option value="confirmado">Confirmado</option>
+                      <option value="entregue">Entregue</option>
+                      <option value="cancelado">Cancelado</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={LABEL}>Observações</label>
+                    <textarea value={globalForm.observacoes} onChange={(e) => setGlobalForm(p => ({ ...p, observacoes: e.target.value }))} placeholder="Notas sobre este pedido..." className={`${INPUT} min-h-[60px] resize-y`} />
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* ── STEP 1: Etapa selector + Item checkboxes ── */}
