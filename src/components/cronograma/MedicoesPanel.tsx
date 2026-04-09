@@ -69,31 +69,39 @@ export default function MedicoesPanel() {
     const m = new Map<string, { casas: number; valor: number }>()
     distribuicoes.forEach(d => {
       const prev = m.get(d.etapa_id) ?? { casas: 0, valor: 0 }
+      const etapa = etapas.find(e => e.id === d.etapa_id)
+      const pu = etapa?.faturamento_preco_unitario ?? 0
       prev.casas += d.casas_realizadas ?? 0
-      prev.valor += Number(d.valor_liberado_faturamento ?? 0)
+      prev.valor += (d.casas_planejadas ?? 0) * pu
       m.set(d.etapa_id, prev)
     })
     return m
-  }, [distribuicoes])
+  }, [distribuicoes, etapas])
 
   const medTotals = useMemo(() => {
     const m = new Map<number, { casas: number; valor: number }>()
     distribuicoes.forEach(d => {
       const prev = m.get(d.medicao_numero) ?? { casas: 0, valor: 0 }
+      const etapa = etapas.find(e => e.id === d.etapa_id)
+      const pu = etapa?.faturamento_preco_unitario ?? 0
       prev.casas += d.casas_planejadas ?? 0
-      prev.valor += Number(d.valor_liberado_faturamento ?? 0)
+      prev.valor += (d.casas_planejadas ?? 0) * pu
       m.set(d.medicao_numero, prev)
     })
     return m
-  }, [distribuicoes])
+  }, [distribuicoes, etapas])
 
   const kpis = useMemo(() => {
-    const totalReceita = distribuicoes.reduce((s, d) => s + Number(d.valor_liberado_faturamento ?? 0), 0)
+    const totalReceita = distribuicoes.reduce((s, d) => {
+      const etapa = etapas.find(e => e.id === d.etapa_id)
+      const pu = etapa?.faturamento_preco_unitario ?? 0
+      return s + (d.casas_planejadas ?? 0) * pu
+    }, 0)
     const totalAcumCasas = distribuicoes.reduce((s, d) => s + (d.casas_realizadas ?? 0), 0)
     const totalPlanCasas = distribuicoes.reduce((s, d) => s + (d.casas_planejadas ?? 0), 0)
     const pctFisico = totalPlanCasas > 0 ? (totalAcumCasas / totalPlanCasas) * 100 : 0
     return { totalMedicoes: sortedMedicoes.length, totalReceita, totalAcumCasas, pctFisico }
-  }, [distribuicoes, sortedMedicoes])
+  }, [distribuicoes, etapas, sortedMedicoes])
 
   const nextNum = useMemo(() => {
     const nums = medicoes.map(m => m.numero)
@@ -383,7 +391,8 @@ export default function MedicoesPanel() {
                     {sortedMedicoes.flatMap(med => {
                       const dist = distMatrix.get(etapa.id)?.get(med.numero)
                       const casas = dist?.casas_planejadas ?? 0
-                      const valor = Number(dist?.valor_liberado_faturamento ?? 0)
+                      const pu = etapa.faturamento_preco_unitario ?? 0
+                      const valor = casas * pu
                       const isEditing = editingCell?.etapaId === etapa.id && editingCell?.medNumero === med.numero
                       const noDates = dist && !dist.data_fim && !dist.data_inicio
 
@@ -421,7 +430,10 @@ export default function MedicoesPanel() {
                   {distribuicoes.reduce((s, d) => s + (d.casas_realizadas ?? 0), 0)}
                 </td>
                 <td className="border-r px-2 py-2.5 text-right tabular-nums text-emerald-600 bg-emerald-50/20 dark:bg-emerald-950/5">
-                  {formatCurrency(distribuicoes.reduce((s, d) => s + Number(d.valor_liberado_faturamento ?? 0), 0))}
+                  {formatCurrency(distribuicoes.reduce((s, d) => {
+                    const et = etapas.find(e => e.id === d.etapa_id)
+                    return s + (d.casas_planejadas ?? 0) * (et?.faturamento_preco_unitario ?? 0)
+                  }, 0))}
                 </td>
                 {sortedMedicoes.flatMap(med => {
                   const tot = medTotals.get(med.numero) ?? { casas: 0, valor: 0 }
