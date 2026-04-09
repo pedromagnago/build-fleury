@@ -2,9 +2,9 @@ import { useState, useMemo, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEtapas } from '@/hooks/useEtapas'
 import {
-  useMedicoes, useCreateMedicao,
+  useMedicoes, useCreateMedicao, useUpdateMedicao,
   useDistribuicao, useCreateDistribuicao,
-  type Distribuicao,
+  type Distribuicao, type Medicao,
 } from '@/hooks/useOperacional'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
@@ -13,7 +13,7 @@ import { exportToExcel } from '@/lib/exportExcel'
 import { toast } from 'sonner'
 import {
   ClipboardCheck, Plus, X, Check, AlertTriangle,
-  Search, Download, Trash2,
+  Search, Download, Trash2, Pencil,
 } from 'lucide-react'
 
 const STATUS_COLORS: Record<string, { label: string; cls: string }> = {
@@ -31,12 +31,14 @@ export default function MedicoesPanel() {
   const { data: distribuicoes = [] } = useDistribuicao()
   const createMedicao = useCreateMedicao()
   const createDist = useCreateDistribuicao()
+  const updateMedicao = useUpdateMedicao()
   const qc = useQueryClient()
   const { currentCompany } = useProject()
 
   const [showNewModal, setShowNewModal] = useState(false)
   const [newForm, setNewForm] = useState({ numero: '', data_prevista: '', data_inicio: '', data_fim: '' })
   const [editingCell, setEditingCell] = useState<{ distId: string | null; etapaId: string; medNumero: number; value: string } | null>(null)
+  const [editingMed, setEditingMed] = useState<{ id: string; data_prevista: string; data_liberacao: string; status: string } | null>(null)
   const [search, setSearch] = useState('')
 
   // Selection (row = etapa_id)
@@ -269,12 +271,70 @@ export default function MedicoesPanel() {
                 <th colSpan={2} className="border-r px-3 py-2 text-center text-[10px] font-bold uppercase tracking-wider text-muted-foreground bg-emerald-50/50 dark:bg-emerald-950/10">
                   Acumulado
                 </th>
-                {sortedMedicoes.map(med => {
+                {sortedMedicoes.map((med, medIdx) => {
                   const cfg = STATUS_COLORS[med.status] ?? STATUS_COLORS['futura']!
+                  const isEditingThis = editingMed?.id === med.id
                   return (
-                    <th key={med.id} colSpan={2} className="border-r px-2 py-1.5 text-center min-w-[160px]">
+                    <th key={med.id} colSpan={2} className="border-r px-2 py-1.5 text-center min-w-[160px] relative">
+                      {isEditingThis ? (
+                        <div className="absolute top-full left-1/2 -translate-x-1/2 z-50 mt-1 w-56 rounded-xl border bg-card p-3 shadow-2xl text-left" onClick={e => e.stopPropagation()}>
+                          <p className="text-[10px] font-bold uppercase text-muted-foreground mb-2">Editar Med {String(med.numero).padStart(2, '0')}</p>
+                          <div className="space-y-2">
+                            <div>
+                              <label className="text-[9px] font-medium text-muted-foreground">Data Prevista</label>
+                              <input type="date" value={editingMed.data_prevista} onChange={e => setEditingMed({ ...editingMed, data_prevista: e.target.value })} className={`${INPUT} mt-0.5`} />
+                            </div>
+                            <div>
+                              <label className="text-[9px] font-medium text-muted-foreground">Data Liberação</label>
+                              <input type="date" value={editingMed.data_liberacao} onChange={e => setEditingMed({ ...editingMed, data_liberacao: e.target.value })} className={`${INPUT} mt-0.5`} />
+                            </div>
+                            <div>
+                              <label className="text-[9px] font-medium text-muted-foreground">Status</label>
+                              <select value={editingMed.status} onChange={e => setEditingMed({ ...editingMed, status: e.target.value })} className={`${INPUT} mt-0.5`}>
+                                <option value="futura">Futura</option>
+                                <option value="em_medicao">Em Medição</option>
+                                <option value="liberada">Liberada</option>
+                                <option value="paga">Paga</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="flex justify-end gap-1.5 mt-3 pt-2 border-t">
+                            <button onClick={() => setEditingMed(null)} className="rounded px-2 py-1 text-[10px] hover:bg-accent">Cancelar</button>
+                            <button
+                              onClick={async () => {
+                                const prevMed = medIdx > 0 ? sortedMedicoes[medIdx - 1] : null
+                                const nextMed = medIdx < sortedMedicoes.length - 1 ? sortedMedicoes[medIdx + 1] : null
+                                if (prevMed?.data_prevista && editingMed.data_prevista && editingMed.data_prevista < prevMed.data_prevista) {
+                                  toast.error(`Data não pode ser anterior à Med ${String(prevMed.numero).padStart(2, '0')} (${fmtDate(prevMed.data_prevista)})`)
+                                  return
+                                }
+                                if (nextMed?.data_prevista && editingMed.data_prevista && editingMed.data_prevista > nextMed.data_prevista) {
+                                  toast.warning(`Atenção: data posterior à Med ${String(nextMed.numero).padStart(2, '0')} (${fmtDate(nextMed.data_prevista)})`)
+                                }
+                                await updateMedicao.mutateAsync({
+                                  id: med.id,
+                                  data_prevista: editingMed.data_prevista || undefined,
+                                  data_liberacao: editingMed.data_liberacao || undefined,
+                                  status: editingMed.status as Medicao['status'],
+                                })
+                                setEditingMed(null)
+                              }}
+                              className="rounded bg-primary px-2 py-1 text-[10px] font-medium text-primary-foreground hover:opacity-90"
+                            >Salvar</button>
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="flex flex-col items-center gap-0.5">
-                        <span className="font-bold text-[11px]">Med {String(med.numero).padStart(2, '0')}</span>
+                        <div className="flex items-center gap-1">
+                          <span className="font-bold text-[11px]">Med {String(med.numero).padStart(2, '0')}</span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setEditingMed({ id: med.id, data_prevista: med.data_prevista || '', data_liberacao: med.data_liberacao || '', status: med.status }) }}
+                            className="rounded p-0.5 hover:bg-accent text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+                            title="Editar medição"
+                          >
+                            <Pencil className="h-2.5 w-2.5 text-muted-foreground" />
+                          </button>
+                        </div>
                         {med.data_prevista && <span className="text-[9px] text-muted-foreground">{fmtDate(med.data_prevista)}</span>}
                         <span className={`rounded-full px-2 py-0.5 text-[8px] font-semibold ${cfg.cls}`}>{cfg.label}</span>
                       </div>
