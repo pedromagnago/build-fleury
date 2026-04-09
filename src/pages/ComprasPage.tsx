@@ -25,7 +25,7 @@ import {
   ResponsiveContainer, ReferenceLine, CartesianGrid, Legend,
 } from 'recharts'
 import {
-  ShoppingCart, Plus, X, Check, Pencil, Package, Truck, Users,
+  ShoppingCart, Plus, X, Check, Pencil, Package, Truck, Users, Copy,
   Search, BarChart3, ChevronDown, ChevronRight, CalendarClock, Trash2, Boxes,
 } from 'lucide-react'
 import { useTour } from '@/lib/tours/useTour'
@@ -539,6 +539,28 @@ function PedidosTab({ search }: { search: string }) {
     setShowForm(true)
   }
 
+  const duplicatePedido = (p: Pedido) => {
+    setEditingPedido(null)
+    setCondFromForn(false)
+    setGlobalForm({
+      fornecedor_id: p.fornecedor_id ?? '',
+      cond_pagamento: p.cond_pagamento ?? '',
+      data_entrega_prevista: '',
+      status: 'planejado',
+      observacoes: '',
+    })
+    setLoteItems([{
+      id: crypto.randomUUID(),
+      item_compra_id: p.item_compra_id,
+      casas_lote: p.casas_lote?.toString() ?? '',
+      valor_unitario_real: p.valor_unitario_real ? toBRLInput(p.valor_unitario_real) : '',
+    }])
+    const item = itens.find(i => i.id === p.item_compra_id)
+    if (item) setEtapaFilter(item.etapa_id)
+    setShowForm(true)
+    toast.info(`Pedido #${p.numero_pedido} duplicado. Revise a data de entrega e salve.`)
+  }
+
   const resetForm = () => {
     setGlobalForm(emptyGlobal)
     setCondFromForn(false)
@@ -1043,6 +1065,9 @@ function PedidosTab({ search }: { search: string }) {
                         <div className="flex items-center justify-center gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
                           <button onClick={() => startEdit(p)} className="rounded-md p-1 hover:bg-accent text-foreground" title="Editar">
                             <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button onClick={() => duplicatePedido(p)} className="rounded-md p-1 hover:bg-accent text-foreground" title="Duplicar">
+                            <Copy className="h-3.5 w-3.5" />
                           </button>
                           <button onClick={() => setConfirmDelete(p.id)} className="rounded-md p-1 hover:bg-destructive/10 text-destructive" title="Excluir">
                             <Trash2 className="h-3.5 w-3.5" />
