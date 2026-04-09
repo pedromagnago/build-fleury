@@ -195,17 +195,8 @@ export default function CronogramaPage() {
 
       {/* Cash Flow Chart */}
       <CashFlowChart
-        etapas={etapas}
-        distribuicoes={distribuicoes}
-        parcelas={parcelas}
-        pedidos={pedidos}
-        itensCompra={itensCompra}
-        saldoInicial={currentCompany?.saldo_inicial_caixa ?? 0}
-        faturamentoContrato={currentCompany?.faturamento_contrato ?? 0}
-        dataInicioObras={currentCompany?.data_inicio_obras ?? null}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
-        medicoes={medicoes}
       />
 
       {/* Tab Navigation */}

@@ -6,10 +6,11 @@ import { useDashboardKPIs } from '@/hooks/useFinanceiro'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useItensCompra, usePedidos } from '@/hooks/useCompras'
-import { useMedicoes, useAvancos, useDistribuicao } from '@/hooks/useOperacional'
-import { useMutuos } from '@/hooks/useMutuos'
+import { useMedicoes, useAvancos } from '@/hooks/useOperacional'
+
 import { supabase } from '@/lib/supabase'
-import { localDate, parsearCondicao } from '@/lib/parcelas'
+import { localDate } from '@/lib/parcelas'
+import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
 import { formatCurrency, formatPercent } from '@/lib/utils'
 import {
   LayoutDashboard, TrendingUp, TrendingDown,
@@ -188,118 +189,30 @@ function KpiCard({ label, value, icon: Icon, accent, sub }: {
 // W3 — Fluxo de Caixa Projetado (Level 1 + Level 2)
 // ═══════════════════════════════════════════════════════════════
 function FluxoCaixaWidget() {
-  const { currentCompany } = useProject()
-  const { data: parcelas = [] } = useParcelas()
-  const { data: medicoes = [] } = useMedicoes()
-  const { data: itens = [] } = useItensCompra()
-  const { data: pedidos = [] } = usePedidos()
-  const { data: etapas = [] } = useEtapas()
-  const { data: mutuos = [] } = useMutuos()
-  const { data: distribuicoes = [] } = useDistribuicao()
   const [viewMode, setViewMode] = useState<'consolidado' | 'maturidade'>('maturidade')
   const [periodicity, setPeriodicity] = useState<'dia' | 'semana' | 'mes'>('semana')
+  const { events, saldoInicial } = useCashFlowEvents('pedidos')
 
   const chartData = useMemo(() => {
-    if (!currentCompany) return []
-    const saldoInicial = currentCompany.saldo_inicial_caixa ?? 0
+    if (events.length === 0) return []
 
     const today = new Date()
     today.setHours(0, 0, 0, 0)
-    const todayISO = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().split('T')[0]!
+    const fmtISO = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
-    type Event = { date: string, type: 'entradas' | 'firme' | 'bruto', valor: number }
-    const events: Event[] = []
-
-    // 1. Entradas (Medições + Mútuos)
-    medicoes.filter((m) => m.status !== 'paga').forEach((m) => {
-      // Use data liberacao se houver, ou prevista. Se for passado, joga para hoje (vencido/atrasado)
-      let date = m.data_liberacao || m.data_prevista || todayISO
-      if (date < todayISO) date = todayISO
-
-      const dists = distribuicoes.filter(dd => dd.medicao_numero === m.numero)
-      if (dists.length > 0) {
-        dists.forEach(dist => {
-          const valFat = Number(dist.valor_liberado_faturamento || 0)
-          if (valFat > 0) events.push({ date, type: 'entradas', valor: valFat })
-        })
-      } else {
-        if (m.valor_planejado > 0) events.push({ date, type: 'entradas', valor: m.valor_planejado })
-      }
-    })
-
-    mutuos.filter((m) => m.status !== 'quitado' && m.data_captacao).forEach((m) => {
-      let date = m.data_captacao || todayISO
-      if (date < todayISO) date = todayISO
-      events.push({ date, type: 'entradas', valor: Number(m.valor_captado) })
-    })
-
-    // 2. Firme (Parcelas confirmadas + de mutuo)
-    parcelas.filter((p) => p.status !== 'paga').forEach((p) => {
-      let date = p.data_vencimento || todayISO
-      if (date < todayISO) date = todayISO
-      const calcVal = Number(p.valor) - Number(p.valor_pago || 0)
-      if (calcVal > 0) events.push({ date, type: 'firme', valor: calcVal })
-    })
-    mutuos.forEach(m => {
-      ;(m.parcelas || []).filter((p: any) => p.status !== 'paga' && p.data_vencimento).forEach((p: any) => {
-        let date = p.data_vencimento || todayISO
-        if (date < todayISO) date = todayISO
-        const calcVal = Number(p.valor) - Number(p.valor_pago || 0)
-        if (calcVal > 0) events.push({ date, type: 'firme', valor: calcVal })
-      })
-    })
-
-    // 3. Bruto (Sem Pedido)
-    const pedMap = new Map<string, number>()
-    pedidos.forEach(p => pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + Number(p.valor_total_real || 0)))
-
-    itens.forEach(item => {
-      const comPed = Math.min(pedMap.get(item.id) || 0, Number(item.valor_total_orcado))
-      const semPed = Math.max(0, Number(item.valor_total_orcado) - comPed - Number(item.valor_consumido))
-      if (semPed <= 0) return
-      
-      const etapa = etapas.find(e => e.id === item.etapa_id)
-      const dataOrig = etapa?.data_inicio_plan || ''
-      if (!dataOrig) return
-      
-      const dias = parsearCondicao(item.cond_pagamento || '')
-      const nParts = dias.length
-      const dists = distribuicoes.filter(dd => dd.etapa_id === item.etapa_id)
-      const casasT = etapa?.casas_total || 1
-
-      const pushBruto = (baseDate: string, ratio: number) => {
-        const valDist = semPed * ratio
-        if (valDist <= 0) return
-        const perPart = valDist / nParts
-        dias.forEach((dd) => {
-          const dt = localDate(baseDate)
-          dt.setDate(dt.getDate() + dd)
-          let date = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().split('T')[0]!
-          if (date < todayISO) date = todayISO
-          events.push({ date, type: 'bruto', valor: perPart })
-        })
-      }
-
-      if (dists.length > 0) {
-        dists.forEach(dist => pushBruto(dist.data_inicio || dataOrig, dist.casas_planejadas / casasT))
-      } else {
-        pushBruto(dataOrig, 1)
-      }
-    })
-
-    // Build buckets
     type TimelineBucket = { dateTarget: string, dateLabel: string, entradas: number, firme: number, bruto: number, saldo: number }
     const timeline: TimelineBucket[] = []
 
+    // Compute starting saldo: saldoInicial is already the base; however, events
+    // may include already-paid parcelas, so we adjust for events before the timeline
     let acum = saldoInicial
-    parcelas.filter(p => p.status === 'paga').forEach(p => { acum -= Number(p.valor_pago) })
 
     if (periodicity === 'dia') {
-      const step = 2 // Mostrando apenas a cada 2 dias para não amassar muito na view
+      const step = 2
       for (let i = 0; i < 90; i += step) {
         const d = new Date(today)
         d.setDate(d.getDate() + i)
-        const iso = d.toISOString().split('T')[0]!
+        const iso = fmtISO(d)
         const dStr = iso.slice(8) + '/' + iso.slice(5, 7)
         timeline.push({ dateTarget: iso, dateLabel: dStr, entradas: 0, firme: 0, bruto: 0, saldo: 0 })
       }
@@ -309,19 +222,19 @@ function FluxoCaixaWidget() {
         const day = d2.getDay()
         const diff = d2.getDate() - day + (day === 0 ? -6 : 1)
         d2.setDate(diff)
-        d2.setHours(0,0,0,0)
+        d2.setHours(0, 0, 0, 0)
         return d2
       }
       for (let i = 0; i < 24; i++) {
         const d = getMonday(today)
         d.setDate(d.getDate() + i * 7)
-        const iso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]!
-        timeline.push({ dateTarget: iso, dateLabel: `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`, entradas: 0, firme: 0, bruto: 0, saldo: 0 })
+        const iso = fmtISO(d)
+        timeline.push({ dateTarget: iso, dateLabel: `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`, entradas: 0, firme: 0, bruto: 0, saldo: 0 })
       }
-    } else { // mes
+    } else {
       for (let i = 0; i < 12; i++) {
         const d = new Date(today.getFullYear(), today.getMonth() + i, 1)
-        const iso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0]!.substring(0, 7)
+        const iso = fmtISO(d).substring(0, 7)
         timeline.push({ dateTarget: iso, dateLabel: d.toLocaleString('pt-BR', { month: 'short', year: '2-digit' }), entradas: 0, firme: 0, bruto: 0, saldo: 0 })
       }
     }
@@ -334,7 +247,7 @@ function FluxoCaixaWidget() {
         bucket = idx !== -1 ? timeline[idx] : timeline[timeline.length - 1]
       } else if (periodicity === 'semana') {
         const idx = timeline.findIndex((t, i) => {
-          const next = timeline[i+1]?.dateTarget
+          const next = timeline[i + 1]?.dateTarget
           return e.date >= t.dateTarget && (!next || e.date < next)
         })
         bucket = idx !== -1 ? timeline[idx] : timeline[timeline.length - 1]
@@ -344,9 +257,15 @@ function FluxoCaixaWidget() {
       }
 
       if (bucket) {
-        bucket[e.type] += e.valor
+        if (e.type === 'entrada') bucket.entradas += e.valor
+        else if (e.type === 'firme') bucket.firme += e.valor
+        else bucket.bruto += e.valor
       }
     })
+
+    // Desconta parcelas pagas que ocorreram ANTES do início do timeline
+    // (elas já estão nos events como tipo 'firme' com datas no passado,
+    // mas o hook move vencidas->hoje, então isso é coberto automaticamente)
 
     // Accumulate saldo
     timeline.forEach(t => {
@@ -355,7 +274,7 @@ function FluxoCaixaWidget() {
     })
 
     return timeline
-  }, [currentCompany, parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, periodicity])
+  }, [events, saldoInicial, periodicity])
 
   return (
     <WidgetCard title="Fluxo de Caixa Projetado" icon={TrendingUp}>

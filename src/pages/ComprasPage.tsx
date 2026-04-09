@@ -389,7 +389,7 @@ function PedidosTab({ search }: { search: string }) {
   const [editingPedido, setEditingPedido] = useState<Pedido | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
-  const emptyGlobal = { numero_pedido: '', fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'] }
+  const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'] }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
 
   // ─── New: Etapa-based item selector ───
@@ -507,7 +507,6 @@ function PedidosTab({ search }: { search: string }) {
   const startEdit = (p: Pedido) => {
     setEditingPedido(p)
     setGlobalForm({
-      numero_pedido: p.numero_pedido?.toString() ?? '',
       fornecedor_id: p.fornecedor_id ?? '',
       cond_pagamento: p.cond_pagamento ?? '',
       data_entrega_prevista: p.data_entrega_prevista ?? '',
@@ -542,7 +541,7 @@ function PedidosTab({ search }: { search: string }) {
       const li = calculatedItems[0]!
       const payload = {
         item_compra_id: li.item_compra_id,
-        numero_pedido: globalForm.numero_pedido ? Number(globalForm.numero_pedido) : null,
+
         casas_lote: li.casasLote || null,
         qtd_lote: li.qtdLoteCalc || null,
         valor_unitario_real: li.precoUnit || null,
@@ -584,7 +583,7 @@ function PedidosTab({ search }: { search: string }) {
       // 1. Inserir todos os itens de pedido
       const payloads = validItems.map(li => ({
         item_compra_id: li.item_compra_id,
-        numero_pedido: globalForm.numero_pedido ? Number(globalForm.numero_pedido) : null,
+
         casas_lote: li.casasLote || null,
         qtd_lote: li.qtdLoteCalc || null,
         valor_unitario_real: li.precoUnit || null,
@@ -710,8 +709,8 @@ function PedidosTab({ search }: { search: string }) {
             <div className="mb-4 rounded-lg border border-primary/10 bg-muted/20 p-4">
               <div className="grid gap-4 md:grid-cols-4">
                 <div>
-                  <label className={LABEL}>Num. Pedido</label>
-                  <input type="text" value={globalForm.numero_pedido} onChange={(e) => setGlobalForm((p) => ({ ...p, numero_pedido: e.target.value }))} placeholder="Ex: 1" className={INPUT} />
+                  <label className={LABEL}>Nº Pedido</label>
+                  <input type="text" disabled value={editingPedido ? `#${editingPedido.numero_pedido}` : 'Automático'} className={`${INPUT} bg-muted text-muted-foreground cursor-not-allowed`} />
                 </div>
                 <div>
                   <label className={LABEL}>Fornecedor</label>

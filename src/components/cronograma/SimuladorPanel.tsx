@@ -2,13 +2,12 @@ import React, { useState, useMemo } from 'react'
 import { useProject } from '@/contexts/ProjectContext'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useEtapas } from '@/hooks/useEtapas'
-import { useItensCompra, usePedidos } from '@/hooks/useCompras'
-import { useMedicoes, useDistribuicao } from '@/hooks/useOperacional'
+import { useMedicoes } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
 import { formatCurrency } from '@/lib/utils'
-import { parsearCondicao } from '@/lib/parcelas'
 import { ChevronRight, ChevronDown, X, Download, Calendar, CalendarDays } from 'lucide-react'
 import FinancialViewFilter, { type FinancialViewMode } from './FinancialViewFilter'
+import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
 
 type Periodicity = 'dia' | 'semana'
 
@@ -41,15 +40,14 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   const { currentCompany } = useProject()
   const { data: parcelas = [] } = useParcelas()
   const { data: medicoes = [] } = useMedicoes()
-  const { data: itens = [] } = useItensCompra()
-  const { data: pedidos = [] } = usePedidos()
   const { data: etapas = [] } = useEtapas()
   const { data: mutuos = [] } = useMutuos()
-  const { data: distribuicoes = [] } = useDistribuicao()
 
   const [localMode, setLocalMode] = useState<FinancialViewMode>('pedidos')
   const viewMode = externalMode ?? localMode
   const setViewMode = onViewModeChange ?? setLocalMode
+
+  const { events: cashFlowEvents, saldoInicial } = useCashFlowEvents(viewMode)
 
   const [overrides, setOverrides] = useState<Record<string, Override>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -128,118 +126,25 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
     })
   }, [medicoes, mutuos, parcelas, etapas, periodicity])
 
+  // Convert shared events to Item[] with override support
   const items = useMemo(() => {
-    const ov = (id: string, date: string, val: number) => {
-      const o = overrides[id]
+    return cashFlowEvents.map(ev => {
+      const o = overrides[ev.id]
+      const mod = !!(o?.newDate || o?.newValue !== undefined)
       return {
-        d: o?.newDate || date,
-        v: o?.newValue ?? val,
-        mod: !!(o?.newDate || o?.newValue !== undefined),
-      }
-    }
-    const all: Item[] = []
-
-    const filterPaga = (status: string) => {
-      if (viewMode === 'realizado') return status === 'paga' || status === 'quitado';
-      // If planejado or pedidos, we want BOTH Realizado AND Planejado. 
-      // If we only wanted Planejado, a theoretical viewMode='apenas_planejado' would return status !== 'paga'
-      return true;
-    }
-
-    medicoes.filter(m => filterPaga(m.status) && m.data_prevista).forEach(m => {
-      const dists = distribuicoes.filter(dd => dd.medicao_numero === m.numero)
-      if (dists.length > 0) {
-        dists.forEach((dist, idx) => {
-          const etapa = etapas.find(e => e.id === dist.etapa_id)
-          const valFat = Number(dist.valor_liberado_faturamento || 0)
-          if (valFat <= 0) return
-          const iid = `med-${m.id}-srv-${idx}`
-          const { d, v, mod } = ov(iid, m.data_prevista, valFat)
-          all.push({
-            id: iid, desc: `M${m.numero} — ${etapa?.nome || 'Serviço'}`,
-            valor: Number(v), data: d, tipo: 'entrada', modified: mod,
-            meta: { cat: 'Cliente', etapa: etapa?.nome, orig: valFat }
-          })
-        })
-      } else {
-        const { d, v, mod } = ov(`med-${m.id}`, m.data_prevista, m.valor_planejado)
-        all.push({ id: `med-${m.id}`, desc: `Medição nº ${m.numero}`, valor: Number(v), data: d, tipo: 'entrada', modified: mod, meta: { cat: 'Cliente', orig: m.valor_planejado } })
-      }
+        id: ev.id,
+        desc: ev.meta.desc,
+        valor: o?.newValue ?? ev.valor,
+        data: o?.newDate || ev.date,
+        tipo: ev.type,
+        modified: mod,
+        meta: { cat: ev.meta.cat, etapa: ev.meta.etapa, forn: ev.meta.forn, item: ev.meta.item, orig: ev.valor }
+      } as Item
     })
-
-    mutuos.filter(m => m.data_captacao).forEach(m => {
-      if (viewMode === 'realizado' && m.data_captacao > new Date().toISOString().split('T')[0]!) return // very rough approximation
-      const { d, v, mod } = ov(`mutcap-${m.id}`, m.data_captacao, m.valor_captado)
-      all.push({ id: `mutcap-${m.id}`, desc: `Mútuo: ${m.nome}`, valor: Number(v), data: d, tipo: 'entrada', modified: mod, meta: { cat: m.tipo, orig: m.valor_captado } })
-    })
-
-    const filteredParcelas = parcelas.filter(p => filterPaga(p.status) && p.data_vencimento)
-    filteredParcelas.forEach(p => {
-      // Use valor_pago if paga, otherwise full calcVal
-      const isPaga = p.status === 'paga'
-      const calcVal = isPaga ? Number(p.valor_pago || 0) : Number(p.valor) - Number(p.valor_pago || 0)
-      const { d, v, mod } = ov(`par-${p.id}`, isPaga && p.data_pagamento_real ? p.data_pagamento_real : p.data_vencimento, calcVal)
-      const ped = pedidos.find(pd => pd.id === p.pedido_id)
-      const itemObj = itens.find(i => i.id === ped?.item_compra_id)
-      const etapaObj = etapas.find(et => et.id === itemObj?.etapa_id)
-      all.push({
-        id: `par-${p.id}`, desc: `Parc ${p.numero_parcela} — ${ped?.fornecedor_nome || ''}`, valor: Number(v), data: d, tipo: 'firme', modified: mod,
-        meta: { cat: itemObj?.categoria || 'Obra', etapa: etapaObj?.nome, forn: ped?.fornecedor_nome, item: ped?.item_descricao || itemObj?.descricao, orig: calcVal }
-      })
-    })
-
-    mutuos.forEach(m => {
-      ;(m.parcelas || []).filter((p: any) => filterPaga(p.status) && p.data_vencimento).forEach((p: any) => {
-        const isPaga = p.status === 'paga'
-        const calcVal = isPaga ? Number(p.valor_pago || 0) : Number(p.valor) - Number(p.valor_pago || 0)
-        const { d, v, mod } = ov(`mutpar-${p.id}`, isPaga && p.data_pagamento_real ? p.data_pagamento_real : p.data_vencimento, calcVal)
-        all.push({ id: `mutpar-${p.id}`, desc: `Mútuo Parc ${p.numero_parcela} — ${m.nome}`, valor: Number(v), data: d, tipo: 'firme', modified: mod, meta: { cat: m.tipo, forn: m.nome, orig: calcVal } })
-      })
-    })
-
-    const pedMap = new Map<string, number>()
-    pedidos.forEach(p => pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + Number(p.valor_total_real || 0)))
-
-    itens.forEach(item => {
-      const comPed = Math.min(pedMap.get(item.id) || 0, Number(item.valor_total_orcado))
-      const semPed = Math.max(0, Number(item.valor_total_orcado) - comPed - Number(item.valor_consumido))
-      if (semPed <= 0) return
-      const etapa = etapas.find(e => e.id === item.etapa_id)
-      const dataOrig = etapa?.data_inicio_plan || ''
-      if (!dataOrig) return
-      const dias = parsearCondicao(item.cond_pagamento || '')
-      const nParts = dias.length
-      const dists = distribuicoes.filter(dd => dd.etapa_id === item.etapa_id)
-      const casasT = etapa?.casas_total || 1
-
-      const pushBruto = (baseDate: string, ratio: number, suffix: string, dIdx: number) => {
-        const valDist = semPed * ratio
-        if (valDist <= 0) return
-        const perPart = valDist / nParts
-        dias.forEach((dd, pIdx) => {
-          const dt = localDate(baseDate); dt.setDate(dt.getDate() + dd)
-          const dKey = dt.toISOString().split('T')[0]!
-          const iid = `bruto-${item.id}-${dIdx}-${pIdx}`
-          const { d, v, mod } = ov(iid, dKey, perPart)
-          all.push({
-            id: iid, desc: `${item.descricao}${suffix}`, valor: Number(v), data: d, tipo: 'bruto', modified: mod,
-            meta: { cat: item.categoria || 'Obra', etapa: etapa?.nome, forn: item.fornecedor_nome || '', item: item.descricao, orig: perPart }
-          })
-        })
-      }
-
-      if (dists.length > 0) {
-        dists.forEach((dist, dIdx) => pushBruto(dist.data_inicio || dataOrig, dist.casas_planejadas / casasT, ` (${dist.casas_planejadas}un)`, dIdx))
-      } else {
-        pushBruto(dataOrig, 1, '', 0)
-      }
-    })
-
-    return all
-  }, [parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, overrides, viewMode])
+  }, [cashFlowEvents, overrides])
 
   const grid = useMemo(() => {
-    let acum = currentCompany?.saldo_inicial_caixa || 0
+    let acum = saldoInicial
 
     const firstWeekStart = weeks[0]?.iso0 || ''
     const past = items.filter(i => i.data < firstWeekStart)
