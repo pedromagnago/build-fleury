@@ -7,6 +7,7 @@ import {
   type Distribuicao,
 } from '@/hooks/useOperacional'
 import { supabase } from '@/lib/supabase'
+import { useProject } from '@/contexts/ProjectContext'
 import { formatCurrency } from '@/lib/utils'
 import { exportToExcel } from '@/lib/exportExcel'
 import { toast } from 'sonner'
@@ -31,10 +32,11 @@ export default function MedicoesPanel() {
   const createMedicao = useCreateMedicao()
   const createDist = useCreateDistribuicao()
   const qc = useQueryClient()
+  const { currentCompany } = useProject()
 
   const [showNewModal, setShowNewModal] = useState(false)
   const [newForm, setNewForm] = useState({ numero: '', data_prevista: '', data_inicio: '', data_fim: '' })
-  const [editingCell, setEditingCell] = useState<{ distId: string; value: string } | null>(null)
+  const [editingCell, setEditingCell] = useState<{ distId: string | null; etapaId: string; medNumero: number; value: string } | null>(null)
   const [search, setSearch] = useState('')
 
   // Selection (row = etapa_id)
@@ -136,18 +138,29 @@ export default function MedicoesPanel() {
   }
 
   const handleSaveCasas = async () => {
-    if (!editingCell) return
-    const dist = distribuicoes.find(d => d.id === editingCell.distId)
-    if (!dist) return
-    const etapa = etapas.find(e => e.id === dist.etapa_id)
+    if (!editingCell || !currentCompany) return
+    const etapa = etapas.find(e => e.id === editingCell.etapaId)
     const pu = etapa?.faturamento_preco_unitario ?? 0
     const newCasas = parseInt(editingCell.value) || 0
     const newValor = newCasas * pu
 
-    await supabase.from('cronograma_distribuicao').update({
-      casas_planejadas: newCasas,
-      valor_liberado_faturamento: newValor,
-    }).eq('id', dist.id)
+    if (editingCell.distId) {
+      // UPDATE existing
+      await supabase.from('cronograma_distribuicao').update({
+        casas_planejadas: newCasas,
+        valor_liberado_faturamento: newValor,
+      }).eq('id', editingCell.distId)
+    } else {
+      // UPSERT new distribution
+      await supabase.from('cronograma_distribuicao').upsert({
+        company_id: currentCompany.id,
+        etapa_id: editingCell.etapaId,
+        medicao_numero: editingCell.medNumero,
+        casas_planejadas: newCasas,
+        casas_realizadas: 0,
+        valor_liberado_faturamento: newValor,
+      }, { onConflict: 'company_id,etapa_id,medicao_numero' })
+    }
 
     setEditingCell(null)
     qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
@@ -311,25 +324,21 @@ export default function MedicoesPanel() {
                       const dist = distMatrix.get(etapa.id)?.get(med.numero)
                       const casas = dist?.casas_planejadas ?? 0
                       const valor = Number(dist?.valor_liberado_faturamento ?? 0)
-                      const isEditing = editingCell?.distId === dist?.id
+                      const isEditing = editingCell?.etapaId === etapa.id && editingCell?.medNumero === med.numero
                       const noDates = dist && !dist.data_fim && !dist.data_inicio
 
                       return [
                         <td key={`${med.id}-${etapa.id}-c`} className="border-r px-2 py-2 text-right">
-                          {dist ? (
-                            isEditing ? (
-                              <div className="flex items-center gap-0.5 justify-end">
-                                <input type="number" autoFocus value={editingCell!.value} onChange={e => setEditingCell({ ...editingCell!, value: e.target.value })} onKeyDown={e => { if (e.key === 'Enter') handleSaveCasas(); if (e.key === 'Escape') setEditingCell(null) }} className={`${INPUT} w-12 text-right`} />
-                                <button onClick={handleSaveCasas} className="rounded p-0.5 hover:bg-emerald-100"><Check className="h-2.5 w-2.5 text-emerald-600" /></button>
-                              </div>
-                            ) : (
-                              <span className="cursor-pointer hover:text-primary tabular-nums inline-flex items-center gap-0.5" onClick={() => setEditingCell({ distId: dist.id, value: String(casas) })}>
-                                {noDates && <span title="Sem datas — não aparece no caixa"><AlertTriangle className="h-2.5 w-2.5 text-amber-500" /></span>}
-                                {casas}
-                              </span>
-                            )
+                          {isEditing ? (
+                            <div className="flex items-center gap-0.5 justify-end">
+                              <input type="number" autoFocus value={editingCell!.value} onChange={e => setEditingCell({ ...editingCell!, value: e.target.value })} onKeyDown={e => { if (e.key === 'Enter') handleSaveCasas(); if (e.key === 'Escape') setEditingCell(null) }} className={`${INPUT} w-12 text-right`} />
+                              <button onClick={handleSaveCasas} className="rounded p-0.5 hover:bg-emerald-100"><Check className="h-2.5 w-2.5 text-emerald-600" /></button>
+                            </div>
                           ) : (
-                            <span className="text-muted-foreground/20">—</span>
+                            <span className="cursor-pointer hover:text-primary tabular-nums inline-flex items-center gap-0.5" onClick={() => setEditingCell({ distId: dist?.id ?? null, etapaId: etapa.id, medNumero: med.numero, value: String(casas) })}>
+                              {dist && noDates && <span title="Sem datas — não aparece no caixa"><AlertTriangle className="h-2.5 w-2.5 text-amber-500" /></span>}
+                              {casas > 0 ? casas : <span className="text-muted-foreground/30">0</span>}
+                            </span>
                           )}
                         </td>,
                         <td key={`${med.id}-${etapa.id}-v`} className="border-r px-2 py-2 text-right tabular-nums text-muted-foreground">
