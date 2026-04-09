@@ -391,6 +391,19 @@ function PedidosTab({ search }: { search: string }) {
 
   const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'] }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
+  const [condFromForn, setCondFromForn] = useState(false)
+
+  const handleFornecedorChange = (fornId: string) => {
+    const forn = fornecedores.find(f => f.id === fornId)
+    const condPadrao = forn?.cond_pagamento_padrao || ''
+    setGlobalForm(p => ({
+      ...p,
+      fornecedor_id: fornId,
+      // Auto-fill only if user hasn't manually typed a condition
+      ...((!p.cond_pagamento || condFromForn) ? { cond_pagamento: condPadrao } : {}),
+    }))
+    setCondFromForn(!!condPadrao)
+  }
 
   // ─── New: Etapa-based item selector ───
   const [etapaFilter, setEtapaFilter] = useState<string>('')
@@ -506,6 +519,7 @@ function PedidosTab({ search }: { search: string }) {
 
   const startEdit = (p: Pedido) => {
     setEditingPedido(p)
+    setCondFromForn(false)
     setGlobalForm({
       fornecedor_id: p.fornecedor_id ?? '',
       cond_pagamento: p.cond_pagamento ?? '',
@@ -526,6 +540,7 @@ function PedidosTab({ search }: { search: string }) {
 
   const resetForm = () => {
     setGlobalForm(emptyGlobal)
+    setCondFromForn(false)
     setLoteItems([])
     setEtapaFilter('')
     setEditingPedido(null)
@@ -714,7 +729,7 @@ function PedidosTab({ search }: { search: string }) {
                 </div>
                 <div>
                   <label className={LABEL}>Fornecedor</label>
-                  <select value={globalForm.fornecedor_id} onChange={(e) => setGlobalForm((p) => ({ ...p, fornecedor_id: e.target.value }))} className={INPUT}>
+                  <select value={globalForm.fornecedor_id} onChange={(e) => handleFornecedorChange(e.target.value)} className={INPUT}>
                     <option value="">Selecione</option>
                     {fornecedores.map((f) => <option key={f.id} value={f.id}>{f.nome}</option>)}
                   </select>
@@ -724,8 +739,8 @@ function PedidosTab({ search }: { search: string }) {
                   <input type="date" value={globalForm.data_entrega_prevista} onChange={(e) => setGlobalForm((p) => ({ ...p, data_entrega_prevista: e.target.value }))} className={INPUT} />
                 </div>
                 <div>
-                  <label className={LABEL}>Cond. Pagamento</label>
-                  <input type="text" value={globalForm.cond_pagamento} onChange={(e) => setGlobalForm((p) => ({ ...p, cond_pagamento: e.target.value }))} placeholder="30/60" className={INPUT} />
+                  <label className={LABEL}>Cond. Pagamento {condFromForn && globalForm.cond_pagamento && <span className="text-[10px] text-muted-foreground font-normal">(padrão do fornecedor)</span>}</label>
+                  <input type="text" value={globalForm.cond_pagamento} onChange={(e) => { setGlobalForm((p) => ({ ...p, cond_pagamento: e.target.value })); setCondFromForn(false) }} placeholder="30/60" className={INPUT} />
                 </div>
               </div>
             </div>
