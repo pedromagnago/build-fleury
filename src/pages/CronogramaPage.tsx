@@ -7,6 +7,7 @@ import { useEtapas, useUpdateEtapa, useDeleteEtapa, type Etapa } from '@/hooks/u
 import { useItensCompra, usePedidos, type ItemCompra, type Pedido } from '@/hooks/useCompras'
 import { useDistribuicao, type Distribuicao } from '@/hooks/useOperacional'
 import { useParcelas, type Parcela } from '@/hooks/useFinanceiro'
+import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { formatCurrency } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
@@ -90,6 +91,7 @@ export default function CronogramaPage() {
   const { data: itensCompra = [] } = useItensCompra()
   const { data: pedidos = [] } = usePedidos()
   const { data: parcelas = [] } = useParcelas()
+  const { despesas = [] } = useDespesasIndiretas()
   const { data: medicoes = [] } = useLocalMedicoes()
   const updateEtapa = useUpdateEtapa()
   const deleteEtapa = useDeleteEtapa()
@@ -150,6 +152,8 @@ export default function CronogramaPage() {
   // Dashboard totals
   const dashTotals = useMemo(() => {
     let custoOrc = 0, custoCon = 0, custoPago = 0, receitaCEF = 0
+    let custoIndOrc = 0, custoIndCon = 0, custoIndPago = 0
+
     etapas.forEach(e => {
       const dists = distByEtapa.get(e.id) ?? []
       const distReceita = dists.reduce((sum, d) => sum + (d.valor_liberado_faturamento || 0), 0)
@@ -165,12 +169,40 @@ export default function CronogramaPage() {
         })
       })
     })
-    const saldo = custoOrc - custoCon
-    const margemRS = receitaCEF - custoOrc
-    const margemPct = receitaCEF > 0 ? ((receitaCEF - custoOrc) / receitaCEF) * 100 : 0
-    const execPct = custoOrc > 0 ? (custoCon / custoOrc) * 100 : 0
-    return { etapasCount: etapas.length, receitaCEF, custoOrcado: custoOrc, custoConsumido: custoCon, custoPago, saldo, execucaoPct: execPct, margemRS, margemPct }
-  }, [etapas, itemsByEtapa, pedidosByItem, parcelasByPedido])
+
+    despesas.forEach(d => {
+      custoIndOrc += Number(d.valor_orcado || 0)
+      custoIndCon += Number(d.valor_consumido || 0)
+    })
+
+    parcelas.forEach(p => {
+      if (p.despesa_indireta_id) {
+        custoIndPago += Number(p.valor_pago || 0)
+      }
+    })
+
+    const totalOrc = custoOrc + custoIndOrc
+    const totalCon = custoCon + custoIndCon
+    const saldo = totalOrc - totalCon
+    const margemRS = receitaCEF - totalOrc
+    const margemPct = receitaCEF > 0 ? ((receitaCEF - totalOrc) / receitaCEF) * 100 : 0
+    const execPct = totalOrc > 0 ? (totalCon / totalOrc) * 100 : 0
+    
+    return { 
+      etapasCount: etapas.length, 
+      receitaCEF, 
+      custoOrcado: custoOrc, 
+      custoIndiretoOrcado: custoIndOrc,
+      custoConsumido: custoCon, 
+      custoIndiretoConsumido: custoIndCon,
+      custoPago, 
+      custoIndiretoPago: custoIndPago,
+      saldo, 
+      execucaoPct: execPct, 
+      margemRS, 
+      margemPct 
+    }
+  }, [etapas, itemsByEtapa, pedidosByItem, parcelasByPedido, despesas, parcelas])
 
   const activeFilterCount = (4 - statusFilters.size) + (search ? 1 : 0)
 

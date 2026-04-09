@@ -17,6 +17,7 @@ import ProjectSelector from '@/pages/ProjectSelector'
 import Configuracoes from '@/pages/Configuracoes'
 import CronogramaPage from '@/pages/CronogramaPage'
 import ComprasPage from '@/pages/ComprasPage'
+import DespesasIndiretasPage from '@/pages/DespesasIndiretasPage'
 import ImportacaoPage from '@/pages/ImportacaoPage'
 import PagamentosPage from '@/pages/PagamentosPage'
 import DocumentosPage from '@/pages/DocumentosPage'
@@ -79,6 +80,7 @@ export default function App() {
                 <Route path="/dashboard" element={<Navigate to="/cronograma" replace />} />
                 <Route path="/cronograma" element={<CronogramaPage />} />
                 <Route path="/compras" element={<ComprasPage />} />
+                <Route path="/despesas-indiretas" element={<DespesasIndiretasPage />} />
                 <Route path="/pagamentos" element={<PagamentosPage />} />
                 <Route path="/mutuos" element={<MutuosPage />} />
                 <Route path="/documentos" element={<DocumentosPage />} />
