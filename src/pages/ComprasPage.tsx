@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react'
+import React, { useState, useMemo, useCallback, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -505,17 +505,75 @@ function PedidosTab({ search }: { search: string }) {
 
   const valorTotalLote = calculatedItems.reduce((acc, curr) => acc + curr.valorTotalCalc, 0)
 
-  // -- Parcela preview
-  const parcelaPreview = useMemo(() => {
-    if (valorTotalLote <= 0 || !globalForm.cond_pagamento || !globalForm.data_entrega_prevista) return []
-    return gerarParcelas({
-      pedidoId: 'preview',
-      companyId: 'preview',
+  // -- Editable parcelas state
+  interface EditableParcela { id: string; numero_parcela: number; valor: string; data_vencimento: string; status: string }
+  const [editableParcelas, setEditableParcelas] = useState<EditableParcela[]>([])
+  const [parcelasManuallyEdited, setParcelasManuallyEdited] = useState(false)
+
+  // Auto-generate parcelas when conditions change (unless manually edited)
+  useEffect(() => {
+    if (parcelasManuallyEdited) return
+    if (valorTotalLote <= 0 || !globalForm.cond_pagamento || !globalForm.data_entrega_prevista) {
+      setEditableParcelas([])
+      return
+    }
+    const generated = gerarParcelas({
+      pedidoId: 'preview', companyId: 'preview',
       valorTotal: valorTotalLote,
       condPagamento: globalForm.cond_pagamento,
       dataEntrega: localDate(globalForm.data_entrega_prevista),
     })
+    setEditableParcelas(generated.map(p => ({
+      id: crypto.randomUUID(),
+      numero_parcela: p.numero_parcela,
+      valor: toBRLInput(p.valor),
+      data_vencimento: p.data_vencimento,
+      status: p.status,
+    })))
   }, [valorTotalLote, globalForm.cond_pagamento, globalForm.data_entrega_prevista])
+
+  const parcelaSoma = editableParcelas.reduce((s, p) => s + parseBRL(p.valor), 0)
+  const parcelaDiff = Math.abs(parcelaSoma - valorTotalLote)
+  const parcelasOk = parcelaDiff <= 0.01
+
+  const redistributeLinear = () => {
+    if (valorTotalLote <= 0 || !globalForm.cond_pagamento || !globalForm.data_entrega_prevista) return
+    const generated = gerarParcelas({
+      pedidoId: 'preview', companyId: 'preview',
+      valorTotal: valorTotalLote,
+      condPagamento: globalForm.cond_pagamento,
+      dataEntrega: localDate(globalForm.data_entrega_prevista),
+    })
+    setEditableParcelas(generated.map(p => ({
+      id: crypto.randomUUID(),
+      numero_parcela: p.numero_parcela,
+      valor: toBRLInput(p.valor),
+      data_vencimento: p.data_vencimento,
+      status: p.status,
+    })))
+    setParcelasManuallyEdited(false)
+  }
+
+  const addParcela = () => {
+    setParcelasManuallyEdited(true)
+    setEditableParcelas(prev => [...prev, {
+      id: crypto.randomUUID(),
+      numero_parcela: prev.length + 1,
+      valor: '0,00',
+      data_vencimento: globalForm.data_entrega_prevista || new Date().toISOString().slice(0, 10),
+      status: 'futura',
+    }])
+  }
+
+  const removeParcela = (id: string) => {
+    setParcelasManuallyEdited(true)
+    setEditableParcelas(prev => prev.filter(p => p.id !== id).map((p, i) => ({ ...p, numero_parcela: i + 1 })))
+  }
+
+  const updateParcela = (id: string, field: 'valor' | 'data_vencimento', value: string) => {
+    setParcelasManuallyEdited(true)
+    setEditableParcelas(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p))
+  }
 
   const startEdit = (p: Pedido) => {
     setEditingPedido(p)
@@ -542,6 +600,7 @@ function PedidosTab({ search }: { search: string }) {
   const duplicatePedido = (p: Pedido) => {
     setEditingPedido(null)
     setCondFromForn(false)
+    setParcelasManuallyEdited(false)
     setGlobalForm({
       fornecedor_id: p.fornecedor_id ?? '',
       cond_pagamento: p.cond_pagamento ?? '',
@@ -564,6 +623,8 @@ function PedidosTab({ search }: { search: string }) {
   const resetForm = () => {
     setGlobalForm(emptyGlobal)
     setCondFromForn(false)
+    setEditableParcelas([])
+    setParcelasManuallyEdited(false)
     setLoteItems([])
     setEtapaFilter('')
     setEditingPedido(null)
@@ -647,19 +708,39 @@ function PedidosTab({ search }: { search: string }) {
 
       const createdPedidos = await createPedidoLote.mutateAsync(payloads)
 
-      // 2. Gerar parcelas proporcionais
-      if (globalForm.cond_pagamento && globalForm.data_entrega_prevista && createdPedidos && createdPedidos.length > 0) {
-        let allParcelas: ReturnType<typeof gerarParcelas> = []
-        for (const p of createdPedidos) {
-          const parcelas = gerarParcelas({
-            pedidoId: p.id,
-            companyId: currentCompany.id,
-            valorTotal: p.valor_total_real || 0,
-            condPagamento: p.cond_pagamento!,
-            dataEntrega: localDate(p.data_entrega_prevista!),
-          })
-          allParcelas = allParcelas.concat(parcelas)
+      // 2. Insert parcelas from editable state (distributed proportionally across pedidos)
+      if (editableParcelas.length > 0 && createdPedidos && createdPedidos.length > 0) {
+        const allParcelas: Array<{ company_id: string; pedido_id: string; numero_parcela: number; valor: number; data_vencimento: string; status: string }> = []
+
+        if (createdPedidos.length === 1) {
+          // Single pedido: use edited parcelas directly
+          for (const ep of editableParcelas) {
+            allParcelas.push({
+              company_id: currentCompany.id,
+              pedido_id: createdPedidos[0]!.id,
+              numero_parcela: ep.numero_parcela,
+              valor: parseBRL(ep.valor),
+              data_vencimento: ep.data_vencimento,
+              status: 'futura',
+            })
+          }
+        } else {
+          // Multi-pedido: distribute proportionally per pedido
+          for (const p of createdPedidos) {
+            const ratio = valorTotalLote > 0 ? (p.valor_total_real || 0) / valorTotalLote : 0
+            editableParcelas.forEach((ep, i) => {
+              allParcelas.push({
+                company_id: currentCompany.id,
+                pedido_id: p.id,
+                numero_parcela: i + 1,
+                valor: Math.round(parseBRL(ep.valor) * ratio * 100) / 100,
+                data_vencimento: ep.data_vencimento,
+                status: 'futura',
+              })
+            })
+          }
         }
+
         if (allParcelas.length > 0) {
           const { error } = await supabase.from('parcelas').insert(allParcelas)
           if (error) {
@@ -939,22 +1020,52 @@ function PedidosTab({ search }: { search: string }) {
               </div>
             )}
 
-            {/* Parcela preview */}
-            {parcelaPreview.length > 0 && (
+            {/* Editable Parcelas */}
+            {editableParcelas.length > 0 && (
               <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-4">
-                <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-primary">
-                  Preview de Parcelas Geradas ({parcelaPreview.length}x)
-                </p>
-                <div className="flex flex-wrap gap-2 text-xs">
-                  {parcelaPreview.map((p, i) => (
-                    <div key={i} className="flex items-center rounded-md border bg-card px-3 py-1.5 shadow-sm">
-                      <span className="font-bold text-primary">P{p.numero_parcela}</span>
-                      <span className="mx-2 text-muted-foreground opacity-50">|</span>
-                      <span className="font-semibold">{formatCurrency(p.valor)}</span>
-                      <span className="mx-2 text-muted-foreground">em</span>
-                      <span className="font-medium text-foreground">{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</span>
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+                    Parcelas ({editableParcelas.length}x)
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={redistributeLinear} className="rounded border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-accent" title="Redistribuir linearmente">
+                      Redistribuir
+                    </button>
+                    <button type="button" onClick={addParcela} className="flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/10">
+                      <Plus className="h-3 w-3" /> Parcela
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  {editableParcelas.map(p => (
+                    <div key={p.id} className="flex items-center gap-2 rounded-md border bg-card px-3 py-1.5 shadow-sm text-xs">
+                      <span className="font-bold text-primary w-8 shrink-0">P{p.numero_parcela}</span>
+                      <input
+                        type="text"
+                        value={p.valor}
+                        onChange={e => updateParcela(p.id, 'valor', e.target.value)}
+                        className="w-28 rounded border bg-background px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                      />
+                      <input
+                        type="date"
+                        value={p.data_vencimento}
+                        onChange={e => updateParcela(p.id, 'data_vencimento', e.target.value)}
+                        className="rounded border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
+                      />
+                      {p.status !== 'paga' && (
+                        <button type="button" onClick={() => removeParcela(p.id)} className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
                     </div>
                   ))}
+                </div>
+                {/* Soma vs Total */}
+                <div className={`mt-2 flex items-center gap-3 text-xs font-medium ${parcelasOk ? 'text-emerald-600' : 'text-red-500'}`}>
+                  <span>Soma: {formatCurrency(parcelaSoma)}</span>
+                  <span>Total: {formatCurrency(valorTotalLote)}</span>
+                  {!parcelasOk && <span className="font-bold">Diferença: {formatCurrency(parcelaDiff)}</span>}
+                  {parcelasOk && <Check className="h-3.5 w-3.5" />}
                 </div>
               </div>
             )}
@@ -975,7 +1086,7 @@ function PedidosTab({ search }: { search: string }) {
 
             <div className="mt-4 flex justify-end gap-3 border-t pt-4">
               <button type="button" onClick={resetForm} className="rounded-lg border px-5 py-2.5 text-sm font-medium hover:bg-accent/50">Cancelar</button>
-              <button type="submit" disabled={createPedidoLote.isPending || updatePedido.isPending || calculatedItems.length === 0} className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-50">
+              <button type="submit" disabled={createPedidoLote.isPending || updatePedido.isPending || calculatedItems.length === 0 || (editableParcelas.length > 0 && !parcelasOk)} className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-50">
                 <Check className="h-4 w-4" />{editingPedido ? 'Salvar Alteração' : `Finalizar Pedido (${calculatedItems.length} ite${calculatedItems.length === 1 ? 'm' : 'ns'}) + Parcelas`}
               </button>
             </div>
