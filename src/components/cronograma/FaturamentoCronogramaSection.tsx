@@ -1,7 +1,10 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { formatCurrency } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
+import { supabase } from '@/lib/supabase'
 import { DollarSign, Calendar, Pencil, Save, X, Plus, Trash2, FileSpreadsheet, ChevronDown, ChevronRight } from 'lucide-react'
+import { toast } from 'sonner'
 import type { Etapa } from '@/hooks/useEtapas'
 import type { Distribuicao } from '@/hooks/useOperacional'
 import type { useCreateDistribuicao, useUpdateDistribuicao, useDeleteDistribuicao } from '@/hooks/useOperacional'
@@ -16,6 +19,7 @@ interface Props {
 }
 
 export default function FaturamentoCronogramaSection({ etapa, dists, updateEtapa, createDist, updateDist, deleteDist }: Props) {
+  const qc = useQueryClient()
   // ─── Faturamento config ───
   const [editingFat, setEditingFat] = useState(false)
   const [fatForm, setFatForm] = useState({
@@ -54,6 +58,25 @@ export default function FaturamentoCronogramaSection({ etapa, dists, updateEtapa
       faturamento_quantidade_unitaria: qtdU || null,
       faturamento_unidade: fatForm.unidade || null,
     })
+
+    // ── Propagar recálculo para TODAS as distribuições desta etapa ──
+    if (calculatedTotal > 0 && casasTotal > 0 && dists.length > 0) {
+      let updated = 0
+      for (const d of dists) {
+        if (d.casas_planejadas > 0) {
+          const novoValor = (d.casas_planejadas / casasTotal) * calculatedTotal
+          await supabase.from('cronograma_distribuicao').update({
+            valor_liberado_faturamento: Math.round(novoValor * 100) / 100,
+          }).eq('id', d.id)
+          updated++
+        }
+      }
+      if (updated > 0) {
+        qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+        toast.success(`${updated} distribuições recalculadas com novo faturamento`)
+      }
+    }
+
     setEditingFat(false)
   }
 

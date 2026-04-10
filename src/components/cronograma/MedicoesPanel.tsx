@@ -39,6 +39,7 @@ export default function MedicoesPanel() {
   const [newForm, setNewForm] = useState({ numero: '', data_prevista: '', data_inicio: '', data_fim: '' })
   const [editingCell, setEditingCell] = useState<{ distId: string | null; etapaId: string; medNumero: number; value: string } | null>(null)
   const [editingMed, setEditingMed] = useState<{ id: string; data_prevista: string; data_liberacao: string; status: string } | null>(null)
+  const [editingPreco, setEditingPreco] = useState<{ etapaId: string; value: string } | null>(null)
   const [search, setSearch] = useState('')
 
   // Selection (row = etapa_id)
@@ -183,7 +184,39 @@ export default function MedicoesPanel() {
 
     setEditingCell(null)
     qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+    qc.invalidateQueries({ queryKey: ['etapas'] })
     toast.success('Distribuição atualizada')
+  }
+
+  // ── Save inline preço unitário ──
+  const handleSavePreco = async () => {
+    if (!editingPreco || !currentCompany) return
+    const etapa = etapas.find(e => e.id === editingPreco.etapaId)
+    if (!etapa) return
+    const newPreco = parseFloat(editingPreco.value.replace(',', '.')) || 0
+    const casas = etapa.casas_total || 0
+    const newTotal = newPreco * casas
+
+    // 1) Atualizar etapa
+    await supabase.from('etapas').update({
+      faturamento_preco_unitario: newPreco,
+      faturamento_valor_total: newTotal,
+      faturamento_quantidade_unitaria: casas,
+    }).eq('id', etapa.id)
+
+    // 2) Recalcular TODAS as distribuições desta etapa
+    const etapaDists = distribuicoes.filter(d => d.etapa_id === etapa.id && d.casas_planejadas > 0)
+    for (const d of etapaDists) {
+      const novoValor = casas > 0 ? (d.casas_planejadas / casas) * newTotal : 0
+      await supabase.from('cronograma_distribuicao').update({
+        valor_liberado_faturamento: Math.round(novoValor * 100) / 100,
+      }).eq('id', d.id)
+    }
+
+    setEditingPreco(null)
+    qc.invalidateQueries({ queryKey: ['etapas'] })
+    qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+    toast.success(`P.Unit atualizado: ${formatCurrency(newPreco)} → receita total ${formatCurrency(newTotal)}`)
   }
 
   // Bulk actions
@@ -394,7 +427,33 @@ export default function MedicoesPanel() {
                     <td className="sticky left-[78px] z-10 bg-card px-2 py-2 font-medium truncate max-w-[170px]">{etapa.nome}</td>
                     <td className="sticky left-[248px] z-10 bg-card px-2 py-2 text-center text-muted-foreground">{etapa.faturamento_unidade || 'casa'}</td>
                     <td className="sticky left-[298px] z-10 bg-card px-2 py-2 text-right tabular-nums">{formatNumber(etapa.casas_total ?? 0)}</td>
-                    <td className="sticky left-[348px] z-10 bg-card border-r px-2 py-2 text-right tabular-nums">{formatCurrency(etapa.faturamento_preco_unitario ?? 0)}</td>
+                    <td className="sticky left-[348px] z-10 bg-card border-r px-2 py-2 text-right tabular-nums">
+                      {editingPreco?.etapaId === etapa.id ? (
+                        <div className="flex items-center gap-0.5 justify-end">
+                          <input
+                            type="number"
+                            step="any"
+                            autoFocus
+                            value={editingPreco.value}
+                            onChange={e => setEditingPreco({ ...editingPreco, value: e.target.value })}
+                            onKeyDown={e => { if (e.key === 'Enter') handleSavePreco(); if (e.key === 'Escape') setEditingPreco(null) }}
+                            className={`${INPUT} w-20 text-right`}
+                          />
+                          <button onClick={handleSavePreco} className="rounded p-0.5 hover:bg-emerald-100"><Check className="h-2.5 w-2.5 text-emerald-600" /></button>
+                        </div>
+                      ) : (
+                        <span
+                          className="cursor-pointer hover:text-primary tabular-nums"
+                          onClick={() => setEditingPreco({ etapaId: etapa.id, value: String(etapa.faturamento_preco_unitario ?? 0) })}
+                          title="Clique para editar preço unitário"
+                        >
+                          {(etapa.faturamento_preco_unitario ?? 0) > 0
+                            ? formatCurrency(etapa.faturamento_preco_unitario!)
+                            : <span className="text-amber-500 italic">definir</span>
+                          }
+                        </span>
+                      )}
+                    </td>
                     <td className="border-r px-2 py-2 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5 font-medium">{formatNumber(acum.casas)}</td>
                     <td className="border-r px-2 py-2 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5 text-emerald-600">{acum.valor > 0 ? formatCurrency(acum.valor) : '—'}</td>
                     {sortedMedicoes.flatMap(med => {
@@ -440,7 +499,7 @@ export default function MedicoesPanel() {
                 <td className="border-r px-2 py-2.5 text-right tabular-nums text-emerald-600 bg-emerald-50/20 dark:bg-emerald-950/5">
                   {formatCurrency(distribuicoes.reduce((s, d) => {
                     const et = etapas.find(e => e.id === d.etapa_id)
-                    return s + (d.casas_planejadas ?? 0) * (et?.faturamento_preco_unitario ?? 0)
+                    return s + getValorProporcional(et, d.casas_planejadas ?? 0)
                   }, 0))}
                 </td>
                 {sortedMedicoes.flatMap(med => {
