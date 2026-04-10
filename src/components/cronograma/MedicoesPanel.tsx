@@ -84,7 +84,7 @@ export default function MedicoesPanel() {
     distribuicoes.forEach(d => {
       const prev = m.get(d.etapa_id) ?? { casas: 0, valor: 0 }
       const etapa = etapas.find(e => e.id === d.etapa_id)
-      prev.casas += d.casas_realizadas ?? 0
+      prev.casas += d.casas_planejadas ?? 0
       prev.valor += getValorProporcional(etapa, d.casas_planejadas ?? 0)
       m.set(d.etapa_id, prev)
     })
@@ -162,6 +162,19 @@ export default function MedicoesPanel() {
     if (!editingCell || !currentCompany) return
     const etapa = etapas.find(e => e.id === editingCell.etapaId)
     const newCasas = parseFloat(editingCell.value.replace(',', '.')) || 0
+
+    // Validar cap: soma de todas as distribuições não pode passar de casas_total
+    if (etapa) {
+      const casasTotal = etapa.casas_total ?? 0
+      const outrasDistCasas = distribuicoes
+        .filter(d => d.etapa_id === editingCell.etapaId && d.medicao_numero !== editingCell.medNumero)
+        .reduce((s, d) => s + d.casas_planejadas, 0)
+      if (outrasDistCasas + newCasas > casasTotal) {
+        toast.error(`Limite excedido: ${outrasDistCasas + newCasas} > ${casasTotal} casas configuradas`)
+        return
+      }
+    }
+
     const newValor = getValorProporcional(etapa, newCasas)
 
     if (editingCell.distId) {
@@ -494,7 +507,7 @@ export default function MedicoesPanel() {
                 <td className="sticky left-0 z-10 bg-muted/40"></td>
                 <td colSpan={5} className="sticky left-[28px] z-10 bg-muted/40 border-r px-3 py-2.5">TOTAL</td>
                 <td className="border-r px-2 py-2.5 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5">
-                  {formatNumber(distribuicoes.reduce((s, d) => s + (d.casas_realizadas ?? 0), 0))}
+                  {formatNumber(distribuicoes.reduce((s, d) => s + (d.casas_planejadas ?? 0), 0))}
                 </td>
                 <td className="border-r px-2 py-2.5 text-right tabular-nums text-emerald-600 bg-emerald-50/20 dark:bg-emerald-950/5">
                   {formatCurrency(distribuicoes.reduce((s, d) => {

@@ -41,7 +41,7 @@ export default function CashFlowChart({ viewMode, onViewModeChange }: Props) {
 
     let minDate = new Date(minDateTs)
     const maxDate = new Date(maxDateTs)
-    maxDate.setMonth(maxDate.getMonth() + 3) // pad 3 months
+    maxDate.setMonth(maxDate.getMonth() + 1) // pad 1 month beyond last event
 
     const buckets: { key: string, label: string, receita: number, custo: number, dateStartMs: number }[] = []
 

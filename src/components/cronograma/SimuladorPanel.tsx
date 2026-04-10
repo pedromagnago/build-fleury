@@ -9,13 +9,15 @@ import { ChevronRight, ChevronDown, X, Download, Calendar, CalendarDays } from '
 import FinancialViewFilter, { type FinancialViewMode } from './FinancialViewFilter'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
 
-type Periodicity = 'dia' | 'semana'
+type Periodicity = 'dia' | 'semana' | 'mes'
 
 const localDate = (iso: string) => {
   if (!iso) return new Date()
   const [y, m, d] = iso.split('-').map(Number)
   return new Date(y ?? 2024, (m ?? 1) - 1, d ?? 1)
 }
+
+const fmtISO = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
 const fc = (v: number) => v === 0 ? '-' : formatCurrency(v)
 
@@ -74,12 +76,37 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
     parcelas.forEach(p => checkDate(p.data_vencimento))
     etapas.forEach(e => checkDate(e.data_inicio_plan))
 
+    if (periodicity === 'mes') {
+      // Monthly buckets
+      const startM = new Date(minDateMs)
+      startM.setDate(1)
+      startM.setHours(0, 0, 0, 0)
+      const endM = new Date(maxDateMs)
+      endM.setMonth(endM.getMonth() + 1)
+      endM.setDate(1)
+
+      const buckets = []
+      const cursor = new Date(startM)
+      while (cursor <= endM) {
+        const m = cursor.getMonth()
+        const y = cursor.getFullYear()
+        const end = new Date(y, m + 1, 0)
+        const label = `${['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][m]}/${String(y).slice(2)}`
+        buckets.push({
+          s: new Date(cursor), e: end,
+          iso0: fmtISO(cursor), iso1: fmtISO(end), lbl: label,
+        })
+        cursor.setMonth(cursor.getMonth() + 1)
+      }
+      return buckets
+    }
+
     if (periodicity === 'dia') {
-      // Daily buckets: from earliest to now + 3 months
+      // Daily buckets: from earliest to last event + 1 month
       const startObj = new Date(minDateMs)
       startObj.setHours(0, 0, 0, 0)
-      const endObj = new Date()
-      endObj.setMonth(endObj.getMonth() + 3)
+      const endObj = new Date(maxDateMs)
+      endObj.setMonth(endObj.getMonth() + 1)
       endObj.setHours(0, 0, 0, 0)
       const diffMs = endObj.getTime() - startObj.getTime()
       const length = Math.max(30, Math.ceil(diffMs / (24 * 60 * 60 * 1000)) + 1)
@@ -97,20 +124,20 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
       })
     }
 
-    // Weekly buckets (default)
+    // Weekly buckets (default) — up to last event + 1 month
     const startObj = new Date(minDateMs)
     const dowStart = startObj.getDay()
     startObj.setDate(startObj.getDate() - (dowStart === 0 ? 6 : dowStart - 1))
     startObj.setHours(0, 0, 0, 0)
 
-    const endObj = new Date()
-    endObj.setMonth(endObj.getMonth() + 6)
+    const endObj = new Date(maxDateMs)
+    endObj.setMonth(endObj.getMonth() + 1)
     const dowEnd = endObj.getDay()
     endObj.setDate(endObj.getDate() - (dowEnd === 0 ? 6 : dowEnd - 1))
     endObj.setHours(0, 0, 0, 0)
 
     const diffMs = endObj.getTime() - startObj.getTime()
-    const length = Math.max(24, Math.ceil(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1)
+    const length = Math.max(12, Math.ceil(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1)
 
     return Array.from({ length }, (_, i) => {
       const s = new Date(startObj)
@@ -324,22 +351,18 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
           <div className="text-[10px] text-muted-foreground">Visão: {viewMode === 'realizado' ? 'Apenas realizado' : viewMode === 'planejado' ? 'Realizado + Planejado' : 'Realizado + Planejado + Pedidos'}</div>
           {/* Periodicity toggle */}
           <div className="flex items-center rounded-lg border bg-muted/30 p-0.5 gap-0.5">
-            <button
-              onClick={() => setPeriodicity('dia')}
-              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-semibold transition-colors ${
-                periodicity === 'dia' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <Calendar className="h-3 w-3" /> Dia
-            </button>
-            <button
-              onClick={() => setPeriodicity('semana')}
-              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-semibold transition-colors ${
-                periodicity === 'semana' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <CalendarDays className="h-3 w-3" /> Semana
-            </button>
+            {(['dia', 'semana', 'mes'] as const).map(p => (
+              <button
+                key={p}
+                onClick={() => setPeriodicity(p)}
+                className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-semibold transition-colors ${
+                  periodicity === p ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {p === 'dia' ? <Calendar className="h-3 w-3" /> : <CalendarDays className="h-3 w-3" />}
+                {p.charAt(0).toUpperCase() + p.slice(1)}
+              </button>
+            ))}
           </div>
         </div>
         <FinancialViewFilter value={viewMode} onChange={setViewMode} />
@@ -361,8 +384,8 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
             <tr className="border-b">
               <th className="sticky left-0 z-40 bg-muted/90 border-r px-3 py-2.5 text-left text-[10px] font-bold uppercase text-muted-foreground tracking-wider w-[220px] min-w-[220px]">Categoria</th>
               {grid.map((w, i) => (
-                <th key={i} className={`border-r px-2 py-2.5 text-center font-medium ${periodicity === 'dia' ? 'w-[80px] min-w-[80px]' : 'w-[110px] min-w-[110px]'}`}>
-                  <div className="text-[9px] text-muted-foreground">{periodicity === 'dia' ? `D${i + 1}` : `S${i + 1}`}</div>
+                <th key={i} className={`border-r px-2 py-2.5 text-center font-medium ${periodicity === 'dia' ? 'w-[80px] min-w-[80px]' : periodicity === 'mes' ? 'w-[100px] min-w-[100px]' : 'w-[110px] min-w-[110px]'}`}>
+                  <div className="text-[9px] text-muted-foreground">{periodicity === 'dia' ? `D${i + 1}` : periodicity === 'mes' ? `M${i + 1}` : `S${i + 1}`}</div>
                   <div className="text-[10px] mt-0.5">{w.lbl}</div>
                 </th>
               ))}
@@ -410,7 +433,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
             {/* SALDO SEMANA */}
             <tr className="border-y font-semibold bg-muted/10">
-              <td className="sticky left-0 z-10 bg-muted/20 border-r px-3 py-2.5 text-[10px] uppercase text-muted-foreground font-bold">Saldo na Semana</td>
+              <td className="sticky left-0 z-10 bg-muted/20 border-r px-3 py-2.5 text-[10px] uppercase text-muted-foreground font-bold">Saldo no Período</td>
               {grid.map((w, i) => (
                 <td key={i} className={`border-r px-2 py-2.5 text-right tabular-nums ${w.delta < 0 ? 'text-red-600' : ''}`}>{formatCurrency(w.delta)}</td>
               ))}
