@@ -85,7 +85,7 @@ function useLocalMedicoes() {
 export default function CronogramaPage() {
   const { restartTour } = useTour('cronograma', pageTours.cronograma)
 
-  const { currentCompany } = useProject()
+  useProject()
   const { data: etapas = [], isLoading } = useEtapas()
   const { data: distribuicoes = [] } = useDistribuicao()
   const { data: itensCompra = [] } = useItensCompra()
