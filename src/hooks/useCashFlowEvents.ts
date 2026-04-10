@@ -46,6 +46,14 @@ function todayISO(): string {
   return fmtISO(d)
 }
 
+function addDaysISO(baseIso: string, days: number): string {
+  if (!baseIso) return baseIso
+  const d = new Date(baseIso)
+  d.setUTCHours(12) // Avoid timezone shifts
+  d.setDate(d.getDate() + days)
+  return fmtISO(d)
+}
+
 // ─── Hook ───────────────────────────────────────────────────────
 export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): CashFlowResult {
   const { currentCompany } = useProject()
@@ -58,6 +66,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
   const { data: distribuicoes = [] } = useDistribuicao()
 
   const saldoInicial = currentCompany?.saldo_inicial_caixa ?? 0
+  const prazoRecebimento = currentCompany?.prazo_recebimento_dias ?? 30
 
   const events = useMemo(() => {
     const today = todayISO()
@@ -72,6 +81,10 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       if (viewMode === 'realizado' && m.status !== 'paga') return
 
       let baseDate = m.data_liberacao || m.data_prevista
+      if (baseDate) {
+        baseDate = addDaysISO(baseDate, prazoRecebimento)
+      }
+      
       // Vencida e não-paga: move para hoje
       if (m.status !== 'paga' && baseDate < today && viewMode !== 'realizado') {
         baseDate = today
@@ -87,7 +100,11 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           }
           if (val <= 0) return
 
-          let evDate = dist.data_fim || dist.data_inicio || baseDate
+          let evDate = dist.data_fim || dist.data_inicio || m.data_liberacao || m.data_prevista
+          if (evDate) {
+            evDate = addDaysISO(evDate, prazoRecebimento)
+          }
+
           if (m.status !== 'paga' && evDate < today && viewMode !== 'realizado') {
             evDate = today
           }

@@ -17,6 +17,7 @@ interface Company {
   custo_total_contrato: number
   custo_indireto: number
   custo_capital: number
+  prazo_recebimento_dias: number
   status: string
   config: Record<string, unknown>
   created_at: string

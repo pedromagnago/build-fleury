@@ -59,6 +59,7 @@ export default function Configuracoes() {
     saldo_inicial_caixa: '',
     faturamento_contrato: '',
     custo_total_contrato: '',
+    prazo_recebimento_dias: '',
   })
 
   useEffect(() => {
@@ -75,6 +76,7 @@ export default function Configuracoes() {
         saldo_inicial_caixa: currentCompany.saldo_inicial_caixa?.toString() ?? '',
         faturamento_contrato: currentCompany.faturamento_contrato?.toString() ?? '',
         custo_total_contrato: currentCompany.custo_total_contrato?.toString() ?? '',
+        prazo_recebimento_dias: currentCompany.prazo_recebimento_dias?.toString() ?? '30',
       })
       fetchTeamMembers(currentCompany.id)
       fetchInvites(currentCompany.id)
@@ -119,6 +121,7 @@ export default function Configuracoes() {
         saldo_inicial_caixa: form.saldo_inicial_caixa ? parseFloat(form.saldo_inicial_caixa) : 0,
         faturamento_contrato: form.faturamento_contrato ? parseFloat(form.faturamento_contrato) : 0,
         custo_total_contrato: form.custo_total_contrato ? parseFloat(form.custo_total_contrato) : 0,
+        prazo_recebimento_dias: form.prazo_recebimento_dias ? parseInt(form.prazo_recebimento_dias) : 30,
       })
       .eq('id', currentCompany.id)
 
@@ -325,7 +328,7 @@ export default function Configuracoes() {
             <DollarSign className="h-4 w-4 text-primary" />
             Dados Financeiros
           </h3>
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-4">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Faturamento Contrato (R$)</label>
               <input type="number" step="0.01" value={form.faturamento_contrato} onChange={(e) => updateField('faturamento_contrato', e.target.value)} disabled={!isAdmin} className={inputCls} />
@@ -337,6 +340,10 @@ export default function Configuracoes() {
             <div>
               <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Saldo Inicial (R$)</label>
               <input type="number" step="0.01" value={form.saldo_inicial_caixa} onChange={(e) => updateField('saldo_inicial_caixa', e.target.value)} disabled={!isAdmin} className={inputCls} />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Prazo Rec. Obras (dias)</label>
+              <input type="number" value={form.prazo_recebimento_dias} onChange={(e) => updateField('prazo_recebimento_dias', e.target.value)} disabled={!isAdmin} className={inputCls} />
             </div>
           </div>
         </div>
