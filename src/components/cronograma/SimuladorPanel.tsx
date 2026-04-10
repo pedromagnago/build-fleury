@@ -1,11 +1,14 @@
 import React, { useState, useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useProject } from '@/contexts/ProjectContext'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useEtapas } from '@/hooks/useEtapas'
-import { useMedicoes } from '@/hooks/useOperacional'
+import { useMedicoes, useDistribuicao } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
+import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
-import { ChevronRight, ChevronDown, X, Download, Calendar, CalendarDays } from 'lucide-react'
+import { toast } from 'sonner'
+import { ChevronRight, ChevronDown, X, Download, Calendar, CalendarDays, Save, Loader2 } from 'lucide-react'
 import FinancialViewFilter, { type FinancialViewMode } from './FinancialViewFilter'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
 
@@ -44,6 +47,8 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   const { data: medicoes = [] } = useMedicoes()
   const { data: etapas = [] } = useEtapas()
   const { data: mutuos = [] } = useMutuos()
+  const { data: distribuicoes = [] } = useDistribuicao()
+  const qc = useQueryClient()
 
   const [localMode, setLocalMode] = useState<FinancialViewMode>('pedidos')
   const viewMode = externalMode ?? localMode
@@ -54,7 +59,8 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   const [overrides, setOverrides] = useState<Record<string, Override>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editing, setEditing] = useState<Item | null>(null)
-  const [periodicity, setPeriodicity] = useState<Periodicity>('semana')
+  const [periodicity, setPeriodicity] = useState<Periodicity>('mes')
+  const [applying, setApplying] = useState(false)
 
   const toggle = (k: string) => setExpanded(p => ({ ...p, [k]: !p[k] }))
 
@@ -194,6 +200,70 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   }, [weeks, items, currentCompany, parcelas])
 
   const numOv = Object.keys(overrides).length
+
+  // ── Aplicar simulações ao banco ──
+  const handleApply = async () => {
+    if (numOv === 0) return
+    setApplying(true)
+    let applied = 0
+    try {
+      for (const [evId, ov] of Object.entries(overrides)) {
+        // Parcelas: par-{uuid}
+        if (evId.startsWith('par-')) {
+          const parId = evId.replace('par-', '')
+          const updates: Record<string, any> = {}
+          if (ov.newDate) updates.data_vencimento = ov.newDate
+          if (ov.newValue !== undefined) updates.valor = ov.newValue
+          if (Object.keys(updates).length > 0) {
+            await supabase.from('parcelas').update(updates).eq('id', parId)
+            applied++
+          }
+        }
+        // Medições via distribuição: med-{medId}-srv-{idx}
+        if (evId.startsWith('med-') && evId.includes('-srv-')) {
+          const parts = evId.match(/^med-(.+?)-srv-(\d+)$/)
+          if (parts) {
+            const medId = parts[1]
+            const srvIdx = parseInt(parts[2]!, 10)
+            const med = medicoes.find(m => m.id === medId)
+            if (med) {
+              const medDists = distribuicoes.filter(d => d.medicao_numero === med.numero)
+              const target = medDists[srvIdx]
+              if (target) {
+                const updates: Record<string, any> = {}
+                if (ov.newDate) updates.data_fim = ov.newDate
+                if (ov.newValue !== undefined) updates.valor_liberado_faturamento = ov.newValue
+                if (Object.keys(updates).length > 0) {
+                  await supabase.from('cronograma_distribuicao').update(updates).eq('id', target.id)
+                  applied++
+                }
+              }
+            }
+          }
+        }
+        // Medição direta (sem distribuição): med-{medId}
+        if (evId.startsWith('med-') && !evId.includes('-srv-')) {
+          const medId = evId.replace('med-', '')
+          const updates: Record<string, any> = {}
+          if (ov.newDate) updates.data_prevista = ov.newDate
+          if (ov.newValue !== undefined) updates.valor_planejado = ov.newValue
+          if (Object.keys(updates).length > 0) {
+            await supabase.from('medicoes').update(updates).eq('id', medId)
+            applied++
+          }
+        }
+      }
+      setOverrides({})
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      toast.success(`${applied} alterações aplicadas ao projeto`)
+    } catch (err: any) {
+      toast.error('Erro ao aplicar: ' + (err?.message || ''))
+    } finally {
+      setApplying(false)
+    }
+  }
 
   // Helper: sum items in a week
   const weekSum = (its: Item[], w: typeof grid[0]) =>
@@ -370,10 +440,23 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
       {/* Header */}
       {numOv > 0 && (
-        <div className="flex items-center gap-2 mb-3 p-2 rounded-lg border bg-amber-50/50 dark:bg-amber-900/10">
-          <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-800">{numOv} simulações</span>
-          <button onClick={() => setOverrides({})} className="text-[10px] underline text-muted-foreground">Limpar</button>
-          <button className="flex items-center gap-1 bg-emerald-600 text-white rounded px-3 py-1.5 text-[10px] font-semibold hover:bg-emerald-700 ml-auto"><Download className="h-3 w-3" /> Exportar</button>
+        <div className="flex items-center gap-2 mb-3 p-2.5 rounded-lg border-2 border-amber-300 bg-amber-50/50 dark:bg-amber-900/10">
+          <span className="rounded-full bg-amber-200 px-2.5 py-0.5 text-[10px] font-bold text-amber-900">{numOv} {numOv === 1 ? 'simulação' : 'simulações'}</span>
+          <span className="text-[10px] text-muted-foreground">As alterações são apenas uma prévia. Clique em "Aplicar" para salvar no projeto.</span>
+          <div className="flex items-center gap-1.5 ml-auto">
+            <button onClick={() => setOverrides({})} className="text-[10px] underline text-muted-foreground hover:text-foreground">Limpar</button>
+            <button
+              onClick={handleApply}
+              disabled={applying}
+              className="flex items-center gap-1.5 bg-emerald-600 text-white rounded-lg px-4 py-1.5 text-[11px] font-semibold hover:bg-emerald-700 disabled:opacity-50 shadow-sm transition-colors"
+            >
+              {applying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              {applying ? 'Aplicando...' : 'Aplicar Simulação'}
+            </button>
+            <button className="flex items-center gap-1 border rounded-lg px-3 py-1.5 text-[10px] font-medium text-muted-foreground hover:bg-accent transition-colors">
+              <Download className="h-3 w-3" /> Exportar
+            </button>
+          </div>
         </div>
       )}
 
