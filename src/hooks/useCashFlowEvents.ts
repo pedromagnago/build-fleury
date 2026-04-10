@@ -140,7 +140,6 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       if (viewMode === 'realizado' && m.status === 'ativo' && m.data_captacao > today) return
 
       let date = m.data_captacao
-      if (date < today && m.status !== 'quitado') date = today
 
       const val = Number(m.valor_captado)
       if (val > 0) {
