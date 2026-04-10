@@ -41,18 +41,31 @@
   }
 }
 
-/* Scrollbar styling */
+/* Scrollbar styling — visible and usable */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: hsl(var(--muted) / 0.5);
+  border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted-foreground) / 0.3);
-  border-radius: 3px;
+  background: hsl(var(--muted-foreground) / 0.35);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground) / 0.5);
+  background: hsl(var(--muted-foreground) / 0.55);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: hsl(var(--muted) / 0.3);
+}
+
+/* Force scrollbars always visible on scrollable containers */
+.scroll-visible {
+  overflow: auto !important;
+  scrollbar-gutter: stable;
 }

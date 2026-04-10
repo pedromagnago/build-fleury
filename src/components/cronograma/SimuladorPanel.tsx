@@ -292,7 +292,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
       // ── Etapa row ──
       rows.push(
         <tr key={etapaKey} className="border-b border-muted/40 hover:bg-muted/20 text-[11px] cursor-pointer" onClick={() => toggle(etapaKey)}>
-          <td className="sticky left-0 z-10 bg-card border-r px-3 py-1.5 pl-7 font-semibold text-foreground/80">
+          <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-7 font-semibold text-foreground/80 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
             <span className="flex items-center gap-1.5">
               {expanded[etapaKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
               <span className="truncate" title={etapa}>📋 {etapa}</span>
@@ -325,7 +325,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         // ── Fornecedor row ──
         rows.push(
           <tr key={fornKey} className="border-b border-muted/30 hover:bg-muted/15 text-[11px] cursor-pointer" onClick={() => toggle(fornKey)}>
-            <td className="sticky left-0 z-10 bg-card border-r px-3 py-1.5 pl-11 font-medium text-foreground/70">
+            <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-11 font-medium text-foreground/70 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
               <span className="flex items-center gap-1.5">
                 {expanded[fornKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
                 <span className="truncate" title={forn}>🏢 {forn}</span>
@@ -355,7 +355,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         for (const [desc, its] of itemGroups) {
           rows.push(
             <tr key={`${fornKey}-${desc}`} className="border-b border-muted/20 hover:bg-muted/10 text-[11px]">
-              <td className="sticky left-0 z-10 bg-card border-r px-3 py-1.5 pl-[60px] truncate max-w-[220px] text-foreground/60" title={desc}>
+              <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-[60px] truncate max-w-[220px] text-foreground/60 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]" title={desc}>
                 {its[0]!.modified && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5 -mt-0.5" />}
                 {desc}
               </td>
@@ -461,11 +461,11 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
       )}
 
       {/* Tabela */}
-      <div className="flex-1 overflow-auto rounded-xl border">
+      <div className="flex-1 overflow-auto rounded-xl border scroll-visible">
         <table className="border-collapse text-xs min-w-max">
           <thead className="sticky top-0 z-30 bg-muted/80 backdrop-blur">
             <tr className="border-b">
-              <th className="sticky left-0 z-40 bg-muted/90 border-r px-3 py-2.5 text-left text-[10px] font-bold uppercase text-muted-foreground tracking-wider w-[220px] min-w-[220px]">Categoria</th>
+              <th className="sticky left-0 z-40 bg-muted border-r px-3 py-2.5 text-left text-[10px] font-bold uppercase text-muted-foreground tracking-wider w-[220px] min-w-[220px] shadow-[2px_0_4px_-1px_rgba(0,0,0,0.08)]">Categoria</th>
               {grid.map((w, i) => (
                 <th key={i} className={`border-r px-2 py-2.5 text-center font-medium ${periodicity === 'dia' ? 'w-[80px] min-w-[80px]' : periodicity === 'mes' ? 'w-[100px] min-w-[100px]' : 'w-[110px] min-w-[110px]'}`}>
                   <div className="text-[9px] text-muted-foreground">{periodicity === 'dia' ? `D${i + 1}` : periodicity === 'mes' ? `M${i + 1}` : `S${i + 1}`}</div>
@@ -477,9 +477,11 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
           <tbody>
             {/* ENTRADAS */}
             <tr className="border-b bg-emerald-50/40 dark:bg-emerald-950/10 font-semibold cursor-pointer hover:bg-emerald-50/60" onClick={() => toggle('ent')}>
-              <td className="sticky left-0 z-10 bg-emerald-50/60 dark:bg-emerald-950/20 border-r px-3 py-2.5 flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
-                {expanded.ent ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                (+) Entradas
+              <td className="sticky left-0 z-20 bg-emerald-50 dark:bg-emerald-950 border-r px-3 py-2.5 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                <span className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
+                  {expanded.ent ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  (+) Entradas
+                </span>
               </td>
               {grid.map((w, i) => (
                 <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{fc(w.sEnt)}</td>
@@ -489,9 +491,11 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
             {/* SAÍDAS FIRMES */}
             <tr className="border-b bg-red-50/40 dark:bg-red-950/10 font-semibold cursor-pointer hover:bg-red-50/60" onClick={() => toggle('fir')}>
-              <td className="sticky left-0 z-10 bg-red-50/60 dark:bg-red-950/20 border-r px-3 py-2.5 flex items-center gap-1.5 text-red-700 dark:text-red-400">
-                {expanded.fir ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                (-) Pedidos
+              <td className="sticky left-0 z-20 bg-red-50 dark:bg-red-950 border-r px-3 py-2.5 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                <span className="flex items-center gap-1.5 text-red-700 dark:text-red-400">
+                  {expanded.fir ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  (-) Pedidos
+                </span>
               </td>
               {grid.map((w, i) => (
                 <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-red-700 dark:text-red-400">{fc(w.sFir)}</td>
@@ -501,9 +505,11 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
             {/* SAÍDAS BRUTAS */}
             <tr className="border-b bg-orange-50/40 dark:bg-orange-950/10 font-semibold cursor-pointer hover:bg-orange-50/60" onClick={() => toggle('bru')}>
-              <td className="sticky left-0 z-10 bg-orange-50/60 dark:bg-orange-950/20 border-r px-3 py-2.5 flex items-center gap-1.5 text-orange-700 dark:text-orange-400">
-                {expanded.bru ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                (-) Previsto (Bruto)
+              <td className="sticky left-0 z-20 bg-orange-50 dark:bg-orange-950 border-r px-3 py-2.5 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                <span className="flex items-center gap-1.5 text-orange-700 dark:text-orange-400">
+                  {expanded.bru ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  (-) Previsto (Bruto)
+                </span>
               </td>
               {grid.map((w, i) => (
                 <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-orange-700 dark:text-orange-400">{fc(w.sBru)}</td>
@@ -516,7 +522,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
             {/* SALDO SEMANA */}
             <tr className="border-y font-semibold bg-muted/10">
-              <td className="sticky left-0 z-10 bg-muted/20 border-r px-3 py-2.5 text-[10px] uppercase text-muted-foreground font-bold">Saldo no Período</td>
+              <td className="sticky left-0 z-20 bg-muted border-r px-3 py-2.5 text-[10px] uppercase text-muted-foreground font-bold shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">Saldo no Período</td>
               {grid.map((w, i) => (
                 <td key={i} className={`border-r px-2 py-2.5 text-right tabular-nums ${w.delta < 0 ? 'text-red-600' : ''}`}>{formatCurrency(w.delta)}</td>
               ))}
@@ -524,7 +530,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
             {/* SALDO ACUMULADO */}
             <tr className="border-b-2 border-primary/30 font-bold text-sm bg-primary/5">
-              <td className="sticky left-0 z-10 bg-primary/10 border-r px-3 py-3 text-primary uppercase text-[11px]">💰 Saldo Projetado</td>
+              <td className="sticky left-0 z-20 bg-blue-50 dark:bg-blue-950 border-r px-3 py-3 text-primary uppercase text-[11px] shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">💰 Saldo Projetado</td>
               {grid.map((w, i) => (
                 <td key={i} className={`border-r px-2 py-3 text-right tabular-nums ${w.acum < 0 ? 'text-red-600 bg-red-50/50 dark:bg-red-950/20' : ''}`}>{formatCurrency(w.acum)}</td>
               ))}
