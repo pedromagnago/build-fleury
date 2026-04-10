@@ -262,6 +262,8 @@ export interface AuditLog {
   acao: string
   agente: string | null
   usuario_id: string | null
+  user_email: string | null
+  resumo: string | null
   dados_antes: Record<string, unknown> | null
   dados_depois: Record<string, unknown> | null
   created_at: string
@@ -278,7 +280,7 @@ export function useAuditLogs() {
         .select('*')
         .eq('company_id', currentCompany.id)
         .order('created_at', { ascending: false })
-        .limit(200)
+        .limit(500)
       if (error) throw error
       return (data ?? []) as AuditLog[]
     },
