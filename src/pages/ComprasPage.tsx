@@ -11,7 +11,7 @@ import { useParcelas } from '@/hooks/useFinanceiro'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useProject } from '@/contexts/ProjectContext'
 import { supabase } from '@/lib/supabase'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, formatNumber } from '@/lib/utils'
 import { gerarParcelas, localDate } from '@/lib/parcelas'
 import { toast } from 'sonner'
 import GerarPedidosWizard from '@/components/GerarPedidosWizard'
@@ -475,7 +475,7 @@ function PedidosTab({ search }: { search: string }) {
   const calculatedItems = useMemo(() => {
     return loteItems.map(li => {
       const selectedItem = itens.find((i) => i.id === li.item_compra_id)
-      const casasLote = parseInt(li.casas_lote) || 0
+      const casasLote = parseFloat(li.casas_lote?.replace(',', '.') || '0') || 0
       const qtdPorCasa = selectedItem?.qtd_por_casa ?? 0
       const precoUnit = parseBRL(li.valor_unitario_real)
       const qtdLoteCalc = casasLote * qtdPorCasa
@@ -983,7 +983,7 @@ function PedidosTab({ search }: { search: string }) {
                       <div className="grid gap-3 sm:grid-cols-12 md:gap-4">
                         <div className="sm:col-span-3">
                            <label className={LABEL}>Casas do Lote</label>
-                           <input type="number" value={li.casas_lote} onChange={(e) => updateLoteItem(li.item_compra_id, 'casas_lote', e.target.value)} className={INPUT} />
+                           <input type="number" step="any" value={li.casas_lote} onChange={(e) => updateLoteItem(li.item_compra_id, 'casas_lote', e.target.value)} className={INPUT} />
                            {li.selectedItem && (
                              <p className={`mt-1 text-[10px] leading-tight ${li.remaining <= 0 ? 'font-semibold text-red-500' : 'text-muted-foreground'}`}>
                                {li.remaining <= 0 ? '⚠ Lote cheio' : `${li.remaining} restantes (${li.used} usadas)`}
@@ -1169,7 +1169,7 @@ function PedidosTab({ search }: { search: string }) {
                         <div className="text-xs font-medium text-foreground">{p.item_descricao ?? '—'}</div>
                         <div className="font-mono text-[10px] opacity-70">{p.item_codigo ?? ''}</div>
                       </td>
-                      <td className="px-3 py-2 text-right text-xs" colSpan={2}>{p.casas_lote ? `${p.casas_lote} casas` : ''}</td>
+                      <td className="px-3 py-2 text-right text-xs" colSpan={2}>{p.casas_lote ? `${formatNumber(Number(p.casas_lote))} unid.` : ''}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono">{p.qtd_lote ? `${p.qtd_lote} unid.` : ''}</td>
                       <td className="px-3 py-2 text-right text-xs font-medium">{p.valor_total_real != null ? formatCurrency(p.valor_total_real) : '—'}</td>
                       <td className="px-3 py-2 text-center">

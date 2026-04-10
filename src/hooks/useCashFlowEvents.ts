@@ -138,7 +138,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     })
 
     // ═══════════════════════════════════════════════════════════
-    // 3. SAÍDAS FIRMES — Parcelas de pedidos
+    // 3. SAÍDAS FIRMES — Parcelas de pedidos e Despesas Indiretas
     // ═══════════════════════════════════════════════════════════
     parcelas.forEach(p => {
       if (!p.data_vencimento) return
@@ -152,8 +152,29 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       if (!isPaga && date < today && viewMode !== 'realizado') date = today
 
       const ped = pedidos.find(pd => pd.id === p.pedido_id)
-      const itemObj = itens.find(i => i.id === ped?.item_compra_id)
-      const etapaObj = etapas.find(et => et.id === itemObj?.etapa_id)
+      
+      let catStr = 'Obra'
+      let etapaStr = undefined
+      let fornStr = undefined
+      let itemStr = undefined
+      let descStr = `Parc ${p.numero_parcela}`
+
+      if (ped) {
+        const itemObj = itens.find(i => i.id === ped.item_compra_id)
+        const etapaObj = etapas.find(et => et.id === itemObj?.etapa_id)
+        catStr = itemObj?.categoria || 'Obra'
+        etapaStr = etapaObj?.nome
+        fornStr = ped.fornecedor_nome
+        itemStr = ped.item_descricao || itemObj?.descricao
+        descStr = `Parc ${p.numero_parcela} — ${ped.fornecedor_nome || ''}`
+      } else if (p.despesa_indireta_id && (p as any).despesas_indiretas) {
+        const di = (p as any).despesas_indiretas
+        catStr = di.categoria || 'Despesa Indireta'
+        etapaStr = di.categoria || 'Indiretas'
+        fornStr = 'Fornecedor'
+        itemStr = di.descricao
+        descStr = `Parc ${p.numero_parcela} — ${di.descricao || 'Despesa'}`
+      }
 
       all.push({
         id: `par-${p.id}`,
@@ -161,11 +182,11 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
         type: 'firme',
         valor: calcVal,
         meta: {
-          cat: itemObj?.categoria || 'Obra',
-          etapa: etapaObj?.nome,
-          forn: ped?.fornecedor_nome,
-          item: ped?.item_descricao || itemObj?.descricao,
-          desc: `Parc ${p.numero_parcela} — ${ped?.fornecedor_nome || ''}`,
+          cat: catStr,
+          etapa: etapaStr,
+          forn: fornStr,
+          item: itemStr,
+          desc: descStr,
           orig: calcVal
         }
       })

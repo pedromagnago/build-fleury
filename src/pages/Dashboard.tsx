@@ -11,7 +11,7 @@ import { useMedicoes, useAvancos } from '@/hooks/useOperacional'
 import { supabase } from '@/lib/supabase'
 import { localDate } from '@/lib/parcelas'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
-import { formatCurrency, formatPercent } from '@/lib/utils'
+import { formatCurrency, formatPercent, formatNumber } from '@/lib/utils'
 import {
   LayoutDashboard, TrendingUp, TrendingDown,
   Target, PiggyBank, AlertTriangle, Calendar,
@@ -837,8 +837,8 @@ function AvancoFisicoWidget() {
   return (
     <WidgetCard title="Avanço Físico" icon={CheckCircle2}>
       <div className="text-center">
-        <p className="text-3xl font-bold text-primary">{stats.pct.toFixed(1)}%</p>
-        <p className="text-[10px] text-muted-foreground">{stats.totalDone} / {stats.totalCasas} casas</p>
+        <p className="text-3xl font-bold text-primary">{formatNumber(stats.pct, 1)}%</p>
+        <p className="text-[10px] text-muted-foreground">{formatNumber(stats.totalDone)} / {formatNumber(stats.totalCasas)} unid.</p>
       </div>
       <div className="mt-2 h-2 w-full rounded-full bg-muted">
         <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${Math.min(stats.pct, 100)}%` }} />

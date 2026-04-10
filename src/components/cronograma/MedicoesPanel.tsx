@@ -8,7 +8,7 @@ import {
 } from '@/hooks/useOperacional'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, formatNumber } from '@/lib/utils'
 import { exportToExcel } from '@/lib/exportExcel'
 import { toast } from 'sonner'
 import {
@@ -65,14 +65,26 @@ export default function MedicoesPanel() {
     return m
   }, [distribuicoes])
 
+  const getValorProporcional = useCallback((etapa: any, casas: number) => {
+    if (!etapa || !casas) return 0;
+    const pu = Number(etapa.faturamento_preco_unitario) || 0;
+    const qtTotal = Number(etapa.faturamento_quantidade_unitaria) || 0;
+    const valTotal = Number(etapa.faturamento_valor_total) || 0;
+    
+    // Se temos o Total Oficial CEF, fazemos rateio exato para evitar truncamento/dízimas de centavos:
+    if (qtTotal > 0 && valTotal > 0) {
+      return (casas / qtTotal) * valTotal;
+    }
+    return casas * pu; // Fallback
+  }, []);
+
   const acumulado = useMemo(() => {
     const m = new Map<string, { casas: number; valor: number }>()
     distribuicoes.forEach(d => {
       const prev = m.get(d.etapa_id) ?? { casas: 0, valor: 0 }
       const etapa = etapas.find(e => e.id === d.etapa_id)
-      const pu = etapa?.faturamento_preco_unitario ?? 0
       prev.casas += d.casas_realizadas ?? 0
-      prev.valor += (d.casas_planejadas ?? 0) * pu
+      prev.valor += getValorProporcional(etapa, d.casas_planejadas ?? 0)
       m.set(d.etapa_id, prev)
     })
     return m
@@ -83,9 +95,8 @@ export default function MedicoesPanel() {
     distribuicoes.forEach(d => {
       const prev = m.get(d.medicao_numero) ?? { casas: 0, valor: 0 }
       const etapa = etapas.find(e => e.id === d.etapa_id)
-      const pu = etapa?.faturamento_preco_unitario ?? 0
       prev.casas += d.casas_planejadas ?? 0
-      prev.valor += (d.casas_planejadas ?? 0) * pu
+      prev.valor += getValorProporcional(etapa, d.casas_planejadas ?? 0)
       m.set(d.medicao_numero, prev)
     })
     return m
@@ -94,8 +105,7 @@ export default function MedicoesPanel() {
   const kpis = useMemo(() => {
     const totalReceita = distribuicoes.reduce((s, d) => {
       const etapa = etapas.find(e => e.id === d.etapa_id)
-      const pu = etapa?.faturamento_preco_unitario ?? 0
-      return s + (d.casas_planejadas ?? 0) * pu
+      return s + getValorProporcional(etapa, d.casas_planejadas ?? 0)
     }, 0)
     const totalAcumCasas = distribuicoes.reduce((s, d) => s + (d.casas_realizadas ?? 0), 0)
     const totalPlanCasas = distribuicoes.reduce((s, d) => s + (d.casas_planejadas ?? 0), 0)
@@ -150,9 +160,8 @@ export default function MedicoesPanel() {
   const handleSaveCasas = async () => {
     if (!editingCell || !currentCompany) return
     const etapa = etapas.find(e => e.id === editingCell.etapaId)
-    const pu = etapa?.faturamento_preco_unitario ?? 0
-    const newCasas = parseInt(editingCell.value) || 0
-    const newValor = newCasas * pu
+    const newCasas = parseFloat(editingCell.value.replace(',', '.')) || 0
+    const newValor = getValorProporcional(etapa, newCasas)
 
     if (editingCell.distId) {
       // UPDATE existing
@@ -384,15 +393,14 @@ export default function MedicoesPanel() {
                     <td className="sticky left-[28px] z-10 bg-card px-2 py-2 font-mono text-[10px] text-muted-foreground">{etapa.codigo}</td>
                     <td className="sticky left-[78px] z-10 bg-card px-2 py-2 font-medium truncate max-w-[170px]">{etapa.nome}</td>
                     <td className="sticky left-[248px] z-10 bg-card px-2 py-2 text-center text-muted-foreground">{etapa.faturamento_unidade || 'casa'}</td>
-                    <td className="sticky left-[298px] z-10 bg-card px-2 py-2 text-right tabular-nums">{etapa.casas_total ?? 0}</td>
+                    <td className="sticky left-[298px] z-10 bg-card px-2 py-2 text-right tabular-nums">{formatNumber(etapa.casas_total ?? 0)}</td>
                     <td className="sticky left-[348px] z-10 bg-card border-r px-2 py-2 text-right tabular-nums">{formatCurrency(etapa.faturamento_preco_unitario ?? 0)}</td>
-                    <td className="border-r px-2 py-2 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5 font-medium">{acum.casas}</td>
+                    <td className="border-r px-2 py-2 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5 font-medium">{formatNumber(acum.casas)}</td>
                     <td className="border-r px-2 py-2 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5 text-emerald-600">{acum.valor > 0 ? formatCurrency(acum.valor) : '—'}</td>
                     {sortedMedicoes.flatMap(med => {
                       const dist = distMatrix.get(etapa.id)?.get(med.numero)
                       const casas = dist?.casas_planejadas ?? 0
-                      const pu = etapa.faturamento_preco_unitario ?? 0
-                      const valor = casas * pu
+                      const valor = getValorProporcional(etapa, casas)
                       const isEditing = editingCell?.etapaId === etapa.id && editingCell?.medNumero === med.numero
                       const noDates = dist && !dist.data_fim && !dist.data_inicio
 
@@ -400,13 +408,13 @@ export default function MedicoesPanel() {
                         <td key={`${med.id}-${etapa.id}-c`} className="border-r px-2 py-2 text-right">
                           {isEditing ? (
                             <div className="flex items-center gap-0.5 justify-end">
-                              <input type="number" autoFocus value={editingCell!.value} onChange={e => setEditingCell({ ...editingCell!, value: e.target.value })} onKeyDown={e => { if (e.key === 'Enter') handleSaveCasas(); if (e.key === 'Escape') setEditingCell(null) }} className={`${INPUT} w-12 text-right`} />
+                              <input type="number" step="any" autoFocus value={editingCell!.value} onChange={e => setEditingCell({ ...editingCell!, value: e.target.value })} onKeyDown={e => { if (e.key === 'Enter') handleSaveCasas(); if (e.key === 'Escape') setEditingCell(null) }} className={`${INPUT} w-12 text-right`} />
                               <button onClick={handleSaveCasas} className="rounded p-0.5 hover:bg-emerald-100"><Check className="h-2.5 w-2.5 text-emerald-600" /></button>
                             </div>
                           ) : (
                             <span className="cursor-pointer hover:text-primary tabular-nums inline-flex items-center gap-0.5" onClick={() => setEditingCell({ distId: dist?.id ?? null, etapaId: etapa.id, medNumero: med.numero, value: String(casas) })}>
                               {dist && noDates && <span title="Sem datas — não aparece no caixa"><AlertTriangle className="h-2.5 w-2.5 text-amber-500" /></span>}
-                              {casas > 0 ? casas : <span className="text-muted-foreground/30">0</span>}
+                              {casas > 0 ? formatNumber(casas) : <span className="text-muted-foreground/30">0</span>}
                             </span>
                           )}
                         </td>,
@@ -416,7 +424,7 @@ export default function MedicoesPanel() {
                       ]
                     })}
                     <td className={`px-2 py-2 text-right tabular-nums font-medium ${restante < 0 ? 'text-red-500' : restante === 0 ? 'text-emerald-500' : ''}`}>
-                      {restante}
+                      {formatNumber(restante)}
                     </td>
                   </tr>
                 )
@@ -427,7 +435,7 @@ export default function MedicoesPanel() {
                 <td className="sticky left-0 z-10 bg-muted/40"></td>
                 <td colSpan={5} className="sticky left-[28px] z-10 bg-muted/40 border-r px-3 py-2.5">TOTAL</td>
                 <td className="border-r px-2 py-2.5 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5">
-                  {distribuicoes.reduce((s, d) => s + (d.casas_realizadas ?? 0), 0)}
+                  {formatNumber(distribuicoes.reduce((s, d) => s + (d.casas_realizadas ?? 0), 0))}
                 </td>
                 <td className="border-r px-2 py-2.5 text-right tabular-nums text-emerald-600 bg-emerald-50/20 dark:bg-emerald-950/5">
                   {formatCurrency(distribuicoes.reduce((s, d) => {
@@ -438,15 +446,15 @@ export default function MedicoesPanel() {
                 {sortedMedicoes.flatMap(med => {
                   const tot = medTotals.get(med.numero) ?? { casas: 0, valor: 0 }
                   return [
-                    <td key={`ft-${med.id}-c`} className="border-r px-2 py-2.5 text-right tabular-nums">{tot.casas}</td>,
+                    <td key={`ft-${med.id}-c`} className="border-r px-2 py-2.5 text-right tabular-nums">{formatNumber(tot.casas)}</td>,
                     <td key={`ft-${med.id}-v`} className="border-r px-2 py-2.5 text-right tabular-nums">{formatCurrency(tot.valor)}</td>,
                   ]
                 })}
                 <td className="px-2 py-2.5 text-right tabular-nums">
-                  {filteredEtapas.reduce((s, e) => {
+                  {formatNumber(filteredEtapas.reduce((s, e) => {
                     const allPlan = distribuicoes.filter(d => d.etapa_id === e.id).reduce((ss, d) => ss + d.casas_planejadas, 0)
                     return s + ((e.casas_total ?? 0) - allPlan)
-                  }, 0)}
+                  }, 0))}
                 </td>
               </tr>
             </tfoot>

@@ -541,9 +541,9 @@ function Step2(props: {
                 <label className={LABEL}>Casas</label>
                 <input
                   type="number"
-                  min={1}
+                  step="any"
                   value={lote.casas}
-                  onChange={(e) => props.updateLote(i, 'casas', parseInt(e.target.value) || 0)}
+                  onChange={(e) => props.updateLote(i, 'casas', parseFloat(e.target.value.replace(',', '.')) || 0)}
                   className={`${INPUT} w-24`}
                 />
               </div>
