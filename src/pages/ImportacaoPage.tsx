@@ -5,7 +5,7 @@ import { useItensCompra } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
 import { supabase } from '@/lib/supabase'
 import { useAuditLogs } from '@/hooks/useOperacional'
-import { gerarParcelas, parsearCondicao, localDate } from '@/lib/parcelas'
+import { parsearCondicao } from '@/lib/parcelas'
 import { formatCurrency } from '@/lib/utils'
 import * as XLSX from 'xlsx'
 import {
