@@ -438,6 +438,38 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         <FinancialViewFilter value={viewMode} onChange={setViewMode} />
       </div>
 
+      {/* KPI Summary Cards — #13 Verificação de Furo */}
+      {(() => {
+        const totalEntradas = items.filter(i => i.tipo === 'entrada').reduce((s, i) => s + i.valor, 0)
+        const totalFirme = items.filter(i => i.tipo === 'firme').reduce((s, i) => s + i.valor, 0)
+        const totalBruto = items.filter(i => i.tipo === 'bruto').reduce((s, i) => s + i.valor, 0)
+        const saldoFinal = saldoInicial + totalEntradas - totalFirme - totalBruto
+        return (
+          <div className="mb-3 grid grid-cols-5 gap-2">
+            <div className="rounded-lg border bg-card p-2.5">
+              <p className="text-[9px] font-semibold uppercase text-muted-foreground tracking-wider">Saldo Inicial</p>
+              <p className="text-sm font-bold mt-0.5">{formatCurrency(saldoInicial)}</p>
+            </div>
+            <div className="rounded-lg border bg-emerald-50/50 dark:bg-emerald-950/10 p-2.5">
+              <p className="text-[9px] font-semibold uppercase text-emerald-600 tracking-wider">Entradas</p>
+              <p className="text-sm font-bold text-emerald-700 mt-0.5">{formatCurrency(totalEntradas)}</p>
+            </div>
+            <div className="rounded-lg border bg-red-50/50 dark:bg-red-950/10 p-2.5">
+              <p className="text-[9px] font-semibold uppercase text-red-600 tracking-wider">Pedidos (Firme)</p>
+              <p className="text-sm font-bold text-red-700 mt-0.5">{formatCurrency(totalFirme)}</p>
+            </div>
+            <div className="rounded-lg border bg-orange-50/50 dark:bg-orange-950/10 p-2.5">
+              <p className="text-[9px] font-semibold uppercase text-orange-600 tracking-wider">Previsto (Bruto)</p>
+              <p className="text-sm font-bold text-orange-700 mt-0.5">{formatCurrency(totalBruto)}</p>
+            </div>
+            <div className={`rounded-lg border p-2.5 ${saldoFinal >= 0 ? 'bg-blue-50/50 dark:bg-blue-950/10' : 'bg-red-50/80 dark:bg-red-950/20'}`}>
+              <p className="text-[9px] font-semibold uppercase text-primary tracking-wider">Saldo Final</p>
+              <p className={`text-sm font-bold mt-0.5 ${saldoFinal < 0 ? 'text-red-600' : 'text-primary'}`}>{formatCurrency(saldoFinal)}</p>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Header */}
       {numOv > 0 && (
         <div className="flex items-center gap-2 mb-3 p-2.5 rounded-lg border-2 border-amber-300 bg-amber-50/50 dark:bg-amber-900/10">

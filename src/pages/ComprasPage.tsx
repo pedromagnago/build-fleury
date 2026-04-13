@@ -55,7 +55,7 @@ function toBRLInput(v: number | string): string {
 // Main
 // ---------------------------------------------------------------------------
 
-type Tab = 'itens' | 'pedidos' | 'fornecedores' | 'curva_abc' | 'por_fornecedor'
+type Tab = 'itens' | 'pedidos' | 'fornecedores' | 'curva_abc' | 'por_fornecedor' | 'conferencia'
 
 export default function Compras() {
   const { restartTour } = useTour('compras', pageTours.compras)
@@ -69,6 +69,7 @@ export default function Compras() {
   const TABS: Array<{ key: Tab; label: string; icon: typeof Package }> = [
     { key: 'itens', label: 'Itens', icon: Package },
     { key: 'pedidos', label: 'Pedidos', icon: Truck },
+    { key: 'conferencia', label: 'Conferência', icon: BarChart3 },
     { key: 'fornecedores', label: 'Fornecedores', icon: Users },
     { key: 'curva_abc', label: 'Curva ABC', icon: BarChart3 },
     { key: 'por_fornecedor', label: 'Por Fornecedor', icon: Users },
@@ -107,7 +108,7 @@ export default function Compras() {
       </div>
 
       {/* Search (not for charts) */}
-      {(tab === 'itens' || tab === 'pedidos' || tab === 'fornecedores') && (
+      {(tab === 'itens' || tab === 'pedidos' || tab === 'fornecedores' || tab === 'conferencia') && (
         <div className="mb-4 flex gap-3">
           <div id="tour-compras-filters" className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -124,6 +125,7 @@ export default function Compras() {
 
       {tab === 'itens' && <ItensTab search={search} filterEtapa={initialEtapa} />}
       {tab === 'pedidos' && <PedidosTab search={search} />}
+      {tab === 'conferencia' && <ConferenciaWBSTab search={search} />}
       {tab === 'fornecedores' && <FornecedoresTab search={search} />}
       {tab === 'curva_abc' && <CurvaABCTab />}
       {tab === 'por_fornecedor' && <PorFornecedorTab />}
@@ -388,6 +390,9 @@ function PedidosTab({ search }: { search: string }) {
   const [showForm, setShowForm] = useState(false)
   const [editingPedido, setEditingPedido] = useState<Pedido | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [pedidoViewMode, setPedidoViewMode] = useState<'pedido' | 'etapa'>('pedido')
+  const [expandedCascade, setExpandedCascade] = useState<Record<string, boolean>>({})
+  const toggleCascade = (k: string) => setExpandedCascade(p => ({ ...p, [k]: !p[k] }))
 
   const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'], observacoes: '' }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
@@ -506,7 +511,7 @@ function PedidosTab({ search }: { search: string }) {
   const valorTotalLote = calculatedItems.reduce((acc, curr) => acc + curr.valorTotalCalc, 0)
 
   // -- Editable parcelas state
-  interface EditableParcela { id: string; numero_parcela: number; valor: string; data_vencimento: string; status: string }
+  interface EditableParcela { id: string; numero_parcela: number; valor: string; data_vencimento: string; status: string; descricao: string }
   const [editableParcelas, setEditableParcelas] = useState<EditableParcela[]>([])
   const [parcelasManuallyEdited, setParcelasManuallyEdited] = useState(false)
 
@@ -529,6 +534,7 @@ function PedidosTab({ search }: { search: string }) {
       valor: toBRLInput(p.valor),
       data_vencimento: p.data_vencimento,
       status: p.status,
+      descricao: '',
     })))
   }, [valorTotalLote, globalForm.cond_pagamento, globalForm.data_entrega_prevista])
 
@@ -550,6 +556,7 @@ function PedidosTab({ search }: { search: string }) {
       valor: toBRLInput(p.valor),
       data_vencimento: p.data_vencimento,
       status: p.status,
+      descricao: '',
     })))
     setParcelasManuallyEdited(false)
   }
@@ -562,6 +569,7 @@ function PedidosTab({ search }: { search: string }) {
       valor: '0,00',
       data_vencimento: globalForm.data_entrega_prevista || new Date().toISOString().slice(0, 10),
       status: 'futura',
+      descricao: '',
     }])
   }
 
@@ -570,12 +578,12 @@ function PedidosTab({ search }: { search: string }) {
     setEditableParcelas(prev => prev.filter(p => p.id !== id).map((p, i) => ({ ...p, numero_parcela: i + 1 })))
   }
 
-  const updateParcela = (id: string, field: 'valor' | 'data_vencimento', value: string) => {
+  const updateParcela = (id: string, field: 'valor' | 'data_vencimento' | 'descricao', value: string) => {
     setParcelasManuallyEdited(true)
     setEditableParcelas(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p))
   }
 
-  const startEdit = (p: Pedido) => {
+  const startEdit = async (p: Pedido) => {
     setEditingPedido(p)
     setCondFromForn(false)
     setGlobalForm({
@@ -594,6 +602,23 @@ function PedidosTab({ search }: { search: string }) {
     // Set etapa filter to item's etapa
     const item = itens.find(i => i.id === p.item_compra_id)
     if (item) setEtapaFilter(item.etapa_id)
+
+    // Fetch existing parcelas for this pedido
+    const { data: existingParcelas } = await supabase.from('parcelas').select('*').eq('pedido_id', p.id).order('numero_parcela', { ascending: true })
+    if (existingParcelas && existingParcelas.length > 0) {
+      setEditableParcelas(existingParcelas.map(ep => ({
+        id: ep.id,
+        numero_parcela: ep.numero_parcela,
+        valor: toBRLInput(ep.valor),
+        data_vencimento: ep.data_vencimento,
+        status: ep.status,
+        descricao: ep.descricao ?? '',
+      })))
+      setParcelasManuallyEdited(true)
+    } else {
+      setEditableParcelas([])
+    }
+
     setShowForm(true)
   }
 
@@ -657,28 +682,40 @@ function PedidosTab({ search }: { search: string }) {
       const dateChanged = editingPedido.data_entrega_prevista !== globalForm.data_entrega_prevista
       const valorChanged = (editingPedido.valor_total_real ?? 0) !== li.valorTotalCalc
 
-      if ((condChanged || dateChanged || valorChanged) && li.valorTotalCalc > 0 && globalForm.cond_pagamento && globalForm.data_entrega_prevista) {
-        // Check how many futuras will be recalculated
+      const parcelasOk = Math.abs(editableParcelas.reduce((s, p) => s + parseBRL(p.valor), 0) - li.valorTotalCalc) <= 0.01
+
+      if ((condChanged || dateChanged || valorChanged || parcelasManuallyEdited) && li.valorTotalCalc > 0 && globalForm.cond_pagamento && globalForm.data_entrega_prevista) {
+        // Se estiver com erro na soma manual e tentou alterar as parcelas
+        if (!parcelasOk) {
+          toast.error('A soma das parcelas deve ser igual ao total para salvar a alteração financeira.')
+          return
+        }
+
         const { data: existingParcelas } = await supabase.from('parcelas').select('id, status').eq('pedido_id', editingPedido.id)
         const futuras = (existingParcelas || []).filter(p => p.status !== 'paga')
         const pagas = (existingParcelas || []).filter(p => p.status === 'paga')
 
         if (pagas.length === (existingParcelas || []).length && (existingParcelas || []).length > 0) {
-          toast.error('Todas as parcelas já foram pagas. Não é possível recalcular.')
+          toast.error('Todas as parcelas já foram pagas. Não é possível alterar parcelas.')
         } else {
-          const shouldRecalc = futuras.length === 0 || confirm(`${futuras.length} parcela(s) futura(s) serão recalculadas. Continuar?`)
-          if (shouldRecalc) {
+          const shouldUpdate = futuras.length === 0 || confirm(`${futuras.length} parcela(s) futura(s) serão atualizadas. Continuar?`)
+          if (shouldUpdate) {
             await supabase.from('parcelas').delete().eq('pedido_id', editingPedido.id).neq('status', 'paga')
-            const parcelas = gerarParcelas({
-              pedidoId: editingPedido.id,
-              companyId: currentCompany.id,
-              valorTotal: li.valorTotalCalc,
-              condPagamento: globalForm.cond_pagamento,
-              dataEntrega: localDate(globalForm.data_entrega_prevista),
-            })
-            if (parcelas.length > 0) {
-              await supabase.from('parcelas').insert(parcelas)
-              toast.success(`Parcelas regeneradas (${parcelas.length})`)
+            const parcelasParaInserir = editableParcelas
+              .filter(ep => ep.status !== 'paga')
+              .map((ep) => ({
+                company_id: currentCompany.id,
+                pedido_id: editingPedido.id,
+                numero_parcela: ep.numero_parcela,
+                valor: parseBRL(ep.valor),
+                data_vencimento: ep.data_vencimento,
+                status: 'futura',
+                descricao: ep.descricao || null,
+              }))
+            
+            if (parcelasParaInserir.length > 0) {
+              await supabase.from('parcelas').insert(parcelasParaInserir)
+              toast.success(`Parcelas atualizadas (${parcelasParaInserir.length})`)
             }
             qc.invalidateQueries({ queryKey: ['parcelas'] })
           }
@@ -693,6 +730,21 @@ function PedidosTab({ search }: { search: string }) {
       }
 
       // 1. Inserir todos os itens de pedido
+      let finalCond = globalForm.cond_pagamento || null
+      if (!finalCond && globalForm.fornecedor_id) {
+        const forn = fornecedores.find(f => f.id === globalForm.fornecedor_id)
+        finalCond = forn?.cond_pagamento_padrao || 'à vista'
+      } else if (!finalCond) {
+        finalCond = 'à vista'
+      }
+
+      let finalDate = globalForm.data_entrega_prevista || null
+      if (!finalDate) {
+        const d30 = new Date()
+        d30.setDate(d30.getDate() + 30)
+        finalDate = d30.toISOString().split('T')[0]!
+      }
+
       const payloads = validItems.map(li => ({
         item_compra_id: li.item_compra_id,
 
@@ -701,8 +753,8 @@ function PedidosTab({ search }: { search: string }) {
         valor_unitario_real: li.precoUnit || null,
         valor_total_real: li.valorTotalCalc || null,
         fornecedor_id: globalForm.fornecedor_id || null,
-        cond_pagamento: globalForm.cond_pagamento || null,
-        data_entrega_prevista: globalForm.data_entrega_prevista || null,
+        cond_pagamento: finalCond,
+        data_entrega_prevista: finalDate,
         status: globalForm.status,
       }))
 
@@ -710,7 +762,7 @@ function PedidosTab({ search }: { search: string }) {
 
       // 2. Insert parcelas from editable state (distributed proportionally across pedidos)
       if (editableParcelas.length > 0 && createdPedidos && createdPedidos.length > 0) {
-        const allParcelas: Array<{ company_id: string; pedido_id: string; numero_parcela: number; valor: number; data_vencimento: string; status: string }> = []
+        const allParcelas: Array<{ company_id: string; pedido_id: string; numero_parcela: number; valor: number; data_vencimento: string; status: string; descricao: string | null }> = []
 
         if (createdPedidos.length === 1) {
           // Single pedido: use edited parcelas directly
@@ -722,6 +774,7 @@ function PedidosTab({ search }: { search: string }) {
               valor: parseBRL(ep.valor),
               data_vencimento: ep.data_vencimento,
               status: 'futura',
+              descricao: ep.descricao || null,
             })
           }
         } else {
@@ -736,6 +789,7 @@ function PedidosTab({ search }: { search: string }) {
                 valor: Math.round(parseBRL(ep.valor) * ratio * 100) / 100,
                 data_vencimento: ep.data_vencimento,
                 status: 'futura',
+                descricao: ep.descricao || null,
               })
             })
           }
@@ -807,6 +861,34 @@ function PedidosTab({ search }: { search: string }) {
 
   const totals = filtered.reduce((acc, p) => ({ valor: acc.valor + (p.valor_total_real ?? 0), casas: acc.casas + (p.casas_lote ?? 0) }), { valor: 0, casas: 0 })
 
+  // #18: Cascade grouping: Etapa → Item → Pedidos
+  const cascadeGrouped = useMemo(() => {
+    const etapaMap = new Map<string, {
+      etapa: { id: string; codigo?: string; nome: string };
+      itemMap: Map<string, { item: ItemCompra; pedidos: Pedido[] }>;
+    }>()
+
+    filtered.forEach(p => {
+      const item = itens.find(i => i.id === p.item_compra_id)
+      if (!item) return
+      const etapa = etapas.find(e => e.id === item.etapa_id)
+      if (!etapa) return
+
+      if (!etapaMap.has(etapa.id)) etapaMap.set(etapa.id, { etapa: { id: etapa.id, codigo: etapa.codigo, nome: etapa.nome }, itemMap: new Map() })
+      const eg = etapaMap.get(etapa.id)!
+      if (!eg.itemMap.has(item.id)) eg.itemMap.set(item.id, { item, pedidos: [] })
+      eg.itemMap.get(item.id)!.pedidos.push(p)
+    })
+
+    return Array.from(etapaMap.values())
+      .map(eg => ({
+        ...eg.etapa,
+        items: Array.from(eg.itemMap.values()).sort((a, b) => (a.item.codigo ?? '').localeCompare(b.item.codigo ?? '')),
+        total: Array.from(eg.itemMap.values()).reduce((s, ig) => s + ig.pedidos.reduce((si, p) => si + (p.valor_total_real ?? 0), 0), 0),
+      }))
+      .sort((a, b) => (a.codigo ?? '').localeCompare(b.codigo ?? ''))
+  }, [filtered, itens, etapas])
+
   // Etapas that have items
   const etapasComItens = useMemo(() => {
     const etapaIds = new Set(itens.map(i => i.etapa_id))
@@ -823,7 +905,21 @@ function PedidosTab({ search }: { search: string }) {
         <MiniCard label="Itens sem pedido" value={String(itens.filter((i) => !pedidos.some((p) => p.item_compra_id === i.id)).length)} accent="amber" />
       </div>
 
-      <div className="mb-4 flex justify-end">
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center rounded-lg border bg-muted/30 p-0.5 gap-0.5">
+          <button
+            onClick={() => setPedidoViewMode('pedido')}
+            className={`flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${pedidoViewMode === 'pedido' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <Truck className="h-3 w-3" /> Por Pedido
+          </button>
+          <button
+            onClick={() => setPedidoViewMode('etapa')}
+            className={`flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${pedidoViewMode === 'etapa' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <Package className="h-3 w-3" /> Por Etapa (Cascata)
+          </button>
+        </div>
         <button onClick={() => { resetForm(); setShowForm(true) }} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
           <Plus className="h-4 w-4" /> Novo Pedido
         </button>
@@ -1045,12 +1141,20 @@ function PedidosTab({ search }: { search: string }) {
                         value={p.valor}
                         onChange={e => updateParcela(p.id, 'valor', e.target.value)}
                         className="w-28 rounded border bg-background px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                        placeholder="Valor"
                       />
                       <input
                         type="date"
                         value={p.data_vencimento}
                         onChange={e => updateParcela(p.id, 'data_vencimento', e.target.value)}
                         className="rounded border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
+                      />
+                      <input
+                        type="text"
+                        value={p.descricao}
+                        onChange={e => updateParcela(p.id, 'descricao', e.target.value)}
+                        placeholder="Descrição (opcional)"
+                        className="flex-1 min-w-[120px] rounded border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
                       />
                       {p.status !== 'paga' && (
                         <button type="button" onClick={() => removeParcela(p.id)} className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
@@ -1112,7 +1216,7 @@ function PedidosTab({ search }: { search: string }) {
         </div>
       )}
 
-      {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhum pedido encontrado" /> : (
+      {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhum pedido encontrado" /> : pedidoViewMode === 'pedido' ? (
         <div className="overflow-x-auto rounded-xl border">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
@@ -1169,8 +1273,8 @@ function PedidosTab({ search }: { search: string }) {
                         <div className="text-xs font-medium text-foreground">{p.item_descricao ?? '—'}</div>
                         <div className="font-mono text-[10px] opacity-70">{p.item_codigo ?? ''}</div>
                       </td>
-                      <td className="px-3 py-2 text-right text-xs" colSpan={2}>{p.casas_lote ? `${formatNumber(Number(p.casas_lote))} unid.` : ''}</td>
-                      <td className="px-3 py-2 text-right text-xs font-mono">{p.qtd_lote ? `${p.qtd_lote} unid.` : ''}</td>
+                      <td className="px-3 py-2 text-right text-xs" colSpan={2}>{p.casas_lote ? `${formatNumber(Number(p.casas_lote), 2, 2)} unid.` : ''}</td>
+                      <td className="px-3 py-2 text-right text-xs font-mono">{p.qtd_lote ? `${formatNumber(Number(p.qtd_lote), 2, 2)} unid.` : ''}</td>
                       <td className="px-3 py-2 text-right text-xs font-medium">{p.valor_total_real != null ? formatCurrency(p.valor_total_real) : '—'}</td>
                       <td className="px-3 py-2 text-center">
                         <div className="flex items-center justify-center gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
@@ -1191,6 +1295,91 @@ function PedidosTab({ search }: { search: string }) {
               ))}
             </tbody>
           </table>
+        </div>
+      ) : (
+        /* #18: Cascade View — Etapa → Item → Pedidos */
+        <div className="space-y-2">
+          {cascadeGrouped.map(etapaG => {
+            const etapaKey = `et-${etapaG.id}`
+            return (
+              <div key={etapaG.id} className="rounded-xl border bg-card">
+                <button
+                  onClick={() => toggleCascade(etapaKey)}
+                  className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/20 transition-colors"
+                >
+                  {expandedCascade[etapaKey] ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
+                  <span className="text-[10px] font-mono text-muted-foreground shrink-0">{etapaG.codigo}</span>
+                  <span className="text-sm font-semibold truncate flex-1">{etapaG.nome}</span>
+                  <span className="text-[10px] text-muted-foreground shrink-0">({etapaG.items.length} itens)</span>
+                  <span className="text-sm font-bold text-primary shrink-0">{formatCurrency(etapaG.total)}</span>
+                </button>
+
+                {expandedCascade[etapaKey] && (
+                  <div className="border-t divide-y divide-border/40">
+                    {etapaG.items.map(({ item, pedidos: itemPedidos }) => {
+                      const itemKey = `it-${item.id}`
+                      const itemTotal = itemPedidos.reduce((s, p) => s + (p.valor_total_real ?? 0), 0)
+                      return (
+                        <div key={item.id}>
+                          <button
+                            onClick={() => toggleCascade(itemKey)}
+                            className="flex w-full items-center gap-3 px-5 py-2 text-left hover:bg-muted/10 transition-colors"
+                          >
+                            {expandedCascade[itemKey] ? <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" /> : <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
+                            <span className="text-[10px] font-mono text-muted-foreground shrink-0">{item.codigo}</span>
+                            <span className="text-xs font-medium truncate flex-1">{item.descricao}</span>
+                            <span className="text-[10px] text-muted-foreground shrink-0">{itemPedidos.length} ped.</span>
+                            <span className="text-xs font-semibold text-amber-600 shrink-0">{formatCurrency(itemTotal)}</span>
+                          </button>
+
+                          {expandedCascade[itemKey] && (
+                            <div className="px-7 pb-2">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-[9px] uppercase text-muted-foreground">
+                                    <th className="py-1 text-left">Nº</th>
+                                    <th className="py-1 text-left">Fornecedor</th>
+                                    <th className="py-1 text-left">Cond.</th>
+                                    <th className="py-1 text-right">Casas</th>
+                                    <th className="py-1 text-right">Valor</th>
+                                    <th className="py-1 text-center">Status</th>
+                                    <th className="py-1 text-center w-16">Ações</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-border/20">
+                                  {itemPedidos.map(p => (
+                                    <tr key={p.id} className="group/row hover:bg-muted/10">
+                                      <td className="py-1.5 font-mono text-primary font-bold">#{p.numero_pedido ?? '?'}</td>
+                                      <td className="py-1.5 truncate max-w-[150px]">{p.fornecedor_nome ?? '—'}</td>
+                                      <td className="py-1.5 font-mono text-muted-foreground">{p.cond_pagamento ?? '—'}</td>
+                                      <td className="py-1.5 text-right">{p.casas_lote ? formatNumber(Number(p.casas_lote), 2, 2) : '—'}</td>
+                                      <td className="py-1.5 text-right font-medium">{p.valor_total_real != null ? formatCurrency(p.valor_total_real) : '—'}</td>
+                                      <td className="py-1.5 text-center">
+                                        <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${statusColors[p.status] ?? ''}`}>
+                                          {p.status === 'confirmado' ? 'Conf.' : p.status === 'planejado' ? 'Plan.' : (p.status ?? '').charAt(0).toUpperCase() + (p.status ?? '').slice(1)}
+                                        </span>
+                                      </td>
+                                      <td className="py-1.5 text-center">
+                                        <div className="flex items-center justify-center gap-0.5 opacity-0 transition-opacity group-hover/row:opacity-100">
+                                          <button onClick={() => startEdit(p)} className="rounded p-0.5 hover:bg-accent text-foreground" title="Editar"><Pencil className="h-3 w-3" /></button>
+                                          <button onClick={() => duplicatePedido(p)} className="rounded p-0.5 hover:bg-accent text-foreground" title="Duplicar"><Copy className="h-3 w-3" /></button>
+                                          <button onClick={() => setConfirmDelete(p.id)} className="rounded p-0.5 hover:bg-destructive/10 text-destructive" title="Excluir"><Trash2 className="h-3 w-3" /></button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -1302,6 +1491,174 @@ function FornecedoresTab({ search }: { search: string }) {
           onDone={selection.clear}
         />
       </BulkActionBar>
+    </>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONFERÊNCIA WBS TAB — #17 Orçado vs Pedido vs Saldo
+// ═══════════════════════════════════════════════════════════════
+
+function ConferenciaWBSTab({ search }: { search: string }) {
+  const { data: itens = [], isLoading } = useItensCompra()
+  const { data: pedidos = [] } = usePedidos()
+  const { data: etapas = [] } = useEtapas()
+  const [expandedEtapas, setExpandedEtapas] = useState<Record<string, boolean>>({})
+
+  const toggleEtapa = (id: string) => setExpandedEtapas(p => ({ ...p, [id]: !p[id] }))
+
+  const data = useMemo(() => {
+    // Build pedido spend per item
+    const pedidoPorItem = new Map<string, { totalPedido: number; qtdPedidos: number }>()
+    pedidos.forEach(p => {
+      const prev = pedidoPorItem.get(p.item_compra_id) || { totalPedido: 0, qtdPedidos: 0 }
+      prev.totalPedido += Number(p.valor_total_real || 0)
+      prev.qtdPedidos += 1
+      pedidoPorItem.set(p.item_compra_id, prev)
+    })
+
+    // Group by etapa
+    const etapaMap = new Map<string, { etapa: typeof etapas[0]; items: Array<typeof itens[0] & { totalPedido: number; qtdPedidos: number; saldo: number; pctUsado: number }> }>()
+
+    itens.forEach(item => {
+      const s = search.toLowerCase()
+      if (s && !(item.descricao ?? '').toLowerCase().includes(s) && !(item.codigo ?? '').toLowerCase().includes(s)) return
+
+      const etapa = etapas.find(e => e.id === item.etapa_id)
+      if (!etapa) return
+
+      if (!etapaMap.has(etapa.id)) etapaMap.set(etapa.id, { etapa, items: [] })
+      const ped = pedidoPorItem.get(item.id) || { totalPedido: 0, qtdPedidos: 0 }
+      const saldo = item.valor_total_orcado - ped.totalPedido
+      const pctUsado = item.valor_total_orcado > 0 ? (ped.totalPedido / item.valor_total_orcado) * 100 : 0
+
+      etapaMap.get(etapa.id)!.items.push({
+        ...item,
+        ...ped,
+        saldo,
+        pctUsado,
+      })
+    })
+
+    // Sort etapas by codigo
+    return Array.from(etapaMap.values()).sort((a, b) => (a.etapa.codigo ?? '').localeCompare(b.etapa.codigo ?? ''))
+  }, [itens, pedidos, etapas, search])
+
+  // Totals
+  const totals = useMemo(() => {
+    let orcado = 0, pedido = 0, saldo = 0
+    data.forEach(g => g.items.forEach(i => { orcado += i.valor_total_orcado; pedido += i.totalPedido; saldo += i.saldo }))
+    return { orcado, pedido, saldo }
+  }, [data])
+
+  if (isLoading) return <Spinner />
+
+  return (
+    <>
+      {/* Summary cards */}
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <MiniCard label="Itens WBS" value={String(itens.length)} />
+        <MiniCard label="Orçado Total" value={formatCurrency(totals.orcado)} />
+        <MiniCard label="Pedido Total" value={formatCurrency(totals.pedido)} accent="amber" />
+        <MiniCard label="Saldo Disponível" value={formatCurrency(totals.saldo)} accent={totals.saldo >= 0 ? 'emerald' : 'red'} />
+      </div>
+
+      {data.length === 0 ? <EmptyState msg="Nenhum item encontrado" /> : (
+        <div className="space-y-2">
+          {data.map(group => {
+            const etTotal = group.items.reduce((s, i) => s + i.valor_total_orcado, 0)
+            const etPedido = group.items.reduce((s, i) => s + i.totalPedido, 0)
+            const etSaldo = etTotal - etPedido
+            const hasFuro = group.items.some(i => i.saldo < 0)
+
+            return (
+              <div key={group.etapa.id} className={`rounded-xl border bg-card ${hasFuro ? 'border-red-300' : ''}`}>
+                <button
+                  onClick={() => toggleEtapa(group.etapa.id)}
+                  className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/20 transition-colors"
+                >
+                  {expandedEtapas[group.etapa.id] ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono text-muted-foreground">{group.etapa.codigo}</span>
+                      <span className="text-sm font-semibold truncate">{group.etapa.nome}</span>
+                      <span className="text-[10px] text-muted-foreground">({group.items.length} itens)</span>
+                      {hasFuro && <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[9px] font-bold text-red-600">⚠ ESTOURO</span>}
+                    </div>
+                    {/* Progress bar */}
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <div className="h-1.5 flex-1 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${etPedido > etTotal ? 'bg-red-500' : etPedido > etTotal * 0.8 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                          style={{ width: `${Math.min(100, etTotal > 0 ? (etPedido / etTotal) * 100 : 0)}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] font-mono text-muted-foreground shrink-0">{etTotal > 0 ? ((etPedido / etTotal) * 100).toFixed(0) : 0}%</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-4 shrink-0 text-xs">
+                    <div className="text-right">
+                      <p className="text-[9px] text-muted-foreground uppercase">Orçado</p>
+                      <p className="font-medium">{formatCurrency(etTotal)}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[9px] text-muted-foreground uppercase">Pedido</p>
+                      <p className="font-medium text-amber-600">{formatCurrency(etPedido)}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[9px] text-muted-foreground uppercase">Saldo</p>
+                      <p className={`font-bold ${etSaldo < 0 ? 'text-red-600' : 'text-emerald-600'}`}>{formatCurrency(etSaldo)}</p>
+                    </div>
+                  </div>
+                </button>
+
+                {expandedEtapas[group.etapa.id] && (
+                  <div className="border-t px-3 pb-2">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-[9px] uppercase text-muted-foreground">
+                          <th className="py-1.5 text-left">Código</th>
+                          <th className="py-1.5 text-left">Descrição</th>
+                          <th className="py-1.5 text-center">Pedidos</th>
+                          <th className="py-1.5 text-right">Orçado</th>
+                          <th className="py-1.5 text-right">Pedido</th>
+                          <th className="py-1.5 text-right">Saldo</th>
+                          <th className="py-1.5 text-right">Uso</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/30">
+                        {group.items.map(item => (
+                          <tr key={item.id} className={`${item.saldo < 0 ? 'bg-red-50/50 dark:bg-red-950/10' : ''}`}>
+                            <td className="py-1.5 font-mono text-[10px] text-muted-foreground">{item.codigo}</td>
+                            <td className="py-1.5 max-w-[200px] truncate">{item.descricao}</td>
+                            <td className="py-1.5 text-center font-mono">{item.qtdPedidos || '—'}</td>
+                            <td className="py-1.5 text-right">{formatCurrency(item.valor_total_orcado)}</td>
+                            <td className="py-1.5 text-right text-amber-600">{item.totalPedido > 0 ? formatCurrency(item.totalPedido) : '—'}</td>
+                            <td className={`py-1.5 text-right font-bold ${item.saldo < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                              {formatCurrency(item.saldo)}
+                            </td>
+                            <td className="py-1.5 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <div className="h-1 w-12 rounded-full bg-muted overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full ${item.pctUsado > 100 ? 'bg-red-500' : item.pctUsado > 80 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                    style={{ width: `${Math.min(100, item.pctUsado)}%` }}
+                                  />
+                                </div>
+                                <span className={`text-[9px] font-mono ${item.pctUsado > 100 ? 'text-red-600 font-bold' : ''}`}>{item.pctUsado.toFixed(0)}%</span>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </>
   )
 }

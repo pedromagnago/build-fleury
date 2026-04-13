@@ -12,8 +12,11 @@ export function formatCurrency(value: number): string {
   }).format(value)
 }
 
-export function formatNumber(value: number, maxDecimals = 2): string {
-  return new Intl.NumberFormat('pt-BR', { maximumFractionDigits: maxDecimals }).format(value)
+export function formatNumber(value: number, maxDecimals = 2, minDecimals = 0): string {
+  return new Intl.NumberFormat('pt-BR', { 
+    maximumFractionDigits: maxDecimals,
+    minimumFractionDigits: minDecimals
+  }).format(value)
 }
 
 export function formatDate(date: string | Date): string {

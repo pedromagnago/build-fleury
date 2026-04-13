@@ -185,6 +185,8 @@ export default function MedicoesPanel() {
       }).eq('id', editingCell.distId)
     } else {
       // UPSERT new distribution
+      const med = medicoes.find(m => m.numero === editingCell.medNumero)
+      const prevMed = medicoes.find(m => m.numero === editingCell.medNumero - 1)
       await supabase.from('cronograma_distribuicao').upsert({
         company_id: currentCompany.id,
         etapa_id: editingCell.etapaId,
@@ -192,6 +194,8 @@ export default function MedicoesPanel() {
         casas_planejadas: newCasas,
         casas_realizadas: 0,
         valor_liberado_faturamento: newValor,
+        data_inicio: prevMed?.data_prevista || null,
+        data_fim: med?.data_prevista || null,
       }, { onConflict: 'company_id,etapa_id,medicao_numero' })
     }
 
@@ -380,6 +384,24 @@ export default function MedicoesPanel() {
                                   data_liberacao: editingMed.data_liberacao || undefined,
                                   status: editingMed.status as Medicao['status'],
                                 })
+
+                                // Cascade: update distribution dates for this measurement
+                                if (editingMed.data_prevista && editingMed.data_prevista !== med.data_prevista) {
+                                  // data_fim of this measurement's distributions = data_prevista
+                                  const thisDists = distribuicoes.filter(d => d.medicao_numero === med.numero)
+                                  for (const d of thisDists) {
+                                    await supabase.from('cronograma_distribuicao').update({ data_fim: editingMed.data_prevista }).eq('id', d.id)
+                                  }
+                                  // data_inicio of next measurement's distributions = data_prevista
+                                  if (nextMed) {
+                                    const nextDists = distribuicoes.filter(d => d.medicao_numero === nextMed.numero)
+                                    for (const d of nextDists) {
+                                      await supabase.from('cronograma_distribuicao').update({ data_inicio: editingMed.data_prevista }).eq('id', d.id)
+                                    }
+                                  }
+                                  qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+                                }
+
                                 setEditingMed(null)
                               }}
                               className="rounded bg-primary px-2 py-1 text-[10px] font-medium text-primary-foreground hover:opacity-90"
@@ -467,7 +489,7 @@ export default function MedicoesPanel() {
                         </span>
                       )}
                     </td>
-                    <td className="border-r px-2 py-2 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5 font-medium">{formatNumber(acum.casas)}</td>
+                    <td className="border-r px-2 py-2 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5 font-medium">{formatNumber(acum.casas, 2, 2)}</td>
                     <td className="border-r px-2 py-2 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5 text-emerald-600">{acum.valor > 0 ? formatCurrency(acum.valor) : '—'}</td>
                     {sortedMedicoes.flatMap(med => {
                       const dist = distMatrix.get(etapa.id)?.get(med.numero)
@@ -486,7 +508,7 @@ export default function MedicoesPanel() {
                           ) : (
                             <span className="cursor-pointer hover:text-primary tabular-nums inline-flex items-center gap-0.5" onClick={() => setEditingCell({ distId: dist?.id ?? null, etapaId: etapa.id, medNumero: med.numero, value: String(casas) })}>
                               {dist && noDates && <span title="Sem datas — não aparece no caixa"><AlertTriangle className="h-2.5 w-2.5 text-amber-500" /></span>}
-                              {casas > 0 ? formatNumber(casas) : <span className="text-muted-foreground/30">0</span>}
+                              {casas > 0 ? formatNumber(casas, 2, 2) : <span className="text-muted-foreground/30">0</span>}
                             </span>
                           )}
                         </td>,
@@ -496,7 +518,7 @@ export default function MedicoesPanel() {
                       ]
                     })}
                     <td className={`px-2 py-2 text-right tabular-nums font-medium ${restante < 0 ? 'text-red-500' : restante === 0 ? 'text-emerald-500' : ''}`}>
-                      {formatNumber(restante)}
+                      {formatNumber(restante, 2, 2)}
                     </td>
                   </tr>
                 )
@@ -507,7 +529,7 @@ export default function MedicoesPanel() {
                 <td className="sticky left-0 z-10 bg-muted/40"></td>
                 <td colSpan={5} className="sticky left-[28px] z-10 bg-muted/40 border-r px-3 py-2.5">TOTAL</td>
                 <td className="border-r px-2 py-2.5 text-right tabular-nums bg-emerald-50/20 dark:bg-emerald-950/5">
-                  {formatNumber(distribuicoes.reduce((s, d) => s + (d.casas_planejadas ?? 0), 0))}
+                  {formatNumber(distribuicoes.reduce((s, d) => s + (d.casas_planejadas ?? 0), 0), 2, 2)}
                 </td>
                 <td className="border-r px-2 py-2.5 text-right tabular-nums text-emerald-600 bg-emerald-50/20 dark:bg-emerald-950/5">
                   {formatCurrency(distribuicoes.reduce((s, d) => {
@@ -518,7 +540,7 @@ export default function MedicoesPanel() {
                 {sortedMedicoes.flatMap(med => {
                   const tot = medTotals.get(med.numero) ?? { casas: 0, valor: 0 }
                   return [
-                    <td key={`ft-${med.id}-c`} className="border-r px-2 py-2.5 text-right tabular-nums">{formatNumber(tot.casas)}</td>,
+                    <td key={`ft-${med.id}-c`} className="border-r px-2 py-2.5 text-right tabular-nums">{formatNumber(tot.casas, 2, 2)}</td>,
                     <td key={`ft-${med.id}-v`} className="border-r px-2 py-2.5 text-right tabular-nums">{formatCurrency(tot.valor)}</td>,
                   ]
                 })}
@@ -526,7 +548,7 @@ export default function MedicoesPanel() {
                   {formatNumber(filteredEtapas.reduce((s, e) => {
                     const allPlan = distribuicoes.filter(d => d.etapa_id === e.id).reduce((ss, d) => ss + d.casas_planejadas, 0)
                     return s + ((e.casas_total ?? 0) - allPlan)
-                  }, 0))}
+                  }, 0), 2, 2)}
                 </td>
               </tr>
             </tfoot>

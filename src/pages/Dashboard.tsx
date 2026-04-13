@@ -670,7 +670,7 @@ function ProximosPagamentosWidget() {
       .slice(0, 10)
       .map((p) => {
         const ped = pedidos.find((pd) => pd.id === p.pedido_id)
-        return { ...p, fornecedor: ped?.fornecedor_nome ?? '—', item: p.pedido_item ?? 'Avulsa' }
+        return { ...p, fornecedor: ped?.fornecedor_nome ?? '—', item: p.pedido_item ?? p.descricao ?? 'Avulsa' }
       })
   }, [parcelas, pedidos])
 

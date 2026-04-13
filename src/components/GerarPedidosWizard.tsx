@@ -197,13 +197,16 @@ export default function GerarPedidosWizard({ onClose }: { onClose: () => void })
         if (pedidoErr) throw pedidoErr
         successPedidos++
 
-        if (row.valorTotal > 0 && row.condPagamento && row.dataEntrega && pedido) {
+        if (row.valorTotal > 0 && pedido) {
+          const fallbackData = new Date()
+          fallbackData.setDate(fallbackData.getDate() + 30)
+
           const parcelas = gerarParcelas({
             pedidoId: pedido.id,
             companyId: currentCompany.id,
             valorTotal: row.valorTotal,
-            condPagamento: row.condPagamento,
-            dataEntrega: localDate(row.dataEntrega),
+            condPagamento: row.condPagamento || 'à vista',
+            dataEntrega: row.dataEntrega ? localDate(row.dataEntrega) : fallbackData,
           })
           if (parcelas.length > 0) {
             const { error: parcErr } = await supabase.from('parcelas').insert(parcelas)
@@ -586,7 +589,18 @@ function Step2(props: {
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <div>
               <label className={LABEL}>Fornecedor (todos)</label>
-              <select value={props.overrideFornecedor} onChange={(e) => props.setOverrideFornecedor(e.target.value)} className={INPUT}>
+              <select 
+                value={props.overrideFornecedor} 
+                onChange={(e) => {
+                  const val = e.target.value
+                  props.setOverrideFornecedor(val)
+                  const f = props.fornecedores.find(x => x.id === val)
+                  if (f && f.cond_pagamento_padrao) {
+                    props.setOverrideCond(f.cond_pagamento_padrao)
+                  }
+                }} 
+                className={INPUT}
+              >
                 <option value="">Selecione</option>
                 {props.fornecedores.map((f) => <option key={f.id} value={f.id}>{f.nome}</option>)}
               </select>
@@ -657,8 +671,8 @@ function Step3(props: {
                 <td className="px-3 py-2 text-center">
                   <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[9px] font-bold text-primary">#{row.loteNum}</span>
                 </td>
-                <td className="px-3 py-2 text-right">{row.casas}</td>
-                <td className="px-3 py-2 text-right">{row.qtd}</td>
+                <td className="px-3 py-2 text-right">{row.casas.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}</td>
+                <td className="px-3 py-2 text-right">{row.qtd.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}</td>
                 <td className="px-3 py-2 text-right">{formatCurrency(row.valorUnit)}</td>
                 <td className="px-3 py-2 text-right font-medium">{formatCurrency(row.valorTotal)}</td>
                 <td className="px-3 py-2 text-muted-foreground">{row.fornecedor?.nome ?? '—'}</td>

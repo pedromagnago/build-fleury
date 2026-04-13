@@ -83,6 +83,41 @@ export default function DespesasIndiretasPage() {
             </div>
           </div>
 
+          {/* KPI Summary — #16 Totalizador */}
+          {filteredDespesas.length > 0 && (() => {
+            const totalOrcado = filteredDespesas.reduce((s, d) => s + Number(d.valor_orcado), 0)
+            const totalConsumido = filteredDespesas.reduce((s, d) => s + Number(d.valor_consumido), 0)
+            const saldo = totalOrcado - totalConsumido
+            const categorias = new Set(filteredDespesas.map(d => d.categoria))
+            const recorrentes = filteredDespesas.filter(d => d.recorrente).length
+            return (
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                <div className="rounded-xl border bg-card p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Itens</p>
+                  <p className="mt-1 text-lg font-bold">{filteredDespesas.length}</p>
+                  <p className="text-[10px] text-muted-foreground">{categorias.size} categorias</p>
+                </div>
+                <div className="rounded-xl border bg-card p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orçado Total</p>
+                  <p className="mt-1 text-lg font-bold">{formatCurrency(totalOrcado)}</p>
+                </div>
+                <div className="rounded-xl border bg-amber-50/50 dark:bg-amber-950/10 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-600">Consumido</p>
+                  <p className="mt-1 text-lg font-bold text-amber-700">{formatCurrency(totalConsumido)}</p>
+                </div>
+                <div className={`rounded-xl border p-3 ${saldo >= 0 ? 'bg-emerald-50/50 dark:bg-emerald-950/10' : 'bg-red-50/50 dark:bg-red-950/10'}`}>
+                  <p className={`text-[10px] font-semibold uppercase tracking-wider ${saldo >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>Saldo</p>
+                  <p className={`mt-1 text-lg font-bold ${saldo >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{formatCurrency(saldo)}</p>
+                </div>
+                <div className="rounded-xl border bg-blue-50/50 dark:bg-blue-950/10 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-600">Recorrentes</p>
+                  <p className="mt-1 text-lg font-bold text-blue-700">{recorrentes}</p>
+                  <p className="text-[10px] text-muted-foreground">{filteredDespesas.length - recorrentes} pontuais</p>
+                </div>
+              </div>
+            )
+          })()}
+
           {!isLoading && grouped.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-xl border border-dashed p-12 text-center text-muted-foreground bg-muted/10">
               <Building2 className="mb-4 h-8 w-8 opacity-20" />

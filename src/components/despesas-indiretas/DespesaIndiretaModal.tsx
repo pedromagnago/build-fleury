@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { X, Calendar } from 'lucide-react'
 import { DespesaIndireta, useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
 import { useFornecedores, Fornecedor } from '@/hooks/useCompras'
@@ -8,7 +8,7 @@ interface DespesaIndiretaModalProps {
   initialData?: DespesaIndireta | null
 }
 
-const CATEGORIAS_SUGESTOES = [
+const CATEGORIAS_BASE = [
   'Gestão Local',
   'Administrativo',
   'Seguro',
@@ -25,10 +25,17 @@ const CATEGORIAS_SUGESTOES = [
 const INPUT = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
 
 export function DespesaIndiretaModal({ onClose, initialData }: DespesaIndiretaModalProps) {
-  const { createDespesa, updateDespesa, isCreating, isUpdating } = useDespesasIndiretas()
+  const { createDespesa, updateDespesa, isCreating, isUpdating, despesas } = useDespesasIndiretas()
   const { data: fornecedores = [] } = useFornecedores()
 
   const isSaving = isCreating || isUpdating
+
+  // #14: Dynamic categories — merge base suggestions with existing from DB
+  const allCategorias = useMemo(() => {
+    const existing = new Set(despesas.map(d => d.categoria))
+    CATEGORIAS_BASE.forEach(c => existing.add(c))
+    return Array.from(existing).sort()
+  }, [despesas])
 
   const [formData, setFormData] = useState({
     categoria: '',
@@ -119,7 +126,7 @@ export function DespesaIndiretaModal({ onClose, initialData }: DespesaIndiretaMo
                     placeholder="Ex: Gestão Local"
                   />
                   <datalist id="categorias-list">
-                    {CATEGORIAS_SUGESTOES.map(cat => <option key={cat} value={cat} />)}
+                    {allCategorias.map(cat => <option key={cat} value={cat} />)}
                   </datalist>
                 </div>
               </div>

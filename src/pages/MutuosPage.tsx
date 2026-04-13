@@ -53,7 +53,7 @@ function parseParcelasText(text: string) {
 function CreateMutuoModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const createMutuo = useCreateMutuo()
   const [form, setForm] = useState({
-    nome: '', tipo: 'MÚTUO' as Mutuo['tipo'], instituicao: '',
+    nome: '', tipo: 'MÚTUO' as Mutuo['tipo'], categoria: 'Mútuo', instituicao: '',
     valor_captado: '', data_captacao: '', taxa_juros_mensal: '', observacoes: '',
   })
   const [parcelasText, setParcelasText] = useState('')
@@ -66,7 +66,7 @@ function CreateMutuoModal({ open, onClose }: { open: boolean; onClose: () => voi
     createMutuo.mutate(
       {
         mutuo: {
-          nome: form.nome, tipo: form.tipo, instituicao: form.instituicao || null,
+          nome: form.nome, tipo: form.tipo, categoria: form.categoria, instituicao: form.instituicao || null,
           valor_captado: parseFloat(form.valor_captado.replace(/[^\d.,]/g, '').replace(',', '.')) || 0,
           data_captacao: form.data_captacao,
           taxa_juros_mensal: parseFloat(form.taxa_juros_mensal.replace(',', '.')) || 0,
@@ -77,7 +77,7 @@ function CreateMutuoModal({ open, onClose }: { open: boolean; onClose: () => voi
       {
         onSuccess: () => {
           onClose()
-          setForm({ nome: '', tipo: 'MÚTUO', instituicao: '', valor_captado: '', data_captacao: '', taxa_juros_mensal: '', observacoes: '' })
+          setForm({ nome: '', tipo: 'MÚTUO', categoria: 'Mútuo', instituicao: '', valor_captado: '', data_captacao: '', taxa_juros_mensal: '', observacoes: '' })
           setParcelasText('')
         },
       }
@@ -109,6 +109,16 @@ function CreateMutuoModal({ open, onClose }: { open: boolean; onClose: () => voi
                 <option value="CARTÃO">Cartão de Crédito</option>
                 <option value="OUTRO">Outro</option>
               </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Categoria</label>
+              <input type="text" list="mutuo-cat-list" value={form.categoria} onChange={e => setForm({ ...form, categoria: e.target.value })} className={inputCls} placeholder="Ex: Mútuo, Capital de Giro" />
+              <datalist id="mutuo-cat-list">
+                <option value="Mútuo" />
+                <option value="Capital de Giro" />
+                <option value="Financiamento" />
+                <option value="Cartão" />
+              </datalist>
             </div>
           </div>
 
@@ -194,6 +204,7 @@ function MutuoCard({ mutuo }: { mutuo: Mutuo }) {
             <h3 className="font-semibold">{mutuo.nome}</h3>
             <p className="text-xs text-muted-foreground">
               {mutuo.tipo} {mutuo.instituicao ? `• ${mutuo.instituicao}` : ''} • Captado em {formatDate(mutuo.data_captacao)}
+              {mutuo.categoria && <span className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">{mutuo.categoria}</span>}
             </p>
           </div>
         </div>

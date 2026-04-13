@@ -8,6 +8,7 @@ export interface Mutuo {
   company_id: string
   nome: string
   tipo: 'MÚTUO' | 'EMPRÉSTIMO' | 'FINANCIAMENTO' | 'CARTÃO' | 'OUTRO'
+  categoria: string
   instituicao: string | null
   valor_captado: number
   data_captacao: string

@@ -125,7 +125,7 @@ function ParcelasTab({ search }: { search: string }) {
 
   const [form, setForm] = useState({
     pedido_id: '', numero_parcela: '1', valor: '', data_vencimento: '',
-    forma_pagamento: '', status: 'futura',
+    forma_pagamento: '', status: 'futura', descricao: '',
   })
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -137,13 +137,14 @@ function ParcelasTab({ search }: { search: string }) {
       data_vencimento: form.data_vencimento,
       forma_pagamento: form.forma_pagamento || null,
       status: form.status as Parcela['status'],
+      descricao: !form.pedido_id ? form.descricao || null : null,
     })
     setShowForm(false)
-    setForm({ pedido_id: '', numero_parcela: '1', valor: '', data_vencimento: '', forma_pagamento: '', status: 'futura' })
+    setForm({ pedido_id: '', numero_parcela: '1', valor: '', data_vencimento: '', forma_pagamento: '', status: 'futura', descricao: '' })
   }
 
   const filtered = parcelas.filter((p) =>
-    (p.pedido_item ?? '').toLowerCase().includes(search.toLowerCase()) ||
+    (p.pedido_item ?? p.descricao ?? '').toLowerCase().includes(search.toLowerCase()) ||
     p.status.includes(search.toLowerCase())
   )
 
@@ -182,8 +183,11 @@ function ParcelasTab({ search }: { search: string }) {
             <button onClick={() => setShowForm(false)} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
           </div>
           <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-4">
               <div><label className={LABEL}>Pedido</label><select value={form.pedido_id} onChange={(e) => setForm((p) => ({ ...p, pedido_id: e.target.value }))} className={INPUT}><option value="">Avulsa</option>{pedidos.map((pd) => <option key={pd.id} value={pd.id}>{pd.item_descricao ?? pd.id.slice(0, 8)}</option>)}</select></div>
+              {!form.pedido_id && (
+                <div><label className={LABEL}>Descrição *</label><input type="text" value={form.descricao} onChange={(e) => setForm((p) => ({ ...p, descricao: e.target.value }))} required className={INPUT} /></div>
+              )}
               <div><label className={LABEL}>Nº Parcela</label><input type="number" min="1" value={form.numero_parcela} onChange={(e) => setForm((p) => ({ ...p, numero_parcela: e.target.value }))} className={INPUT} /></div>
               <div><label className={LABEL}>Valor (R$) *</label><input type="number" step="0.01" value={form.valor} onChange={(e) => setForm((p) => ({ ...p, valor: e.target.value }))} required className={INPUT} /></div>
             </div>
@@ -231,7 +235,7 @@ function ParcelasTab({ search }: { search: string }) {
                         onChange={() => selection.toggle(p.id)}
                         className="h-3.5 w-3.5 rounded accent-primary" />
                     </td>
-                    <td className="px-3 py-2.5 text-xs font-medium">{p.pedido_item ?? 'Avulsa'}</td>
+                    <td className="px-3 py-2.5 text-xs font-medium">{p.pedido_item ?? p.descricao ?? 'Avulsa'}</td>
                     <td className="px-3 py-2.5 text-center text-xs text-muted-foreground">{p.numero_parcela}</td>
                     <td className="px-3 py-2.5 text-right text-xs font-medium">{formatCurrency(p.valor)}</td>
                     <td className="px-3 py-2.5 text-center text-xs">{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</td>
@@ -329,7 +333,7 @@ function PaymentModal({
   })
 
   const pedido = pedidos.find((p) => p.id === parcela.pedido_id)
-  const descLabel = `Pgto ${pedido?.fornecedor_nome ?? '—'} - ${parcela.pedido_item ?? 'Avulsa'}`
+  const descLabel = `Pgto ${pedido?.fornecedor_nome ?? '—'} - ${parcela.pedido_item ?? parcela.descricao ?? 'Avulsa'}`
 
   const handlePay = async () => {
     setSaving(true)
@@ -430,7 +434,7 @@ function PaymentModal({
         <div className="flex items-center justify-between border-b p-5">
           <div>
             <h3 className="font-semibold">Registrar Pagamento</h3>
-            <p className="text-xs text-muted-foreground">{parcela.pedido_item ?? 'Avulsa'} — Parcela {parcela.numero_parcela}</p>
+            <p className="text-xs text-muted-foreground">{parcela.pedido_item ?? parcela.descricao ?? 'Avulsa'} — Parcela {parcela.numero_parcela}</p>
           </div>
           <button onClick={onClose} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
         </div>
@@ -630,7 +634,7 @@ function AgendaTab() {
                   const cfg = statusConfig[p.status]!
                   return (
                     <div key={p.id} className={`rounded px-1.5 py-0.5 text-[9px] ${cfg.color}`}>
-                      <div className="truncate font-medium">{ped?.fornecedor_nome ?? p.pedido_item ?? 'Avulsa'}</div>
+                      <div className="truncate font-medium">{ped?.fornecedor_nome ?? p.pedido_item ?? p.descricao ?? 'Avulsa'}</div>
                       <div className="font-bold">{formatCurrency(p.valor - p.valor_pago)}</div>
                     </div>
                   )
@@ -785,7 +789,7 @@ function PorFornecedorTab() {
                               className="h-3.5 w-3.5 rounded border-border"
                             />
                           </td>
-                          <td className="py-1.5">{p.pedido_item ?? 'Avulsa'}</td>
+                          <td className="py-1.5">{p.pedido_item ?? p.descricao ?? 'Avulsa'}</td>
                           <td className="py-1.5 text-center text-muted-foreground">{p.numero_parcela}</td>
                           <td className="py-1.5 text-right font-medium">{formatCurrency(p.valor - p.valor_pago)}</td>
                           <td className="py-1.5 text-center">{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</td>

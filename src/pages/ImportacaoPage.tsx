@@ -399,10 +399,13 @@ function PedidosTab() {
       try {
         // Resolve fornecedor
         let fornecedorId: string | null = null
+        let fornCond: string | null = null
         if (row['fornecedor_nome']) {
-          const { data: forn } = await supabase.from('fornecedores').select('id').eq('company_id', currentCompany.id).ilike('nome', row['fornecedor_nome']).limit(1).single()
-          if (forn) fornecedorId = forn.id
-          else {
+          const { data: forn } = await supabase.from('fornecedores').select('id, cond_pagamento_padrao').eq('company_id', currentCompany.id).ilike('nome', row['fornecedor_nome']).limit(1).single()
+          if (forn) {
+            fornecedorId = forn.id
+            fornCond = forn.cond_pagamento_padrao
+          } else {
             // Auto-create fornecedor
             const newFornData: any = { company_id: currentCompany.id, nome: row['fornecedor_nome'] }
             if (row['cond_pagamento']) newFornData.cond_pagamento_padrao = row['cond_pagamento']
@@ -411,8 +414,20 @@ function PedidosTab() {
           }
         }
 
+        let condPagamento = row['cond_pagamento'] || null
+        if (!condPagamento) {
+          condPagamento = fornCond || 'à vista'
+        }
+
+        let dataEntrega = row['data_entrega_prevista'] || null
+        if (!dataEntrega) {
+          const d30 = new Date()
+          d30.setDate(d30.getDate() + 30)
+          dataEntrega = d30.toISOString().split('T')[0]
+        }
+
         // Create pedido
-        const casas = parseInt(row['casas_lote'] ?? '0') || 0
+        const casas = parseFloat(row['casas_lote'] ?? '0') || 0
         const unitario = row.unitarioAplicado
         const qtdPorCasa = item.qtd_por_casa ?? 1
         const qtdLote = casas * qtdPorCasa
@@ -427,29 +442,16 @@ function PedidosTab() {
           valor_unitario_real: unitario,
           valor_total_real: valorTotal,
           fornecedor_id: fornecedorId,
-          cond_pagamento: row['cond_pagamento'] || null,
-          data_entrega_prevista: row['data_entrega_prevista'] || null,
+          cond_pagamento: condPagamento,
+          data_entrega_prevista: dataEntrega,
           status: 'planejado',
         }).select('id').single()
 
         if (pedErr) throw pedErr
         if (!pedido) throw new Error('Pedido não criado')
 
-        // Generate parcelas
-        const dataEntrega = row['data_entrega_prevista'] ? localDate(row['data_entrega_prevista']) : new Date()
-        const parcelasGeradas = gerarParcelas({
-          pedidoId: pedido.id,
-          companyId: currentCompany.id,
-          valorTotal,
-          condPagamento: row['cond_pagamento'] ?? '',
-          dataEntrega,
-        })
-
-        if (parcelasGeradas.length > 0) {
-          const { error: parcErr } = await supabase.from('parcelas').insert(parcelasGeradas)
-          if (parcErr) throw parcErr
-          totalParcelas += parcelasGeradas.length
-        }
+        // Pedidos importados não geram parcelas automaticamente (Prompt #12)
+        // O usuário deverá configurá-las manualmente na edição do pedido se desejar.
 
         successPedidos++
       } catch (err) { errors.push(`Linha ${i + 2}: ${formatError(err)}`) }

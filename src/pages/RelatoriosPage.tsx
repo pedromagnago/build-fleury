@@ -36,7 +36,7 @@ export default function RelatoriosPage() {
     } else if (activeReport === 'financeiro') {
       csv = 'Item;Parcela;Valor;Vencimento;Status;Pago\n'
       parcelas.forEach((p) => {
-        csv += `${p.pedido_item ?? 'Avulsa'};${p.numero_parcela};${p.valor};${p.data_vencimento};${p.status};${p.valor_pago}\n`
+        csv += `${p.pedido_item ?? p.descricao ?? 'Avulsa'};${p.numero_parcela};${p.valor};${p.data_vencimento};${p.status};${p.valor_pago}\n`
       })
       filename = 'relatorio_financeiro.csv'
     } else if (activeReport === 'medicoes') {
@@ -148,7 +148,7 @@ export default function RelatoriosPage() {
               </thead>
               <tbody className="divide-y">{parcelas.map((p) => (
                 <tr key={p.id} className="hover:bg-muted/30">
-                  <td className="px-3 py-2">{p.pedido_item ?? 'Avulsa'}</td>
+                  <td className="px-3 py-2">{p.pedido_item ?? p.descricao ?? 'Avulsa'}</td>
                   <td className="px-3 py-2 text-center text-xs">{p.numero_parcela}</td>
                   <td className="px-3 py-2 text-right">{formatCurrency(p.valor)}</td>
                   <td className="px-3 py-2 text-center text-xs">{formatDate(p.data_vencimento)}</td>

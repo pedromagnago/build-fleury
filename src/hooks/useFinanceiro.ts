@@ -19,6 +19,7 @@ export interface Parcela {
   comprovante_path: string | null
   deleted_at: string | null
   created_at: string
+  descricao: string | null
   // Joined
   pedido_item?: string
   item_compra_id?: string | null
