@@ -1,0 +1,12 @@
+const fs = require('fs');
+const d = JSON.parse(fs.readFileSync('excel_output.json','utf8'));
+const data = d.Template.data;
+const etapas = [...new Set(data.map(r => r[0]).filter(Boolean))];
+const fornecedores = [...new Set(data.map(r => r[11]).filter(Boolean))];
+const pedidos = [...new Set(data.map(r => r[20]).filter(v => v != null))];
+const tipos = [...new Set(data.map(r => r[1]).filter(Boolean))];
+console.log('Etapas:', etapas);
+console.log('\nFornecedores:', fornecedores);
+console.log('\nNúmeros pedidos:', pedidos);
+console.log('\nTipos:', tipos);
+console.log('\nTotal linhas de dados:', data.length);

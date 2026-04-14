@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar'
 import { Menu, Bell } from 'lucide-react'
 import { TourFAB } from '@/components/TourDrawer'
 import { ProductTourBanner } from '@/components/ProductTourBanner'
+import { HealthCheckFAB } from '@/components/HealthCheckPanel'
 
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -35,6 +36,9 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Health Check Panel */}
+      <HealthCheckFAB />
 
       {/* Tour System */}
       <TourFAB />

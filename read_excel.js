@@ -5,8 +5,7 @@ const output = {};
 wb.SheetNames.forEach(s => {
   const ws = wb.Sheets[s];
   const rows = XLSX.utils.sheet_to_json(ws, {header:1});
-  output[s] = { totalRows: rows.length, headers: rows[0], data: rows.slice(1, 200) };
+  output[s] = rows.slice(0, 30);
 });
 fs.writeFileSync('excel_output.json', JSON.stringify(output, null, 2));
-console.log('Done. Total rows per sheet:');
-Object.entries(output).forEach(([k,v]) => console.log(`  ${k}: ${v.totalRows} rows`));
+console.log('Done. Sheets:', wb.SheetNames);
