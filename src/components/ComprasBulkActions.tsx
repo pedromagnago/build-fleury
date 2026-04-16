@@ -147,8 +147,8 @@ function GerarPedidosModal({ itens, onClose, onDone }: { itens: ItemCompra[]; on
   const preview = useMemo(() => {
     const casas = parseInt(casasLote) || 0
     return itens.map(i => {
-      const qtd = (i.qtd_por_casa ?? 0) * casas
-      const valor = qtd * (i.custo_unitario_orcado ?? 0)
+      const qtd = Math.round((i.qtd_por_casa ?? 0) * casas * 100) / 100
+      const valor = Math.round(qtd * (i.custo_unitario_orcado ?? 0) * 100) / 100
       return { ...i, qtd_lote: qtd, valor_total: valor }
     })
   }, [itens, casasLote])

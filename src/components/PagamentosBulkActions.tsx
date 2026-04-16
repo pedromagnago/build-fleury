@@ -100,7 +100,7 @@ function PagarLoteModal({ parcelas, fornecedorMap, onClose, onDone }: {
           data: dataPgto,
           descricao: `Pgto lote - ${fornecedorMap.get(p.pedido_id ?? '') ?? 'N/A'}`,
           valor: valorPagar,
-          tipo: 'debito',
+          tipo: 'saida',
           parcela_id: p.id,
         })
       }

@@ -8,7 +8,7 @@ import { useMutuos } from '@/hooks/useMutuos'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
-import { ChevronRight, ChevronDown, X, Download, Calendar, CalendarDays, Save, Loader2 } from 'lucide-react'
+import { ChevronRight, ChevronDown, X, Download, Calendar, CalendarDays, Save, Loader2, ExternalLink, Trash2 } from 'lucide-react'
 import FinancialViewFilter, { type FinancialViewMode } from './FinancialViewFilter'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
 
@@ -387,15 +387,65 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
       {editing && (
         <>
           <div className="fixed inset-0 z-40 bg-black/20" onClick={() => setEditing(null)} />
-          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[340px] rounded-lg border bg-card p-4 shadow-2xl">
-            <div className="flex justify-between items-start mb-3">
-              <div>
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[380px] rounded-lg border bg-card p-4 shadow-2xl">
+            <div className="flex justify-between items-start mb-3 gap-3">
+              <div className="flex-1 min-w-0">
                 <p className="text-[10px] text-muted-foreground uppercase font-bold">{editing.meta?.cat}</p>
-                <p className="text-sm font-semibold truncate">{editing.desc}</p>
-                {editing.meta?.etapa && <p className="text-[10px] text-muted-foreground">Etapa: {editing.meta.etapa}</p>}
-                {editing.meta?.item && <p className="text-[10px] text-muted-foreground">Item: {editing.meta.item}</p>}
+                <p className="text-sm font-semibold text-balance line-clamp-2" title={editing.desc}>{editing.desc}</p>
+                {editing.meta?.etapa && <p className="text-[10px] text-muted-foreground truncate">Etapa: {editing.meta.etapa}</p>}
+                {editing.meta?.item && <p className="text-[10px] text-muted-foreground truncate">Item: {editing.meta.item}</p>}
               </div>
-              <button onClick={() => setEditing(null)} className="p-1 rounded hover:bg-muted"><X className="h-3.5 w-3.5" /></button>
+              <div className="flex items-center gap-1 shrink-0">
+                {(() => {
+                  const id = editing.id
+                  let link = ''
+                  let tabInfo = ''
+                  const searchParam = `?search=${encodeURIComponent(editing.desc)}`
+                  
+                  if (id.startsWith('par-') || id.startsWith('mutpar-')) { link = `/pagamentos${searchParam}`; tabInfo = 'Pagamentos' }
+                  else if (id.startsWith('mutcap-')) { link = `/mutuos${searchParam}`; tabInfo = 'Mútuos' }
+                  else if (id.startsWith('pedsol-')) { link = `/compras${searchParam}`; tabInfo = 'Compras' }
+                  else if (id.startsWith('med-')) { link = `/cronograma?tab=medicoes&search=${encodeURIComponent(editing.desc)}`; tabInfo = 'Cronograma (Medições)' }
+
+                  return link ? (
+                    <button
+                      onClick={() => window.open(link, '_blank')}
+                      title={`Abrir em: ${tabInfo}`}
+                      className="p-1 rounded text-blue-500 hover:bg-blue-500/10 transition-colors"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null
+                })()}
+
+                {/* Optional Delete Button for simple entities */}
+                {(() => {
+                  const id = editing.id
+                  const canDelete = id.startsWith('par-') || id.startsWith('mutpar-')
+                  if (!canDelete) return null
+                  const handleDelete = async () => {
+                    if (!window.confirm('Certeza que deseja excluir este item? Esta ação apagará do banco de dados e recarregará o simulador.')) return
+                    try {
+                      if (id.startsWith('par-')) await supabase.from('parcelas').delete().eq('id', id.replace('par-', ''))
+                      if (id.startsWith('mutpar-')) await supabase.from('mutuo_parcelas').delete().eq('id', id.replace('mutpar-', ''))
+                      
+                      toast.success('Excluído com sucesso!')
+                      qc.invalidateQueries({ queryKey: ['parcelas'] })
+                      qc.invalidateQueries({ queryKey: ['mutuos'] })
+                      setEditing(null)
+                    } catch (e: any) {
+                      toast.error('Erro ao excluir: ' + e.message)
+                    }
+                  }
+                  return (
+                    <button onClick={handleDelete} title="Excluir item do banco de dados" className="p-1 rounded text-red-500 hover:bg-red-500/10 transition-colors">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )
+                })()}
+                
+                <button onClick={() => setEditing(null)} className="p-1 rounded text-muted-foreground hover:bg-muted ml-1"><X className="h-3.5 w-3.5" /></button>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

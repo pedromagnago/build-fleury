@@ -133,7 +133,7 @@ export interface Movimentacao {
   data: string
   descricao: string
   valor: number
-  tipo: 'credito' | 'debito'
+  tipo: 'entrada' | 'saida' | 'transferencia' | 'ajuste'
   categoria: string | null
   parcela_id: string | null
   conciliado: boolean

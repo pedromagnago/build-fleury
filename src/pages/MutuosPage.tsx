@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Landmark,
   Plus,
   Trash2,
+  Edit2,
   ChevronDown,
   ChevronUp,
   CheckCircle2,
@@ -12,13 +13,26 @@ import {
   TrendingDown,
   ArrowUpRight,
   ArrowDownRight,
+  RotateCcw,
+  Save,
+  X,
+  CheckSquare,
+  Square,
+  Tags,
 } from 'lucide-react'
-import { useMutuos, useCreateMutuo, useDeleteMutuo, useUpdateMutuoParcela } from '@/hooks/useMutuos'
+import { useMutuos, useCreateMutuo, useDeleteMutuo, useUpdateMutuo, useUpdateMutuoParcela, useCreateMutuoParcela, useDeleteMutuoParcela, useBatchDeleteMutuos, useBatchUpdateMutuosCategory } from '@/hooks/useMutuos'
+import { useFornecedores } from '@/hooks/useCompras'
 import type { Mutuo, MutuoParcela } from '@/hooks/useMutuos'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { formatCurrency } from '@/lib/utils'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
+
+const Checkbox = ({ checked, onChange, className = '' }: { checked: boolean; onChange: () => void; className?: string }) => (
+  <button onClick={(e) => { e.stopPropagation(); onChange() }} className={`shrink-0 p-0.5 rounded hover:bg-muted text-muted-foreground ${className}`}>
+    {checked ? <CheckSquare className="h-4 w-4 text-primary" /> : <Square className="h-4 w-4" />}
+  </button>
+)
 
 function formatDate(d: string) {
   return new Date(d + 'T12:00:00').toLocaleDateString('pt-BR')
@@ -49,49 +63,77 @@ function parseParcelasText(text: string) {
   }).filter((p): p is { data_vencimento: string; valor: number } => p !== null && p.valor > 0)
 }
 
-// --- Create Mutuo Modal ---
-function CreateMutuoModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+const inputCls = 'w-full rounded-lg border bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30'
+
+// ─── Mutuo Form Modal (create + edit) ───────────────────────
+
+function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose: () => void; initialData?: Mutuo | null }) {
   const createMutuo = useCreateMutuo()
+  const updateMutuo = useUpdateMutuo()
+  const isEditing = !!initialData
+
   const [form, setForm] = useState({
-    nome: '', tipo: 'MÚTUO' as Mutuo['tipo'], categoria: 'Mútuo', instituicao: '',
-    valor_captado: '', data_captacao: '', taxa_juros_mensal: '', observacoes: '',
+    nome: '', tipo: 'MÚTUO' as Mutuo['tipo'], categoria: 'Mútuo',
+    instituicao: '', fornecedor_id: '', valor_captado: '', data_captacao: '',
+    taxa_juros_mensal: '', observacoes: '', status: 'ativo' as Mutuo['status'],
   })
   const [parcelasText, setParcelasText] = useState('')
+  const { data: fornecedores } = useFornecedores()
+
+  useEffect(() => {
+    if (open && initialData) {
+      setForm({
+        nome: initialData.nome,
+        tipo: initialData.tipo,
+        categoria: initialData.categoria ?? 'Mútuo',
+        instituicao: initialData.instituicao ?? '',
+        fornecedor_id: initialData.fornecedor_id ?? '',
+        valor_captado: String(initialData.valor_captado),
+        data_captacao: initialData.data_captacao,
+        taxa_juros_mensal: initialData.taxa_juros_mensal ? String(initialData.taxa_juros_mensal) : '',
+        observacoes: initialData.observacoes ?? '',
+        status: initialData.status ?? 'ativo',
+      })
+    } else if (open) {
+      setForm({
+        nome: '', tipo: 'MÚTUO', categoria: 'Mútuo', instituicao: '', fornecedor_id: '',
+        valor_captado: '', data_captacao: '', taxa_juros_mensal: '', observacoes: '', status: 'ativo',
+      })
+      setParcelasText('')
+    }
+  }, [open, initialData])
 
   if (!open) return null
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    const parcelas = parseParcelasText(parcelasText)
-    createMutuo.mutate(
-      {
-        mutuo: {
-          nome: form.nome, tipo: form.tipo, categoria: form.categoria, instituicao: form.instituicao || null,
-          valor_captado: parseFloat(form.valor_captado.replace(/[^\d.,]/g, '').replace(',', '.')) || 0,
-          data_captacao: form.data_captacao,
-          taxa_juros_mensal: parseFloat(form.taxa_juros_mensal.replace(',', '.')) || 0,
-          observacoes: form.observacoes || null, status: 'ativo',
-        },
-        parcelas,
-      },
-      {
-        onSuccess: () => {
-          onClose()
-          setForm({ nome: '', tipo: 'MÚTUO', categoria: 'Mútuo', instituicao: '', valor_captado: '', data_captacao: '', taxa_juros_mensal: '', observacoes: '' })
-          setParcelasText('')
-        },
-      }
-    )
+    const payload = {
+      nome: form.nome, tipo: form.tipo, categoria: form.categoria,
+      instituicao: form.instituicao || null,
+      fornecedor_id: form.fornecedor_id || null,
+      valor_captado: parseFloat(form.valor_captado.replace(/[^\d.,]/g, '').replace(',', '.')) || 0,
+      data_captacao: form.data_captacao,
+      taxa_juros_mensal: parseFloat(form.taxa_juros_mensal.replace(',', '.')) || 0,
+      observacoes: form.observacoes || null,
+      status: form.status,
+    }
+
+    if (isEditing) {
+      updateMutuo.mutate({ id: initialData!.id, ...payload } as any, { onSuccess: () => onClose() })
+    } else {
+      const parcelas = parseParcelasText(parcelasText)
+      createMutuo.mutate({ mutuo: payload, parcelas }, { onSuccess: () => onClose() })
+    }
   }
 
-  const inputCls = 'w-full rounded-lg border bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30'
+  const isSaving = createMutuo.isPending || updateMutuo.isPending
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="mx-4 w-full max-w-2xl rounded-xl border bg-card shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="mx-4 w-full max-w-2xl rounded-xl border bg-card shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="border-b px-6 py-4">
-          <h2 className="text-lg font-semibold">Novo Mútuo / Empréstimo</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Cadastre a captação e as parcelas de devolução</p>
+          <h2 className="text-lg font-semibold">{isEditing ? 'Editar Mútuo' : 'Novo Mútuo / Empréstimo'}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{isEditing ? 'Altere os dados do mútuo' : 'Cadastre a captação e as parcelas de devolução'}</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5 p-6">
@@ -120,11 +162,26 @@ function CreateMutuoModal({ open, onClose }: { open: boolean; onClose: () => voi
                 <option value="Cartão" />
               </datalist>
             </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Status</label>
+              <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value as Mutuo['status'] })} className={inputCls}>
+                <option value="ativo">Ativo</option>
+                <option value="quitado">Quitado</option>
+                <option value="inadimplente">Inadimplente</option>
+              </select>
+            </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-4 gap-4">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Instituição</label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Fornecedor (Opcional)</label>
+              <select value={form.fornecedor_id} onChange={e => setForm({ ...form, fornecedor_id: e.target.value })} className={inputCls}>
+                <option value="">(Nenhum)</option>
+                {fornecedores?.map((f: any) => <option key={f.id} value={f.id}>{f.nome}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Outra Instituição</label>
               <input type="text" value={form.instituicao} onChange={e => setForm({ ...form, instituicao: e.target.value })} className={inputCls} placeholder="Banco, pessoa, etc." />
             </div>
             <div>
@@ -148,18 +205,21 @@ function CreateMutuoModal({ open, onClose }: { open: boolean; onClose: () => voi
             </div>
           </div>
 
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Parcelas de Devolução (data;valor — uma por linha)</label>
-            <textarea value={parcelasText} onChange={e => setParcelasText(e.target.value)} rows={6} className={`${inputCls} font-mono text-xs`} placeholder={`08/04/2026;9000,00\n08/04/2026;14716,35\n17/04/2026;32008,00`} />
-            {parcelasText && (
-              <p className="mt-1 text-xs text-muted-foreground">{parseParcelasText(parcelasText).length} parcela(s) reconhecida(s) — Total: {formatCurrency(parseParcelasText(parcelasText).reduce((s, p) => s + p.valor, 0))}</p>
-            )}
-          </div>
+          {!isEditing && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Parcelas de Devolução (data;valor — uma por linha)</label>
+              <textarea value={parcelasText} onChange={e => setParcelasText(e.target.value)} rows={6} className={`${inputCls} font-mono text-xs`} placeholder={`08/04/2026;9000,00\n08/04/2026;14716,35\n17/04/2026;32008,00`} />
+              {parcelasText && (
+                <p className="mt-1 text-xs text-muted-foreground">{parseParcelasText(parcelasText).length} parcela(s) reconhecida(s) — Total: {formatCurrency(parseParcelasText(parcelasText).reduce((s, p) => s + p.valor, 0))}</p>
+              )}
+            </div>
+          )}
 
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="rounded-lg border px-4 py-2 text-sm text-muted-foreground hover:bg-accent">Cancelar</button>
-            <button type="submit" disabled={createMutuo.isPending} className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-              <Plus className="h-4 w-4" /> {createMutuo.isPending ? 'Salvando...' : 'Cadastrar Mútuo'}
+            <button type="submit" disabled={isSaving} className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+              {isEditing ? <Edit2 className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              {isSaving ? 'Salvando...' : isEditing ? 'Salvar Alterações' : 'Cadastrar Mútuo'}
             </button>
           </div>
         </form>
@@ -168,8 +228,171 @@ function CreateMutuoModal({ open, onClose }: { open: boolean; onClose: () => voi
   )
 }
 
-// --- Mutuo Card ---
-function MutuoCard({ mutuo }: { mutuo: Mutuo }) {
+// ─── Parcela Inline Edit Row ────────────────────────────────
+
+function ParcelaRow({ parcela, mutuoId, onUpdate }: { parcela: MutuoParcela; mutuoId: string; onUpdate: ReturnType<typeof useUpdateMutuoParcela> }) {
+  const deleteParcela = useDeleteMutuoParcela()
+  const [editing, setEditing] = useState(false)
+  const [editValor, setEditValor] = useState(String(parcela.valor))
+  const [editDate, setEditDate] = useState(parcela.data_vencimento)
+  const todayStr = new Date().toISOString().split('T')[0]!
+  const isVencida = parcela.status !== 'paga' && parcela.data_vencimento < todayStr
+  const isPaga = parcela.status === 'paga'
+
+  const handleSaveEdit = () => {
+    const newValor = parseFloat(editValor.replace(/[^\d.,]/g, '').replace(',', '.')) || 0
+    if (newValor <= 0) return
+    onUpdate.mutate({
+      id: parcela.id,
+      valor: newValor,
+      data_vencimento: editDate,
+    })
+    setEditing(false)
+  }
+
+  const handleBaixar = () => {
+    onUpdate.mutate({ id: parcela.id, status: 'paga', valor_pago: parcela.valor, data_pagamento_real: todayStr })
+  }
+
+  const handleEstornar = () => {
+    if (!window.confirm('Deseja estornar o pagamento desta parcela?')) return
+    onUpdate.mutate({ id: parcela.id, status: 'pendente', valor_pago: 0, data_pagamento_real: null })
+  }
+
+  const handleDelete = () => {
+    if (!window.confirm('Excluir esta parcela permanentemente?')) return
+    deleteParcela.mutate(parcela.id)
+  }
+
+  if (editing) {
+    return (
+      <tr className="border-b last:border-0 bg-primary/5">
+        <td className="px-4 py-2 text-muted-foreground">{parcela.numero_parcela}</td>
+        <td className="px-4 py-2">
+          <input type="date" value={editDate} onChange={e => setEditDate(e.target.value)} className="rounded border bg-background px-2 py-1 text-sm w-36" />
+        </td>
+        <td className="px-4 py-2 text-right">
+          <input type="text" value={editValor} onChange={e => setEditValor(e.target.value)} className="rounded border bg-background px-2 py-1 text-sm text-right w-28" />
+        </td>
+        <td className="px-4 py-2 text-right text-muted-foreground">{formatCurrency(Number(parcela.valor_pago || 0))}</td>
+        <td className="px-4 py-2 text-center">
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${statusBadge(parcela.status)}`}>
+            {statusLabel(parcela.status)}
+          </span>
+        </td>
+        <td className="px-4 py-2">
+          <div className="flex items-center justify-center gap-1">
+            <button onClick={handleSaveEdit} disabled={onUpdate.isPending} className="rounded-md bg-primary p-1.5 text-primary-foreground hover:bg-primary/90 disabled:opacity-50" title="Salvar">
+              <Save className="h-3 w-3" />
+            </button>
+            <button onClick={() => { setEditing(false); setEditValor(String(parcela.valor)); setEditDate(parcela.data_vencimento) }} className="rounded-md bg-muted p-1.5 text-muted-foreground hover:bg-accent" title="Cancelar">
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        </td>
+      </tr>
+    )
+  }
+
+  return (
+    <tr className="border-b last:border-0 hover:bg-accent/50 transition-colors group">
+      <td className="px-4 py-2 text-muted-foreground">{parcela.numero_parcela}</td>
+      <td className="px-4 py-2">{formatDate(parcela.data_vencimento)}</td>
+      <td className="px-4 py-2 text-right font-medium">{formatCurrency(Number(parcela.valor))}</td>
+      <td className="px-4 py-2 text-right text-muted-foreground">{formatCurrency(Number(parcela.valor_pago || 0))}</td>
+      <td className="px-4 py-2 text-center">
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${statusBadge(isVencida ? 'vencida' : parcela.status)}`}>
+          {isVencida ? <><AlertTriangle className="h-3 w-3" /> Vencida</> : isPaga ? <><CheckCircle2 className="h-3 w-3" /> Paga</> : <><Clock className="h-3 w-3" /> {statusLabel(parcela.status)}</>}
+        </span>
+      </td>
+      <td className="px-4 py-2">
+        <div className="flex items-center justify-center gap-1">
+          {/* Baixar ou Estornar */}
+          {isPaga ? (
+            <button onClick={handleEstornar} disabled={onUpdate.isPending}
+              className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 dark:bg-amber-500/20 dark:text-amber-400 dark:hover:bg-amber-500/30 disabled:opacity-50"
+              title="Estornar: reverter o pagamento">
+              <RotateCcw className="h-3 w-3 inline mr-0.5" />
+              Estornar
+            </button>
+          ) : (
+            <button onClick={handleBaixar} disabled={onUpdate.isPending}
+              className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/20 dark:text-emerald-400 dark:hover:bg-emerald-500/30 disabled:opacity-50">
+              Baixar
+            </button>
+          )}
+          {/* Editar */}
+          <button onClick={() => setEditing(true)}
+            className="rounded-md p-1.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-primary/10 hover:text-primary transition-opacity" title="Editar parcela">
+            <Edit2 className="h-3 w-3" />
+          </button>
+          {/* Excluir */}
+          <button onClick={handleDelete} disabled={deleteParcela.isPending}
+            className="rounded-md p-1.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-opacity disabled:opacity-50" title="Excluir parcela">
+            <Trash2 className="h-3 w-3" />
+          </button>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+// ─── Add Parcela Inline ─────────────────────────────────────
+
+function AddParcelaRow({ mutuoId, nextNumero }: { mutuoId: string; nextNumero: number }) {
+  const createParcela = useCreateMutuoParcela()
+  const [show, setShow] = useState(false)
+  const [valor, setValor] = useState('')
+  const [date, setDate] = useState('')
+
+  if (!show) {
+    return (
+      <tr>
+        <td colSpan={6} className="px-4 py-2">
+          <button onClick={() => setShow(true)} className="flex items-center gap-1 text-xs text-primary hover:underline">
+            <Plus className="h-3 w-3" /> Adicionar parcela
+          </button>
+        </td>
+      </tr>
+    )
+  }
+
+  const handleAdd = () => {
+    const numValor = parseFloat(valor.replace(/[^\d.,]/g, '').replace(',', '.')) || 0
+    if (numValor <= 0 || !date) return
+    createParcela.mutate({ mutuo_id: mutuoId, valor: numValor, data_vencimento: date, numero_parcela: nextNumero }, {
+      onSuccess: () => { setShow(false); setValor(''); setDate('') },
+    })
+  }
+
+  return (
+    <tr className="border-t bg-primary/5">
+      <td className="px-4 py-2 text-muted-foreground text-xs">#{nextNumero}</td>
+      <td className="px-4 py-2">
+        <input type="date" value={date} onChange={e => setDate(e.target.value)} className="rounded border bg-background px-2 py-1 text-sm w-36" />
+      </td>
+      <td className="px-4 py-2 text-right">
+        <input type="text" value={valor} onChange={e => setValor(e.target.value)} className="rounded border bg-background px-2 py-1 text-sm text-right w-28" placeholder="0,00" />
+      </td>
+      <td className="px-4 py-2" />
+      <td className="px-4 py-2" />
+      <td className="px-4 py-2">
+        <div className="flex items-center justify-center gap-1">
+          <button onClick={handleAdd} disabled={createParcela.isPending} className="rounded-md bg-primary p-1.5 text-primary-foreground hover:bg-primary/90 disabled:opacity-50" title="Adicionar">
+            <Plus className="h-3 w-3" />
+          </button>
+          <button onClick={() => setShow(false)} className="rounded-md bg-muted p-1.5 text-muted-foreground hover:bg-accent" title="Cancelar">
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+// ─── Mutuo Card ─────────────────────────────────────────────
+
+function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; onEdit: (m: Mutuo) => void; selected: boolean; onToggleSelect: () => void }) {
   const [expanded, setExpanded] = useState(false)
   const deleteMutuo = useDeleteMutuo()
   const updateParcela = useUpdateMutuoParcela()
@@ -179,11 +402,7 @@ function MutuoCard({ mutuo }: { mutuo: Mutuo }) {
   const totalPago = parcelas.reduce((s, p) => s + Number(p.valor_pago || 0), 0)
   const totalPendente = totalDevolucao - totalPago
   const custoJuros = totalDevolucao - Number(mutuo.valor_captado)
-  const todayStr = new Date().toISOString().split('T')[0]!
-
-  const handleBaixar = (parcela: MutuoParcela) => {
-    updateParcela.mutate({ id: parcela.id, status: 'paga', valor_pago: parcela.valor, data_pagamento_real: todayStr })
-  }
+  const nextNumero = parcelas.length > 0 ? Math.max(...parcelas.map(p => p.numero_parcela)) + 1 : 1
 
   const mutuoStatusBadge = mutuo.status === 'ativo'
     ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
@@ -193,27 +412,29 @@ function MutuoCard({ mutuo }: { mutuo: Mutuo }) {
   const mutuoStatusLabel = mutuo.status === 'ativo' ? 'Ativo' : mutuo.status === 'quitado' ? 'Quitado' : 'Inadimplente'
 
   return (
-    <div className="overflow-hidden rounded-xl border bg-card">
+    <div className={`overflow-hidden rounded-xl border bg-card transition-colors ${selected ? 'border-primary ring-1 ring-primary/20' : ''}`}>
       {/* Header */}
       <div className="flex items-center justify-between border-b px-5 py-4">
         <div className="flex items-center gap-3">
+          <Checkbox checked={selected} onChange={onToggleSelect} />
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10">
             <Landmark className="h-5 w-5 text-amber-500" />
           </div>
           <div>
             <h3 className="font-semibold">{mutuo.nome}</h3>
             <p className="text-xs text-muted-foreground">
-              {mutuo.tipo} {mutuo.instituicao ? `• ${mutuo.instituicao}` : ''} • Captado em {formatDate(mutuo.data_captacao)}
+              {mutuo.tipo} {mutuo.fornecedor ? `• Fornecedor: ${mutuo.fornecedor.nome}` : mutuo.instituicao ? `• Instituição: ${mutuo.instituicao}` : ''} • Captado em {formatDate(mutuo.data_captacao)}
               {mutuo.categoria && <span className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">{mutuo.categoria}</span>}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${mutuoStatusBadge}`}>{mutuoStatusLabel}</span>
-          <button
-            onClick={() => { if (window.confirm('Excluir este mútuo e todas as parcelas?')) deleteMutuo.mutate(mutuo.id) }}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-          >
+          <button onClick={() => onEdit(mutuo)} className="rounded-md p-1.5 text-muted-foreground hover:bg-primary/10 hover:text-primary" title="Editar mútuo">
+            <Edit2 className="h-4 w-4" />
+          </button>
+          <button onClick={() => { if (window.confirm('Excluir este mútuo e todas as parcelas?')) deleteMutuo.mutate(mutuo.id) }}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
             <Trash2 className="h-4 w-4" />
           </button>
         </div>
@@ -254,36 +475,23 @@ function MutuoCard({ mutuo }: { mutuo: Mutuo }) {
                 <th className="px-4 py-2 text-right font-medium">Valor</th>
                 <th className="px-4 py-2 text-right font-medium">Pago</th>
                 <th className="px-4 py-2 text-center font-medium">Status</th>
-                <th className="px-4 py-2 text-center font-medium">Ação</th>
+                <th className="px-4 py-2 text-center font-medium">Ações</th>
               </tr>
             </thead>
             <tbody>
-              {parcelas.map(p => {
-                const isVencida = p.status !== 'paga' && p.data_vencimento < todayStr
-                return (
-                  <tr key={p.id} className="border-b last:border-0 hover:bg-accent/50 transition-colors">
-                    <td className="px-4 py-2 text-muted-foreground">{p.numero_parcela}</td>
-                    <td className="px-4 py-2">{formatDate(p.data_vencimento)}</td>
-                    <td className="px-4 py-2 text-right font-medium">{formatCurrency(Number(p.valor))}</td>
-                    <td className="px-4 py-2 text-right text-muted-foreground">{formatCurrency(Number(p.valor_pago || 0))}</td>
-                    <td className="px-4 py-2 text-center">
-                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${statusBadge(isVencida ? 'vencida' : p.status)}`}>
-                        {isVencida ? <><AlertTriangle className="h-3 w-3" /> Vencida</> : p.status === 'paga' ? <><CheckCircle2 className="h-3 w-3" /> Paga</> : <><Clock className="h-3 w-3" /> {statusLabel(p.status)}</>}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2 text-center">
-                      {p.status !== 'paga' && (
-                        <button onClick={() => handleBaixar(p)} disabled={updateParcela.isPending}
-                          className="rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/20 dark:text-emerald-400 dark:hover:bg-emerald-500/30 disabled:opacity-50">
-                          Baixar
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
+              {parcelas.map(p => (
+                <ParcelaRow key={p.id} parcela={p} mutuoId={mutuo.id} onUpdate={updateParcela} />
+              ))}
+              <AddParcelaRow mutuoId={mutuo.id} nextNumero={nextNumero} />
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Observações */}
+      {mutuo.observacoes && (
+        <div className="border-t px-5 py-2">
+          <p className="text-xs text-muted-foreground italic">{mutuo.observacoes}</p>
         </div>
       )}
     </div>
@@ -301,24 +509,111 @@ function KpiCell({ icon: Icon, iconColor, label, value, valueColor }: { icon: ty
   )
 }
 
-// --- Main Page ---
+// ─── Main Page ──────────────────────────────────────────────
+
 export default function MutuosPage() {
   const { restartTour } = useTour('mutuos', pageTours.mutuos)
 
   const { data: mutuos, isLoading } = useMutuos()
-  const [showCreate, setShowCreate] = useState(false)
+  const [showModal, setShowModal] = useState(false)
+  const [editingMutuo, setEditingMutuo] = useState<Mutuo | null>(null)
+
+  // Batch selection
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [batchAction, setBatchAction] = useState<'categoria' | 'delete' | null>(null)
+  const [batchCategoria, setBatchCategoria] = useState('')
+  const [isBatchProcessing, setIsBatchProcessing] = useState(false)
+  
+  const batchDelete = useBatchDeleteMutuos()
+  const batchUpdateCategory = useBatchUpdateMutuosCategory()
+
+  const openCreate = () => { setEditingMutuo(null); setShowModal(true) }
+  const openEdit = (m: Mutuo) => { setEditingMutuo(m); setShowModal(true) }
+  const closeModal = () => { setEditingMutuo(null); setShowModal(false) }
+
+  const toggleSelectMutuo = (id: string) => {
+    const newSet = new Set(selectedIds)
+    if (newSet.has(id)) newSet.delete(id)
+    else newSet.add(id)
+    setSelectedIds(newSet)
+  }
+
+  const handleBatchCategory = async () => {
+    if (!batchCategoria.trim()) return
+    setIsBatchProcessing(true)
+    try {
+      await batchUpdateCategory.mutateAsync({ ids: Array.from(selectedIds), categoria: batchCategoria.trim() })
+      setSelectedIds(new Set())
+      setBatchAction(null)
+      setBatchCategoria('')
+    } finally {
+      setIsBatchProcessing(false)
+    }
+  }
+
+  const handleBatchDelete = async () => {
+    setIsBatchProcessing(true)
+    try {
+      await batchDelete.mutateAsync(Array.from(selectedIds))
+      setSelectedIds(new Set())
+      setBatchAction(null)
+    } finally {
+      setIsBatchProcessing(false)
+    }
+  }
+
+  const hasSelection = selectedIds.size > 0
 
   const totalCaptado = (mutuos ?? []).reduce((s, m) => s + Number(m.valor_captado), 0)
   const totalDevolucao = (mutuos ?? []).reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor), 0), 0)
   const totalJuros = totalDevolucao - totalCaptado
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
       <PageHeader title="Capital de Giro" description="Gerencie mútuos, empréstimos e financiamentos do projeto" icon={Landmark} onHelp={restartTour}>
-        <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-          <Plus className="h-4 w-4" /> Novo Mútuo
-        </button>
+        <div className="flex items-center gap-2">
+          {mutuos && mutuos.length > 0 && (
+             <button onClick={() => setSelectedIds(selectedIds.size === mutuos.length ? new Set() : new Set(mutuos.map(m => m.id)))} className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
+               <CheckSquare className="h-4 w-4" />
+               <span className="hidden sm:inline">{selectedIds.size === mutuos.length ? 'Desmarcar Todos' : 'Selecionar Todos'}</span>
+             </button>
+          )}
+          <button onClick={openCreate} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+            <Plus className="h-4 w-4" /> Nova Operação
+          </button>
+        </div>
       </PageHeader>
+
+      {/* ─── BATCH ACTIONS TOOLBAR ─── */}
+      {hasSelection && (
+        <div className="sticky top-0 z-20 flex items-center gap-3 rounded-xl border bg-primary/5 border-primary/20 px-4 py-3 shadow-lg backdrop-blur-sm animate-in slide-in-from-top-2">
+          <div className="flex items-center gap-2">
+            <CheckSquare className="h-4 w-4 text-primary" />
+            <span className="text-sm font-semibold">{selectedIds.size} selecionados</span>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setBatchAction('categoria')}
+              className="inline-flex items-center gap-1.5 rounded-lg border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors"
+            >
+              <Tags className="h-3.5 w-3.5" /> Alterar Categoria
+            </button>
+            <button
+              onClick={() => setBatchAction('delete')}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-white hover:bg-destructive/90 transition-colors"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Excluir
+            </button>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground"
+              title="Limpar seleção"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Summary cards */}
       <div id="tour-mutuos-summary" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -337,17 +632,87 @@ export default function MutuosPage() {
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
             Cadastre seus empréstimos e mútuos para que as entradas e saídas apareçam no fluxo de caixa projetado.
           </p>
-          <button onClick={() => setShowCreate(true)} className="mt-4 flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+          <button onClick={openCreate} className="mt-4 flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
             <Plus className="h-4 w-4" /> Cadastrar Primeiro Mútuo
           </button>
         </div>
       ) : (
         <div className="space-y-4">
-          {mutuos.map(m => <MutuoCard key={m.id} mutuo={m} />)}
+          {mutuos.map(m => (
+             <MutuoCard key={m.id} mutuo={m} onEdit={openEdit} selected={selectedIds.has(m.id)} onToggleSelect={() => toggleSelectMutuo(m.id)} />
+          ))}
         </div>
       )}
 
-      <CreateMutuoModal open={showCreate} onClose={() => setShowCreate(false)} />
+      <MutuoFormModal open={showModal} onClose={closeModal} initialData={editingMutuo} />
+
+      {/* ─── BATCH ACTION DIALOGS ─── */}
+      {batchAction === 'categoria' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-md rounded-xl border bg-card p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
+                <Tags className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold">Alterar Categoria em Lote</h3>
+                <p className="text-xs text-muted-foreground">{selectedIds.size} mútuos selecionados</p>
+              </div>
+            </div>
+            <div className="mb-5 space-y-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-muted-foreground">Nova categoria para os mútuos selecionados</label>
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="Ex: Empréstimos Bancários"
+                  value={batchCategoria}
+                  onChange={e => setBatchCategoria(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setBatchAction(null)} disabled={isBatchProcessing} className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted">
+                Cancelar
+              </button>
+              <button disabled={!batchCategoria.trim() || isBatchProcessing} onClick={handleBatchCategory} className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+                {isBatchProcessing ? 'Aplicando...' : 'Aplicar Categoria'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {batchAction === 'delete' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-md rounded-xl border bg-card p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/10 dark:bg-red-500/20">
+                <Trash2 className="h-5 w-5 text-red-600 dark:text-red-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold">Confirmar Exclusão</h3>
+                <p className="text-xs text-muted-foreground">Esta ação não pode ser desfeita.</p>
+              </div>
+            </div>
+            <p className="mb-5 text-sm">
+              Você está prestes a excluir <strong>{selectedIds.size} mútuos</strong> (e todas as suas parcelas associadas).
+              <br /><br />
+              Tem certeza que deseja continuar?
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setBatchAction(null)} disabled={isBatchProcessing} className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted">
+                Cancelar
+              </button>
+              <button onClick={handleBatchDelete} disabled={isBatchProcessing} className="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-white hover:bg-destructive/90 disabled:opacity-50">
+                {isBatchProcessing ? 'Excluindo...' : 'Sim, Excluir Mútuos'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }

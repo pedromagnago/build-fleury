@@ -46,15 +46,36 @@ export function useParcelas() {
     queryKey: ['parcelas', companyId],
     queryFn: async () => {
       if (!companyId) return []
-      const { data, error } = await supabase
-        .from('parcelas')
-        .select('*, pedidos(item_compra_id, itens_compra(descricao, deleted_at)), despesas_indiretas(descricao, categoria, deleted_at)')
-        .eq('company_id', companyId)
-        .is('deleted_at', null)
-        .order('data_vencimento', { ascending: true })
+      
+      let allData: any[] = []
+      let hasMore = true
+      let page = 0
+      const PAGE_SIZE = 1000
 
-      if (error) throw error
-      return (data ?? [])
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from('parcelas')
+          .select('*, pedidos(item_compra_id, itens_compra(descricao, deleted_at)), despesas_indiretas(descricao, categoria, deleted_at)')
+          .eq('company_id', companyId)
+          .is('deleted_at', null)
+          .order('data_vencimento', { ascending: true })
+          .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
+
+        if (error) throw error
+        
+        if (data && data.length > 0) {
+          allData = [...allData, ...data]
+          if (data.length < PAGE_SIZE) {
+            hasMore = false
+          } else {
+            page++
+          }
+        } else {
+          hasMore = false
+        }
+      }
+
+      return allData
         .filter((p: any) => {
           if (p.pedido_id) {
             if (!p.pedidos || !p.pedidos.itens_compra || p.pedidos.itens_compra.deleted_at) return false
@@ -195,8 +216,10 @@ export function useCreateContaBancaria() {
 export interface DashboardKPIs {
   totalOrcado: number
   totalConsumido: number
+  totalPago: number
   saldoOrcamento: number
   percentualConsumido: number
+  percentualPago: number
   parcelasVencidas: number
   parcelasAVencer: number
   valorVencido: number
@@ -239,12 +262,13 @@ export function useDashboardKPIs() {
       const etapas = (etapasRes.data ?? []) as Array<{ status: string }>
       const rawPedidos = (pedidosRes.data ?? []) as Array<any>
       
-      const totalOrcado = itens.reduce((s, i) => s + (i.valor_total_orcado ?? 0), 0)
-      const totalConsumido = itens.reduce((s, i) => s + (i.valor_consumido ?? 0), 0)
-
       // Only count pedidos logic that map to active items
       const validItemIds = new Set(itens.map(i => i.id));
       const pedidos = rawPedidos.filter(p => validItemIds.has(p.item_compra_id))
+
+      const totalOrcado = itens.reduce((s, i) => s + (i.valor_total_orcado ?? 0), 0)
+      const totalConsumido = pedidos.reduce((s, p) => s + (p.valor_total_real ?? 0), 0)
+      const totalPago = parcelas.filter(p => p.status === 'paga').reduce((s, p) => s + (p.valor_pago ?? 0), 0)
 
       // Level 1/Level 2 coverage
       const pedidosPorItem = new Map<string, number>()
@@ -267,8 +291,10 @@ export function useDashboardKPIs() {
       return {
         totalOrcado,
         totalConsumido,
+        totalPago,
         saldoOrcamento: totalOrcado - totalConsumido,
         percentualConsumido: totalOrcado > 0 ? (totalConsumido / totalOrcado) * 100 : 0,
+        percentualPago: totalOrcado > 0 ? (totalPago / totalOrcado) * 100 : 0,
         parcelasVencidas: vencidas.length,
         parcelasAVencer: aVencer.length,
         valorVencido: vencidas.reduce((s, p) => s + p.valor - p.valor_pago, 0),

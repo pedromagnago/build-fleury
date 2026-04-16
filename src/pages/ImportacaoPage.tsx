@@ -5,7 +5,7 @@ import { useItensCompra } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
 import { supabase } from '@/lib/supabase'
 import { useAuditLogs } from '@/hooks/useOperacional'
-import { parsearCondicao } from '@/lib/parcelas'
+import { parsearCondicao, gerarParcelas, localDate } from '@/lib/parcelas'
 import { formatCurrency } from '@/lib/utils'
 import * as XLSX from 'xlsx'
 import {
@@ -146,7 +146,7 @@ function formatError(err: unknown): string {
 // ═══════════════════════════════════════════════════════════════
 // Main page
 // ═══════════════════════════════════════════════════════════════
-type Tab = 'wbs' | 'dados' | 'pedidos' | 'medicoes' | 'distribuicao' | 'logs'
+type Tab = 'wbs' | 'dados' | 'pedidos' | 'medicoes' | 'distribuicao' | 'logs' | 'pagamentos'
 
 export default function ImportacaoPage() {
   const { restartTour } = useTour('importacao', pageTours.importacao)
@@ -159,6 +159,7 @@ export default function ImportacaoPage() {
     { key: 'pedidos', label: 'Pedidos', icon: ShoppingCart },
     { key: 'medicoes', label: 'Medições', icon: Calendar },
     { key: 'distribuicao', label: 'Distribuição Cronograma', icon: BarChart3 },
+    { key: 'pagamentos', label: 'Pagamentos Realizados', icon: CheckCircle2 as typeof Upload },
     { key: 'logs', label: 'Logs de Importação', icon: AlertCircle as typeof Upload },
   ]
 
@@ -186,6 +187,7 @@ export default function ImportacaoPage() {
       {tab === 'pedidos' && <PedidosTab />}
       {tab === 'medicoes' && <MedicoesTab />}
       {tab === 'distribuicao' && <DistribuicaoTab />}
+      {tab === 'pagamentos' && <PagamentosRealizadosTab />}
       {tab === 'logs' && <LogsImportacaoTab />}
     </div>
   )
@@ -350,189 +352,254 @@ function DadosBaseTab() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Tab: Pedidos (NEW)
+// Tab: Pedidos — aceita formato real da planilha de compras
 // ═══════════════════════════════════════════════════════════════
-const PEDIDOS_HEADERS = ['item_codigo', 'numero_pedido', 'casas_lote', 'fornecedor_nome', 'cond_pagamento', 'data_entrega_prevista']
+const PEDIDOS_HEADERS = ['item_codigo', 'numero_pedido', 'casas_lote', 'fornecedor_nome', 'cond_pagamento', 'data_entrega_prevista', 'valor_unitario_real']
+
+function findPedCol(row: ParsedRow, candidates: string[]): string {
+  for (const c of candidates) {
+    const norm = normalizeHeader(c)
+    if (row[norm] !== undefined && row[norm] !== '') return String(row[norm])
+  }
+  for (const key of Object.keys(row)) {
+    const kn = key.toLowerCase().replace(/[_\s.]+/g, '')
+    for (const c of candidates) {
+      const cn = c.toLowerCase().replace(/[_\s.]+/g, '')
+      if (kn.includes(cn) || cn.includes(kn)) return String(row[key])
+    }
+  }
+  return ''
+}
+
+function excelSerialToISO(val: string | number): string {
+  const num = Number(val)
+  if (!num || num < 1000) return String(val)
+  const d = new Date(Date.UTC(1899, 11, 30 + num))
+  return d.toISOString().split('T')[0]!
+}
+
+function parsePedDate(val: string): string {
+  if (!val) return ''
+  const num = Number(val)
+  if (num > 40000 && num < 60000) return excelSerialToISO(num)
+  const ddmm = val.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/)
+  if (ddmm) return `${ddmm[3]}-${ddmm[2]!.padStart(2, '0')}-${ddmm[1]!.padStart(2, '0')}`
+  if (/^\d{4}-\d{2}-\d{2}/.test(val)) return val.slice(0, 10)
+  return val
+}
+
+function normalizePedidoRows(raw: ParsedRow[], headers: string[]): ParsedRow[] {
+  const isRealFormat = headers.some(h => ['etapa', 'item', 'fornecedor'].includes(h.replace(/[_\s]/g, '').toLowerCase()))
+  if (!isRealFormat) return raw
+  return raw.map(row => {
+    const etapaNome = findPedCol(row, ['ETAPA', 'etapa'])
+    const itemDesc = findPedCol(row, ['ITEM', 'item', 'descricao'])
+    const fornecedor = findPedCol(row, ['FORNECEDOR', 'fornecedor_nome'])
+    const condPag = findPedCol(row, ['COND PAGTO', 'COND. PAGTO', 'cond_pagamento', 'Cond Pagamento'])
+    const casas = findPedCol(row, ['QUANTIDADE DE CASAS', 'casas_lote', 'casas'])
+    const valorUnit = findPedCol(row, ['valor_unit._1', ' VALOR UNIT. ', 'valor_unitario_real', 'VALOR UNIT.'])
+    const valorTotal = findPedCol(row, ['valor_total_1', 'VALOR TOTAL_1', 'VALOR TOTAL'])
+    const qtdEntrega = findPedCol(row, ['quant._2', 'QUANT._2'])
+    const dataEntrega = findPedCol(row, ['DATA DA ENTREGA', 'data_da_entrega', 'data_entrega_prevista', 'DATA ENTREGA'])
+    return {
+      'item_codigo': '',
+      '_item_descricao': itemDesc,
+      '_etapa_nome': etapaNome,
+      'numero_pedido': '',
+      'casas_lote': casas,
+      'fornecedor_nome': fornecedor,
+      'cond_pagamento': condPag,
+      'data_entrega_prevista': parsePedDate(dataEntrega),
+      'valor_unitario_real': valorUnit ? String(parseFloat(String(valorUnit).replace(',', '.')) || 0) : '',
+      'valor_total_override': valorTotal ? String(parseFloat(String(valorTotal).replace(',', '.')) || 0) : '',
+      '_qtd_entrega': qtdEntrega,
+    }
+  })
+}
 
 function PedidosTab() {
   const { currentCompany } = useProject()
   const { data: itens = [] } = useItensCompra()
+  const { data: projectEtapas = [] } = useEtapas()
+  const qc = useQueryClient()
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [importing, setImporting] = useState(false)
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<{ success: number; parcelas: number; errors: string[] } | null>(null)
 
-  // Enrich preview rows with parcelas calculation + validation
-  type EnrichedPedido = Record<string, any> & { itemExists: boolean; valorTotal: number; parcelasPrevistas: number; itemNome: string; unitarioAplicado: number }
+  const handleFile = useCallback((p: ImportPreview) => {
+    const normalized = normalizePedidoRows(p.rows, p.headers)
+    setPreview({ ...p, rows: normalized })
+    setResult(null)
+  }, [])
+
+  type EnrichedPedido = Record<string, any> & { itemExists: boolean; valorTotal: number; parcelasPrevistas: number; itemNome: string; unitarioAplicado: number; _matchedItem?: any }
   const enrichedRows = useMemo((): EnrichedPedido[] => {
     if (!preview) return []
     return preview.rows.map((row): EnrichedPedido => {
-      const itemCodigo = row['item_codigo'] ?? ''
-      const item = itens.find((i) => i.codigo === itemCodigo)
+      let itemCodigo = row['item_codigo'] ?? ''
+      let item = itens.find((i) => i.codigo === itemCodigo)
+      if (!item && row['_item_descricao']) {
+        const descNorm = row['_item_descricao'].toLowerCase().trim()
+        const etapaNorm = (row['_etapa_nome'] || '').toLowerCase().trim()
+        const candidates = itens.filter(i => i.descricao.toLowerCase().trim() === descNorm)
+        if (candidates.length === 1) { item = candidates[0] }
+        else if (candidates.length > 1 && etapaNorm) {
+          const etapaMatch = projectEtapas.find(e => e.nome.toLowerCase().trim() === etapaNorm)
+          if (etapaMatch) item = candidates.find(c => c.etapa_id === etapaMatch.id) ?? candidates[0]
+          else item = candidates[0]
+        }
+        if (!item) {
+          const fuzzy = itens.filter(i => { const id = i.descricao.toLowerCase().trim(); return id.includes(descNorm) || descNorm.includes(id) })
+          if (fuzzy.length === 1) item = fuzzy[0]
+          else if (fuzzy.length > 1 && etapaNorm) {
+            const etapaMatch = projectEtapas.find(e => e.nome.toLowerCase().includes(etapaNorm) || etapaNorm.includes(e.nome.toLowerCase()))
+            if (etapaMatch) item = fuzzy.find(c => c.etapa_id === etapaMatch.id) ?? fuzzy[0]
+            else item = fuzzy[0]
+          }
+        }
+        if (item) itemCodigo = item.codigo
+      }
       const casas = parseInt(row['casas_lote'] ?? '0') || 0
-      
       const sheetUnitario = row['valor_unitario_real'] ? parseFloat(String(row['valor_unitario_real']).replace(',', '.')) : 0
       const unitario = sheetUnitario > 0 ? sheetUnitario : (item?.custo_unitario_orcado ?? 0)
-      
-      const qtdPorCasa = item?.qtd_por_casa ?? 1
-      const valorTotal = casas * qtdPorCasa * unitario
+      const overrideTotal = row['valor_total_override'] ? parseFloat(String(row['valor_total_override']).replace(',', '.')) : 0
+      let valorTotal: number
+      if (overrideTotal > 0) { valorTotal = overrideTotal } else { const qtdPorCasa = item?.qtd_por_casa ?? 1; valorTotal = casas * qtdPorCasa * unitario }
       const cond = row['cond_pagamento'] ?? ''
       const dias = parsearCondicao(cond)
-      const itemExists = !!item
-      return { ...row, itemExists, valorTotal, parcelasPrevistas: dias.length, itemNome: item?.descricao ?? '?', unitarioAplicado: unitario }
+      return { ...row, item_codigo: itemCodigo, itemExists: !!item, valorTotal, parcelasPrevistas: dias.length, itemNome: item?.descricao ?? row['_item_descricao'] ?? '?', unitarioAplicado: unitario, _matchedItem: item }
     })
-  }, [preview, itens])
+  }, [preview, itens, projectEtapas])
 
   const doImport = async () => {
     if (!preview || !currentCompany) return
     setImporting(true); setProgress(0)
     const errors: string[] = []
     let successPedidos = 0, totalParcelas = 0
-
     for (let i = 0; i < enrichedRows.length; i++) {
       setProgress(Math.round(((i + 1) / enrichedRows.length) * 100))
       const row = enrichedRows[i]!
-      if (!row.itemExists) { errors.push(`Linha ${i + 2}: item_codigo "${row['item_codigo']}" não encontrado`); continue }
-      const item = itens.find((it) => it.codigo === row['item_codigo'])
+      if (!row.itemExists) { errors.push(`Linha ${i + 2}: Item "${row['_item_descricao'] || row['item_codigo']}" não encontrado`); continue }
+      const item = row._matchedItem || itens.find((it) => it.codigo === row['item_codigo'])
       if (!item) continue
-
       try {
-        // Resolve fornecedor
         let fornecedorId: string | null = null
         let fornCond: string | null = null
         if (row['fornecedor_nome']) {
           const { data: forn } = await supabase.from('fornecedores').select('id, cond_pagamento_padrao').eq('company_id', currentCompany.id).ilike('nome', row['fornecedor_nome']).limit(1).single()
-          if (forn) {
-            fornecedorId = forn.id
-            fornCond = forn.cond_pagamento_padrao
-          } else {
-            // Auto-create fornecedor
+          if (forn) { fornecedorId = forn.id; fornCond = forn.cond_pagamento_padrao }
+          else {
             const newFornData: any = { company_id: currentCompany.id, nome: row['fornecedor_nome'] }
             if (row['cond_pagamento']) newFornData.cond_pagamento_padrao = row['cond_pagamento']
             const { data: newForn } = await supabase.from('fornecedores').insert(newFornData).select('id').single()
             fornecedorId = newForn?.id ?? null
           }
         }
-
         let condPagamento = row['cond_pagamento'] || null
-        if (!condPagamento) {
-          condPagamento = fornCond || 'à vista'
-        }
-
+        if (!condPagamento) condPagamento = fornCond || 'à vista'
         let dataEntrega = row['data_entrega_prevista'] || null
         if (!dataEntrega) {
-          const d30 = new Date()
-          d30.setDate(d30.getDate() + 30)
-          dataEntrega = d30.toISOString().split('T')[0]
+          const etapaObj = projectEtapas.find((e: any) => e.id === item.etapa_id)
+          if (etapaObj?.data_inicio_plan) dataEntrega = etapaObj.data_inicio_plan
+          else { const d30 = new Date(); d30.setDate(d30.getDate() + 30); dataEntrega = d30.toISOString().split('T')[0] }
         }
-
-        // Create pedido
         const casas = parseFloat(row['casas_lote'] ?? '0') || 0
         const unitario = row.unitarioAplicado
         const qtdPorCasa = item.qtd_por_casa ?? 1
-        const qtdLote = casas * qtdPorCasa
+        const qtdLote = row['_qtd_entrega'] ? parseFloat(row['_qtd_entrega']) : casas * qtdPorCasa
         const valorTotal = row.valorTotal
-
         const { data: pedido, error: pedErr } = await supabase.from('pedidos').insert({
-          company_id: currentCompany.id,
-          item_compra_id: item.id,
+          company_id: currentCompany.id, item_compra_id: item.id,
           numero_pedido: row['numero_pedido'] ? parseInt(row['numero_pedido']) : null,
-          casas_lote: casas,
-          qtd_lote: qtdLote,
-          valor_unitario_real: unitario,
-          valor_total_real: valorTotal,
-          fornecedor_id: fornecedorId,
-          cond_pagamento: condPagamento,
-          data_entrega_prevista: dataEntrega,
-          status: 'planejado',
+          casas_lote: casas, qtd_lote: qtdLote, valor_unitario_real: unitario, valor_total_real: valorTotal,
+          fornecedor_id: fornecedorId, cond_pagamento: condPagamento,
+          data_entrega_prevista: dataEntrega, status: 'planejado',
         }).select('id').single()
-
         if (pedErr) throw pedErr
         if (!pedido) throw new Error('Pedido não criado')
-
-        // Pedidos importados não geram parcelas automaticamente (Prompt #12)
-        // O usuário deverá configurá-las manualmente na edição do pedido se desejar.
-
+        if (valorTotal > 0 && condPagamento) {
+          const parcelas = gerarParcelas({ pedidoId: pedido.id, companyId: currentCompany.id, valorTotal, condPagamento: condPagamento || 'à vista', dataEntrega: localDate(dataEntrega) })
+          if (parcelas.length > 0) {
+            const { error: parcErr } = await supabase.from('parcelas').insert(parcelas)
+            if (parcErr) console.warn('Erro ao gerar parcelas:', parcErr.message)
+            else totalParcelas += parcelas.length
+          }
+        }
         successPedidos++
       } catch (err) { errors.push(`Linha ${i + 2}: ${formatError(err)}`) }
     }
-
-    if (errors.length > 0) {
-      await supabase.from('audit_logs').insert({
-        company_id: currentCompany.id,
-        tabela: 'pedidos',
-        acao: 'INSERT',
-        agente: 'sistema',
-        dados_depois: { type: 'import_lote', success: successPedidos, total: enrichedRows.length, errors }
-      })
-    }
-
+    await supabase.from('audit_logs').insert({ company_id: currentCompany.id, tabela: 'pedidos', acao: 'INSERT', agente: 'sistema', dados_depois: { type: 'import_lote', success: successPedidos, total: enrichedRows.length, errors } })
     setResult({ success: successPedidos, parcelas: totalParcelas, errors }); setImporting(false)
-    if (successPedidos > 0) toast.success(`Importados ${successPedidos} pedidos, ${totalParcelas} parcelas geradas`)
+    if (successPedidos > 0) { toast.success(`Importados ${successPedidos} pedidos, ${totalParcelas} parcelas geradas`); qc.invalidateQueries({ queryKey: ['pedidos'] }); qc.invalidateQueries({ queryKey: ['parcelas'] }); qc.invalidateQueries({ queryKey: ['fornecedores'] }) }
     if (errors.length > 0) toast.error(`${errors.length} erro(s)`)
   }
+
+  const stats = useMemo(() => {
+    const valid = enrichedRows.filter(r => r.itemExists)
+    const invalid = enrichedRows.filter(r => !r.itemExists)
+    const total = valid.reduce((s, r) => s + r.valorTotal, 0)
+    return { valid: valid.length, invalid: invalid.length, total }
+  }, [enrichedRows])
 
   return (
     <>
       <div className="mb-4 rounded-xl border bg-card p-4">
-        <h3 className="mb-1 text-sm font-semibold">Template de Pedidos</h3>
-        <p className="mb-3 text-[10px] text-muted-foreground">Colunas: {PEDIDOS_HEADERS.join(' | ')} <br/><span className="text-blue-500">Nota: O valor unitário será puxado automaticamente do item de compra base se a coluna "valor_unitario_real" não for informada.</span></p>
-        <button onClick={() => downloadTemplate('pedidos', PEDIDOS_HEADERS, ['EX-01', '1', '16', 'Fornecedor ABC', '30/60', '2026-05-01'])}
+        <h3 className="mb-1 text-sm font-semibold">Importar Pedidos</h3>
+        <p className="mb-3 text-[10px] text-muted-foreground">
+          Aceita planilha real: <strong>ETAPA, ITEM, FORNECEDOR, COND PAGTO, QUANTIDADE DE CASAS, VALOR UNIT., VALOR TOTAL, DATA DA ENTREGA</strong>
+          <br/>Ou template: {PEDIDOS_HEADERS.join(' | ')}
+          <br/><span className="text-blue-500">📌 Itens vinculados por nome + etapa. Fornecedores criados automaticamente.</span>
+        </p>
+        <button onClick={() => downloadTemplate('pedidos', PEDIDOS_HEADERS, ['EX-01', '1', '16', 'Fornecedor ABC', '30/60', '2026-05-01', ''])}
           className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs font-medium hover:bg-accent">
           <Download className="h-3.5 w-3.5 text-primary" />Baixar template
         </button>
       </div>
-
-      <DropZone onFile={(f) => processFile(f, (p) => { setPreview(p); setResult(null) })} />
-
+      <DropZone onFile={(f) => processFile(f, handleFile)} />
       {preview && (
         <div className="mb-5 rounded-xl border bg-card">
           <div className="flex items-center justify-between border-b p-4">
             <div>
               <h3 className="font-semibold">Preview: {preview.fileName}</h3>
-              <p className="text-xs text-muted-foreground">{preview.rows.length} pedidos • {enrichedRows.filter((r) => !r.itemExists).length > 0 && <span className="text-red-500">⚠ itens não encontrados</span>}</p>
+              <p className="text-xs text-muted-foreground">
+                {preview.rows.length} linhas •
+                <span className="text-emerald-600 font-medium"> {stats.valid} vinculados</span>
+                {stats.invalid > 0 && <span className="text-red-500 font-medium"> • {stats.invalid} sem item</span>}
+                {' • '}<span className="font-medium">Total: {formatCurrency(stats.total)}</span>
+              </p>
             </div>
             <button onClick={() => setPreview(null)} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
           </div>
           <div className="max-h-96 overflow-auto">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-muted">
-                <tr>
-                  <th className="px-3 py-2 text-left">#</th>
-                  <th className="px-3 py-2 text-left">Item</th>
-                  <th className="px-3 py-2 text-left">Pedido</th>
-                  <th className="px-3 py-2 text-right">Casas</th>
-                  <th className="px-3 py-2 text-right">Unit.</th>
-                  <th className="px-3 py-2 text-left">Fornecedor</th>
-                  <th className="px-3 py-2 text-left">Cond.</th>
-                  <th className="px-3 py-2 text-left">Entrega</th>
-                  <th className="px-3 py-2 text-right">Total</th>
-                  <th className="px-3 py-2 text-center">Parcelas</th>
-                  <th className="px-3 py-2 text-center">✓</th>
-                </tr>
-              </thead>
+              <thead className="sticky top-0 bg-muted"><tr>
+                <th className="px-3 py-2 text-left">#</th><th className="px-3 py-2 text-left">Item</th><th className="px-3 py-2 text-left">Etapa</th>
+                <th className="px-3 py-2 text-right">Casas</th><th className="px-3 py-2 text-right">Unit.</th><th className="px-3 py-2 text-left">Fornecedor</th>
+                <th className="px-3 py-2 text-left">Cond.</th><th className="px-3 py-2 text-left">Entrega</th><th className="px-3 py-2 text-right">Total</th>
+                <th className="px-3 py-2 text-center">Parc.</th><th className="px-3 py-2 text-center">✓</th>
+              </tr></thead>
               <tbody className="divide-y">
-                {enrichedRows.slice(0, 30).map((row, i) => (
+                {enrichedRows.slice(0, 50).map((row, i) => (
                   <tr key={i} className={`hover:bg-muted/30 ${!row.itemExists ? 'bg-red-500/5' : ''}`}>
                     <td className="px-3 py-2 text-muted-foreground">{i + 1}</td>
-                    <td className="px-3 py-2 font-medium">{row['item_codigo']}</td>
-                    <td className="px-3 py-2">{row['numero_pedido'] ?? '—'}</td>
-                    <td className="px-3 py-2 text-right">{row['casas_lote']}</td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-3 py-2 font-medium max-w-[200px] truncate" title={row.itemNome}>
+                      {row.itemNome}
+                      {row['item_codigo'] && <span className="block text-[9px] text-muted-foreground font-mono">{row['item_codigo']}</span>}
+                    </td>
+                    <td className="px-3 py-2 text-muted-foreground max-w-[120px] truncate" title={row['_etapa_nome']}>{row['_etapa_nome'] || '—'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{row['casas_lote']}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
                       {formatCurrency(row.unitarioAplicado)}
-                      {row['valor_unitario_real'] ? <span className="block text-[9px] text-blue-500">Planilha</span> : <span className="block text-[9px] text-muted-foreground">Do Item</span>}
+                      {row['valor_unitario_real'] && parseFloat(row['valor_unitario_real']) > 0 ? <span className="block text-[9px] text-blue-500">Planilha</span> : <span className="block text-[9px] text-muted-foreground">Do Item</span>}
                     </td>
-                    <td className="px-3 py-2">{row['fornecedor_nome'] ?? '—'}</td>
+                    <td className="px-3 py-2 max-w-[120px] truncate">{row['fornecedor_nome'] ?? '—'}</td>
                     <td className="px-3 py-2">{row['cond_pagamento'] ?? '—'}</td>
-                    <td className="px-3 py-2">{row['data_entrega_prevista'] ?? '—'}</td>
-                    <td className="px-3 py-2 text-right font-medium">{formatCurrency(row.valorTotal)}</td>
+                    <td className="px-3 py-2 tabular-nums">{row['data_entrega_prevista'] ?? '—'}</td>
+                    <td className="px-3 py-2 text-right font-medium tabular-nums">{formatCurrency(row.valorTotal)}</td>
+                    <td className="px-3 py-2 text-center"><span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-bold text-blue-500">{row.parcelasPrevistas}</span></td>
                     <td className="px-3 py-2 text-center">
-                      <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-bold text-blue-500">{row.parcelasPrevistas}</span>
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      {row.itemExists
-                        ? <CheckCircle2 className="mx-auto h-3.5 w-3.5 text-emerald-500" />
-                        : <AlertCircle className="mx-auto h-3.5 w-3.5 text-red-500" />}
+                      {row.itemExists ? <CheckCircle2 className="mx-auto h-3.5 w-3.5 text-emerald-500" /> : <AlertCircle className="mx-auto h-3.5 w-3.5 text-red-500" />}
                     </td>
                   </tr>
                 ))}
@@ -540,23 +607,19 @@ function PedidosTab() {
             </table>
           </div>
           {importing && <ProgressBar value={progress} />}
-          <div className="border-t p-4">
-            <button onClick={doImport} disabled={importing}
+          <div className="border-t p-4 flex items-center gap-4">
+            <button onClick={doImport} disabled={importing || stats.valid === 0}
               className="flex items-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
-              {importing ? <><Spinner />Importando...</> : <><ArrowRight className="h-4 w-4" />Importar {enrichedRows.filter((r) => r.itemExists).length} pedidos</>}
+              {importing ? <><Spinner />Importando...</> : <><ArrowRight className="h-4 w-4" />Importar {stats.valid} pedidos ({formatCurrency(stats.total)})</>}
             </button>
+            {stats.invalid > 0 && <span className="text-xs text-amber-500">⚠ {stats.invalid} linhas sem item serão ignoradas</span>}
           </div>
         </div>
       )}
-
       {result && (
         <div className="rounded-xl border bg-card p-5">
           <h3 className="mb-3 font-semibold">Resultado</h3>
-          {result.success > 0 && (
-            <div className="mb-2 flex items-center gap-2 text-sm text-emerald-600">
-              <CheckCircle2 className="h-4 w-4" />Importados {result.success} pedidos, {result.parcelas} parcelas geradas
-            </div>
-          )}
+          {result.success > 0 && (<div className="mb-2 flex items-center gap-2 text-sm text-emerald-600"><CheckCircle2 className="h-4 w-4" />Importados {result.success} pedidos, {result.parcelas} parcelas geradas</div>)}
           {result.errors.length > 0 && <ErrorLog errors={result.errors} />}
         </div>
       )}
@@ -1020,22 +1083,26 @@ function Spinner() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Tab: Logs de Importação (NEW)
-// ═══════════════════════════════════════════════════════════════
+// Tab: Logs de Importacao (NEW)
+// ════════════════════════════════════════════════════════════
 function LogsImportacaoTab() {
-  const { data: logs = [], isLoading } = useAuditLogs()
+  const { currentCompany } = useProject()
+  const { data: logs = [], isLoading, refetch } = useAuditLogs()
+  const qc = useQueryClient()
   const importLogs = logs.filter(l => {
     const type = (l.dados_depois as any)?.type
-    return type === 'import_lote' || type === 'import_wbs'
+    return type === 'import_lote' || type === 'import_wbs' || type === 'import_bd_realizado_v3_history'
   })
   const [expandedLog, setExpandedLog] = useState<string | null>(null)
+  const [rollbackTarget, setRollbackTarget] = useState<string | null>(null)
+  const [isRollingBack, setIsRollingBack] = useState(false)
 
   const downloadErrorLog = (logId: string, errors: string[], warnings?: string[]) => {
     const lines = [
-      "═══ ERROS DE IMPORTAÇÃO ═══",
+      "=== ERROS DE IMPORTACAO ===",
       ...(errors.map(e => `[ERRO] ${e}`)),
       "",
-      ...(warnings && warnings.length > 0 ? ["═══ AVISOS ═══", ...warnings.map(w => `[AVISO] ${w}`)] : []),
+      ...(warnings && warnings.length > 0 ? ["=== AVISOS ===", ...warnings.map(w => `[AVISO] ${w}`)] : []),
     ]
     const content = lines.join("\n")
     const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), content], { type: 'text/plain;charset=utf-8;' })
@@ -1049,30 +1116,299 @@ function LogsImportacaoTab() {
     URL.revokeObjectURL(url)
   }
 
+  // Rollback BD Realizado: delete only data created by the specific import batch
+  const handleRollbackBdRealizado = async (logId: string) => {
+    if (!currentCompany) return
+    setIsRollingBack(true)
+    try {
+      // Fetch the specific log to get tracked IDs
+      const { data: log } = await supabase.from('audit_logs').select('dados_depois').eq('id', logId).single()
+      const dados = typeof log?.dados_depois === 'string' ? JSON.parse(log.dados_depois) : log?.dados_depois;
+      const trackedIds = dados?.tracked_ids;
+
+      let movCount = 0, pedCount = 0, mutCount = 0, flexCount = 0, despCount = 0;
+
+      if (trackedIds) {
+          // New Rollback Logic (Batch-specific)
+          
+          // 1. Delete Parcela & Conciliacaos (Cascade from Pedidos, Despesas and Movimentacoes, but just in case)
+          if (trackedIds.conciliacao_ids?.length > 0) {
+              await supabase.from('conciliacao_parcelas').delete().in('conciliacao_id', trackedIds.conciliacao_ids)
+              await supabase.from('conciliacoes').delete().in('id', trackedIds.conciliacao_ids)
+          }
+
+          if (trackedIds.parcela_ids?.length > 0) {
+              await supabase.from('parcelas').delete().in('id', trackedIds.parcela_ids)
+          }
+
+          // 2. Delete Movimentacoes
+          if (trackedIds.mov_ids?.length > 0) {
+              const { count } = await supabase.from('movimentacoes_bancarias').delete({ count: 'exact' }).in('id', trackedIds.mov_ids)
+              movCount = count ?? 0;
+          }
+
+          // 3. Delete Pedidos
+          if (trackedIds.pedido_ids?.length > 0) {
+              const { count } = await supabase.from('pedidos').delete({ count: 'exact' }).in('id', trackedIds.pedido_ids)
+              pedCount = count ?? 0;
+          }
+
+          // 4. Delete Mutuos
+          if (trackedIds.mutuo_ids?.length > 0) {
+              const { count } = await supabase.from('mutuos').delete({ count: 'exact' }).in('id', trackedIds.mutuo_ids)
+              mutCount = count ?? 0;
+          }
+
+          // 5. Delete Despesas Indiretas
+          if (trackedIds.despesa_ids?.length > 0) {
+              const { count } = await supabase.from('despesas_indiretas').delete({ count: 'exact' }).in('id', trackedIds.despesa_ids)
+              despCount = count ?? 0;
+          }
+
+          // 6. Delete Item Flex
+          if (trackedIds.item_flex_ids?.length > 0) {
+              const { count } = await supabase.from('itens_compra').delete({ count: 'exact' }).in('id', trackedIds.item_flex_ids)
+              flexCount = count ?? 0;
+          }
+
+      } else {
+          // Legacy Fallback (Global delete of BD Realizado) - Remove if we want to be strict, but keeps compatibility with recent imports
+          const { count: mvC } = await supabase.from('movimentacoes_bancarias').delete({ count: 'exact' })
+            .eq('company_id', currentCompany.id).eq('origem', 'bd_realizado')
+          movCount = mvC ?? 0;
+
+          const { count: pdC } = await supabase.from('pedidos').delete({ count: 'exact' })
+            .eq('company_id', currentCompany.id).ilike('observacoes', '%BD Realizado%')
+          pedCount = pdC ?? 0;
+
+          const { count: mtC } = await supabase.from('mutuos').delete({ count: 'exact' })
+            .eq('company_id', currentCompany.id).ilike('observacoes', '%BD Realizado%')
+          mutCount = mtC ?? 0;
+
+          const { data: despParaDeletar } = await supabase.from('despesas_indiretas').select('id')
+            .eq('company_id', currentCompany.id).is('deleted_at', null)
+          if (despParaDeletar && despParaDeletar.length > 0) {
+            const despIds = despParaDeletar.map(d => d.id)
+            await supabase.from('parcelas').delete().in('despesa_indireta_id', despIds)
+            await supabase.from('despesas_indiretas').delete().in('id', despIds)
+            despCount = despIds.length;
+          }
+          const { count: fxC } = await supabase.from('itens_compra').delete({ count: 'exact' })
+            .eq('company_id', currentCompany.id).eq('codigo', 'FLEX')
+          flexCount = fxC ?? 0;
+      }
+
+      // Delete the audit log itself
+      await supabase.from('audit_logs').delete().eq('id', logId)
+
+      // Invalidate all queries
+      qc.invalidateQueries({ queryKey: [] })
+      await refetch()
+
+      toast.success(
+        `Rollback concluido: ${movCount ?? 0} movs, ${pedCount ?? 0} pedidos, ${despCount} desp.ind., ${mutCount ?? 0} mutuos, ${flexCount ?? 0} itens flex`
+      )
+    } catch (err) {
+      console.error('Erro no rollback:', err)
+      toast.error('Erro ao reverter importacao: ' + (err as Error).message)
+    } finally {
+      setIsRollingBack(false)
+      setRollbackTarget(null)
+    }
+  }
+
   if (isLoading) return <div className="p-8 text-center text-sm text-muted-foreground">Carregando logs...</div>
   if (importLogs.length === 0) return (
     <div className="flex flex-col items-center justify-center rounded-xl border border-dashed p-12 text-center">
       <AlertCircle className="mb-4 h-10 w-10 text-muted-foreground/50" />
-      <h3 className="text-lg font-medium text-muted-foreground">Nenhum log de importação</h3>
-      <p className="mt-1 text-sm text-muted-foreground/80">O sistema só registrará lotes importados daqui para frente.</p>
+      <h3 className="text-lg font-medium text-muted-foreground">Nenhum log de importacao</h3>
+      <p className="mt-1 text-sm text-muted-foreground/80">O sistema registrara lotes importados daqui para frente.</p>
     </div>
   )
 
+  // Rollback confirmation dialog
+  const RollbackDialog = () => {
+    if (!rollbackTarget) return null
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div className="mx-4 w-full max-w-md rounded-xl border bg-card p-6 shadow-2xl">
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">
+              <Trash2 className="h-5 w-5 text-destructive" />
+            </div>
+            <div>
+              <h3 className="text-base font-semibold">Reverter Importacao</h3>
+              <p className="text-xs text-muted-foreground">Esta acao nao pode ser desfeita</p>
+            </div>
+          </div>
+          <div className="mb-5 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-muted-foreground">
+            <p className="font-medium text-destructive mb-1">Serao removidos:</p>
+            <ul className="space-y-0.5 ml-2">
+              <li>- Todas as movimentacoes bancarias (origem: BD Realizado)</li>
+              <li>- Pedidos fantasma gerados automaticamente</li>
+              <li>- Despesas indiretas e suas parcelas</li>
+              <li>- Mutuos criados via importacao</li>
+              <li>- Itens Flex (codigo FLEX) na WBS</li>
+              <li>- Conciliacoes vinculadas</li>
+            </ul>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={() => setRollbackTarget(null)}
+              disabled={isRollingBack}
+              className="rounded-lg border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={() => handleRollbackBdRealizado(rollbackTarget)}
+              disabled={isRollingBack}
+              className="flex items-center gap-2 rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-destructive/90 disabled:opacity-50"
+            >
+              {isRollingBack ? (
+                <><div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> Revertendo...</>
+              ) : (
+                <><Trash2 className="h-4 w-4" /> Confirmar Exclusao</>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
+      <RollbackDialog />
       <div className="mb-4 rounded-xl border bg-card p-4">
-        <h3 className="mb-1 text-sm font-semibold">Histórico de Importações Recentes</h3>
-        <p className="text-[10px] text-muted-foreground">Registros de todas as importações (WBS completa e lotes individuais) com detalhamento de erros e avisos.</p>
+        <h3 className="mb-1 text-sm font-semibold">Historico de Importacoes Recentes</h3>
+        <p className="text-[10px] text-muted-foreground">Registros de todas as importacoes (WBS, lotes de pedidos e pagamentos realizados) com detalhamento e opcao de rollback.</p>
       </div>
 
       <div className="flex flex-col gap-3">
         {importLogs.map((log) => {
           const dados = log.dados_depois as Record<string, any> | null
-          const isWbs = dados?.type === 'import_wbs'
+          const logType = dados?.type
           const isExpanded = expandedLog === log.id
 
-          // WBS import format
-          if (isWbs) {
+          // ──── BD REALIZADO card ────
+          if (logType === 'import_bd_realizado_v3_history') {
+            const despesas = dados?.despesas_criadas ?? 0
+            const flex = dados?.pedidos_flex ?? 0
+            const creditos = dados?.creditos ?? 0
+            const mutuos = dados?.mutuos ?? 0
+            const errCount = dados?.errors ?? 0
+            const totalItems = despesas + flex + creditos + mutuos
+            const hasErrors = errCount > 0
+
+            return (
+              <div key={log.id} className="rounded-lg border bg-card shadow-sm transition-all hover:border-primary/30">
+                <div 
+                  className="flex cursor-pointer items-center justify-between p-4"
+                  onClick={() => setExpandedLog(isExpanded ? null : log.id)}
+                >
+                  <div className="flex items-center gap-4">
+                    <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${hasErrors ? 'bg-amber-500/10 text-amber-600' : 'bg-emerald-500/10 text-emerald-600'}`}>
+                      {hasErrors ? <AlertCircle className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-medium">
+                        <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-bold text-violet-700 dark:text-violet-400 mr-1.5">BD REALIZADO</span>
+                        Pagamentos Realizados
+                      </h4>
+                      <p className="text-xs text-muted-foreground">{new Date(log.created_at).toLocaleString('pt-BR')}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-4 text-right">
+                    <div>
+                      <p className="text-sm font-medium">
+                        <span className="text-emerald-600">{totalItems}</span> registros
+                        {hasErrors && <> / <span className="text-amber-600">{errCount}</span> avisos</>}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {despesas > 0 && `${despesas} desp. `}
+                        {flex > 0 && `${flex} flex `}
+                        {creditos > 0 && `${creditos} cred. `}
+                        {mutuos > 0 && `${mutuos} mut.`}
+                      </p>
+                    </div>
+                    <ArrowRight className={`h-4 w-4 text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="border-t bg-muted/20 p-4 space-y-4">
+                    {/* Summary grid */}
+                    <div className="grid grid-cols-4 gap-2 text-xs">
+                      <div className="rounded-md border bg-card p-2.5 text-center">
+                        <p className="font-semibold text-muted-foreground text-[10px] uppercase">Despesas Ind.</p>
+                        <p className="mt-1 text-lg font-bold text-amber-600">{despesas}</p>
+                      </div>
+                      <div className="rounded-md border bg-card p-2.5 text-center">
+                        <p className="font-semibold text-muted-foreground text-[10px] uppercase">Itens Flex</p>
+                        <p className="mt-1 text-lg font-bold text-blue-600">{flex}</p>
+                      </div>
+                      <div className="rounded-md border bg-card p-2.5 text-center">
+                        <p className="font-semibold text-muted-foreground text-[10px] uppercase">Creditos</p>
+                        <p className="mt-1 text-lg font-bold text-emerald-600">{creditos}</p>
+                      </div>
+                      <div className="rounded-md border bg-card p-2.5 text-center">
+                        <p className="font-semibold text-muted-foreground text-[10px] uppercase">Mutuos</p>
+                        <p className="mt-1 text-lg font-bold text-purple-600">{mutuos}</p>
+                      </div>
+                    </div>
+
+                    {/* Error details */}
+                    {dados?.error_details && dados.error_details.length > 0 && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50/50 dark:bg-amber-950/10 p-3 space-y-2">
+                        <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                          <AlertCircle className="h-3.5 w-3.5" />
+                          {errCount} erros na importação
+                        </p>
+                        <div className="max-h-52 overflow-y-auto space-y-1">
+                          {(dados.error_details as string[]).map((err: string, i: number) => (
+                            <div key={i} className="text-[11px] text-amber-800 dark:text-amber-300 py-0.5 px-2 bg-amber-100/50 dark:bg-amber-900/20 rounded">
+                              {err}
+                            </div>
+                          ))}
+                          {errCount > 50 && (
+                            <p className="text-[10px] text-muted-foreground italic pt-1">... e mais {errCount - 50} erros (mostrando os 50 primeiros)</p>
+                          )}
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            downloadErrorLog(log.id, dados.error_details as string[])
+                          }}
+                          className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 hover:text-amber-900 underline"
+                        >
+                          Baixar log de erros (.txt)
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Rollback button */}
+                    <div className="flex items-center justify-between rounded-lg border border-destructive/20 bg-destructive/5 p-3">
+                      <div>
+                        <p className="text-xs font-medium text-destructive">Reverter esta importacao</p>
+                        <p className="text-[10px] text-muted-foreground">Remove todas as movimentacoes, pedidos e mutuos criados por esta importacao.</p>
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setRollbackTarget(log.id) }}
+                        className="flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-destructive/90"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Reverter
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          }
+
+          // ──── WBS import card ────
+          if (logType === 'import_wbs') {
             const etapas = dados?.etapas ?? { atualizadas: 0, criadas: 0 }
             const itens = dados?.itens ?? { atualizados: 0, criados: 0 }
             const dists = dados?.distribuicoes ?? { atualizadas: 0, criadas: 0 }
@@ -1097,7 +1433,7 @@ function LogsImportacaoTab() {
                     <div>
                       <h4 className="text-sm font-medium">
                         <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary mr-1.5">WBS</span>
-                        Importação Completa
+                        Importacao Completa
                       </h4>
                       <p className="text-xs text-muted-foreground">{new Date(log.created_at).toLocaleString('pt-BR')}</p>
                     </div>
@@ -1111,7 +1447,7 @@ function LogsImportacaoTab() {
                         {avisosCount > 0 && <> / <span className="text-amber-600">{avisosCount}</span> avisos</>}
                       </p>
                       <p className="text-[10px] text-muted-foreground">
-                        Etapas: {etapas.atualizadas + etapas.criadas} · Itens: {itens.atualizados + itens.criados} · Dist: {dists.atualizadas + dists.criadas} · {totalLinhas} linhas lidas
+                        Etapas: {etapas.atualizadas + etapas.criadas} | Itens: {itens.atualizados + itens.criados} | Dist: {dists.atualizadas + dists.criadas} | {totalLinhas} linhas lidas
                       </p>
                     </div>
                     <div className="ml-2">
@@ -1126,15 +1462,15 @@ function LogsImportacaoTab() {
                     <div className="grid grid-cols-3 gap-2 text-xs">
                       <div className="rounded-md border bg-card p-2.5">
                         <p className="font-semibold text-muted-foreground text-[10px] uppercase">Etapas</p>
-                        <p className="mt-0.5">{etapas.criadas > 0 && <span className="text-emerald-600">{etapas.criadas} criadas</span>}{etapas.criadas > 0 && etapas.atualizadas > 0 && ' · '}{etapas.atualizadas > 0 && <span className="text-blue-600">{etapas.atualizadas} atualizadas</span>}{(etapas.criadas + etapas.atualizadas) === 0 && <span className="text-muted-foreground">—</span>}</p>
+                        <p className="mt-0.5">{etapas.criadas > 0 && <span className="text-emerald-600">{etapas.criadas} criadas</span>}{etapas.criadas > 0 && etapas.atualizadas > 0 && ' | '}{etapas.atualizadas > 0 && <span className="text-blue-600">{etapas.atualizadas} atualizadas</span>}{(etapas.criadas + etapas.atualizadas) === 0 && <span className="text-muted-foreground">-</span>}</p>
                       </div>
                       <div className="rounded-md border bg-card p-2.5">
                         <p className="font-semibold text-muted-foreground text-[10px] uppercase">Itens de Compra</p>
-                        <p className="mt-0.5">{itens.criados > 0 && <span className="text-emerald-600">{itens.criados} criados</span>}{itens.criados > 0 && itens.atualizados > 0 && ' · '}{itens.atualizados > 0 && <span className="text-blue-600">{itens.atualizados} atualizados</span>}{(itens.criados + itens.atualizados) === 0 && <span className="text-muted-foreground">—</span>}</p>
+                        <p className="mt-0.5">{itens.criados > 0 && <span className="text-emerald-600">{itens.criados} criados</span>}{itens.criados > 0 && itens.atualizados > 0 && ' | '}{itens.atualizados > 0 && <span className="text-blue-600">{itens.atualizados} atualizados</span>}{(itens.criados + itens.atualizados) === 0 && <span className="text-muted-foreground">-</span>}</p>
                       </div>
                       <div className="rounded-md border bg-card p-2.5">
-                        <p className="font-semibold text-muted-foreground text-[10px] uppercase">Distribuições</p>
-                        <p className="mt-0.5">{dists.criadas > 0 && <span className="text-emerald-600">{dists.criadas} criadas</span>}{dists.criadas > 0 && dists.atualizadas > 0 && ' · '}{dists.atualizadas > 0 && <span className="text-blue-600">{dists.atualizadas} atualizadas</span>}{(dists.criadas + dists.atualizadas) === 0 && <span className="text-muted-foreground">—</span>}</p>
+                        <p className="font-semibold text-muted-foreground text-[10px] uppercase">Distribuicoes</p>
+                        <p className="mt-0.5">{dists.criadas > 0 && <span className="text-emerald-600">{dists.criadas} criadas</span>}{dists.criadas > 0 && dists.atualizadas > 0 && ' | '}{dists.atualizadas > 0 && <span className="text-blue-600">{dists.atualizadas} atualizadas</span>}{(dists.criadas + dists.atualizadas) === 0 && <span className="text-muted-foreground">-</span>}</p>
                       </div>
                     </div>
 
@@ -1153,7 +1489,7 @@ function LogsImportacaoTab() {
                         <div className="max-h-48 overflow-y-auto rounded-md border bg-background p-3 text-xs">
                           <ul className="space-y-1">
                             {errors.map((erro, idx) => (
-                              <li key={idx} className="flex gap-2 border-b border-border/50 py-1 last:border-0"><span className="text-destructive font-bold shrink-0">✕</span> <span className="text-muted-foreground">{erro}</span></li>
+                              <li key={idx} className="flex gap-2 border-b border-border/50 py-1 last:border-0"><span className="text-destructive font-bold shrink-0">x</span> <span className="text-muted-foreground">{erro}</span></li>
                             ))}
                           </ul>
                         </div>
@@ -1167,7 +1503,7 @@ function LogsImportacaoTab() {
                         <div className="max-h-36 overflow-y-auto rounded-md border bg-background p-3 text-xs">
                           <ul className="space-y-1">
                             {warnings.map((aviso, idx) => (
-                              <li key={idx} className="flex gap-2 border-b border-border/50 py-1 last:border-0"><span className="text-amber-600 font-bold shrink-0">⚠</span> <span className="text-muted-foreground">{aviso}</span></li>
+                              <li key={idx} className="flex gap-2 border-b border-border/50 py-1 last:border-0"><span className="text-amber-600 font-bold shrink-0">!</span> <span className="text-muted-foreground">{aviso}</span></li>
                             ))}
                           </ul>
                         </div>
@@ -1176,7 +1512,7 @@ function LogsImportacaoTab() {
 
                     {!hasIssues && (
                       <div className="flex items-center gap-2 text-xs text-emerald-600">
-                        <CheckCircle2 className="h-4 w-4" /> Importação concluída sem erros ou avisos.
+                        <CheckCircle2 className="h-4 w-4" /> Importacao concluida sem erros ou avisos.
                       </div>
                     )}
                   </div>
@@ -1185,7 +1521,7 @@ function LogsImportacaoTab() {
             )
           }
 
-          // Legacy import_lote format
+          // ──── Legacy import_lote card ────
           const successCount = dados?.success ?? 0
           const totalCount = dados?.total ?? 0
           const errors: string[] = dados?.errors ?? []
@@ -1201,7 +1537,10 @@ function LogsImportacaoTab() {
                     {errors.length > 0 ? <AlertCircle className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
                   </div>
                   <div>
-                    <h4 className="text-sm font-medium">Tabela: <span className="text-primary">{log.tabela.toUpperCase()}</span></h4>
+                    <h4 className="text-sm font-medium">
+                      <span className="rounded bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-bold text-orange-700 dark:text-orange-400 mr-1.5">LOTE</span>
+                      Tabela: <span className="text-primary">{log.tabela.toUpperCase()}</span>
+                    </h4>
                     <p className="text-xs text-muted-foreground">{new Date(log.created_at).toLocaleString('pt-BR')}</p>
                   </div>
                 </div>
@@ -1225,13 +1564,13 @@ function LogsImportacaoTab() {
                       onClick={(e) => { e.stopPropagation(); downloadErrorLog(log.id, errors); }}
                       className="flex items-center gap-1.5 rounded bg-muted-foreground/10 px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted-foreground/20"
                     >
-                      <Download className="h-3.5 w-3.5" /> Baixar para Correção
+                      <Download className="h-3.5 w-3.5" /> Baixar para Correcao
                     </button>
                   </div>
                   <div className="max-h-60 overflow-y-auto rounded-md border bg-background p-3 text-xs">
                     <ul className="space-y-1">
                       {errors.map((erro, idx) => (
-                        <li key={idx} className="flex gap-2 border-b border-border/50 py-1 last:border-0"><span className="text-destructive font-bold">•</span> <span className="text-muted-foreground">{erro}</span></li>
+                        <li key={idx} className="flex gap-2 border-b border-border/50 py-1 last:border-0"><span className="text-destructive font-bold">-</span> <span className="text-muted-foreground">{erro}</span></li>
                       ))}
                     </ul>
                   </div>
@@ -1244,6 +1583,7 @@ function LogsImportacaoTab() {
     </div>
   )
 }
+
 
 // ═══════════════════════════════════════════════════════════════
 // Tab: WBS Completa (Excel)
@@ -1394,3 +1734,480 @@ function WBSTab() {
 }
 
 
+
+
+// ═══════════════════════════════════════════════════════════════
+// Tab: Pagamentos Realizados (Nova)
+// ═══════════════════════════════════════════════════════════════
+function PagamentosRealizadosTab() {
+  const { currentCompany } = useProject()
+  const qc = useQueryClient()
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [bdResult, setBdResult] = useState<import('@/lib/bdRealizadoImport').BdRealizadoResult | null>(null)
+  const [progress, setProgress] = useState(0)
+
+  // ── BD Realizado: file handler ──
+  const handleBdRealizado = useCallback(async (file: File) => {
+    if (!currentCompany) return
+    try {
+      const { parseBdRealizado } = await import('@/lib/bdRealizadoImport')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
+
+      // Buscar mútuos existentes para detecção de duplicatas
+      const { data: rawMutuos } = await supabase
+        .from('mutuos')
+        .select('id, nome, valor_captado, data_captacao, status')
+        .eq('company_id', currentCompany.id)
+
+      type DbMutuo = import('@/lib/bdRealizadoImport').DbMutuo
+      const mutuos: DbMutuo[] = (rawMutuos ?? []).map((m: any) => ({
+        id: m.id,
+        nome: m.nome,
+        valor_captado: Number(m.valor_captado),
+        data_captacao: m.data_captacao,
+        status: m.status,
+      }))
+
+      const result = parseBdRealizado(wb, mutuos)
+      setBdResult(result)
+      toast.success(`${result.stats.total} registros classificados`)
+    } catch (err) {
+      console.error(err)
+      toast.error('Erro ao processar planilha: ' + (err as Error).message)
+    }
+  }, [currentCompany])
+
+  // ── Helper: conta bancaria (NOT NULL) ──
+  async function getOrCreateContaBancaria(companyId: string, contaCorrenteStr: string): Promise<string> {
+    if (contaCorrenteStr) {
+      const searchTerm = contaCorrenteStr.split(' - ')[0]?.trim() || contaCorrenteStr
+      const { data } = await supabase
+        .from('contas_bancarias').select('id').eq('company_id', companyId)
+        .or(`nome.ilike.%${searchTerm}%,banco.ilike.%${searchTerm}%`).limit(1)
+      if (data?.[0]?.id) return data[0].id
+    }
+    const { data: fallback } = await supabase
+      .from('contas_bancarias').select('id').eq('company_id', companyId).limit(1)
+    if (fallback?.[0]?.id) return fallback[0].id
+    const { data: created } = await supabase
+      .from('contas_bancarias').insert({ company_id: companyId, nome: 'Conta Principal', banco: 'N/D' })
+      .select('id').single()
+    return created!.id
+  }
+
+  // ── BD Realizado: execute import ──
+  const executeBdImport = async () => {
+    if (!bdResult || !currentCompany) return
+    setIsProcessing(true)
+    setProgress(0)
+
+    let despesasCriadas = 0
+    let pedidosFlex = 0
+    let creditosRegistrados = 0
+    let mutuosCriados = 0
+    let parcelasAtreladas = 0
+    const errors: string[] = []
+    
+    // Arrays para rastrear IDs para o Rollback pontual
+    const trackedIds = {
+      mov_ids: [] as string[],
+      pedido_ids: [] as string[],
+      despesa_ids: [] as string[],
+      mutuo_ids: [] as string[],
+      item_flex_ids: [] as string[],
+      parcela_ids: [] as string[],
+      conciliacao_ids: [] as string[],
+    }
+
+    const actionable = bdResult.rows.filter(r => r.importPath !== 'skip')
+    const total = actionable.length
+
+    let processed = 0
+    for (const row of actionable) {
+      processed++
+      setProgress(Math.round((processed / total) * 100))
+
+      const absValor = Math.abs(row.pagoOuRecebido)
+      const dataPgto = row.dataPagamento || row.dataEmissao
+      const isSaida = row.pagoOuRecebido < 0
+
+      if (!dataPgto) {
+        errors.push(`#${row.seq} [Ignorado]: Sem data válida (pagamento/emissão).`);
+        continue;
+      }
+
+      try {
+        const contaId = await getOrCreateContaBancaria(currentCompany.id, row.contaCorrente)
+
+        // 1. Sempre cria a Movimentação Bancária (Histórico Perfeito)
+        const { data: mov, error: movErr } = await supabase.from('movimentacoes_bancarias').insert({
+          company_id: currentCompany.id,
+          conta_id: contaId,
+          data: dataPgto,
+          descricao: [row.fornecedor, row.categoria, row.departamento, row.item].filter(Boolean).join(' - ').substring(0, 255) || 'Lançamento',
+          valor: absValor,
+          tipo: isSaida ? 'saida' : 'entrada',
+          categoria: row.categoria === 'Pagamento Devolvido' ? 'Estorno/Devolução' : row.categoria,
+          conciliado: true,
+          conciliado_em: new Date().toISOString(),
+          observacao: row.contaPai !== 'N/D' ? row.contaPai : null,
+          origem: 'bd_realizado',
+        }).select('id').single()
+
+        if (movErr) { 
+          console.error(`[SUPABASE 400 DETALHADO] Erro na linha ${row.seq}:`, JSON.stringify(movErr, null, 2));
+          errors.push(`#${row.seq} [Mov]: ${movErr.message}`); 
+          continue;
+        }
+        if (!mov) continue
+        trackedIds.mov_ids.push(mov.id)
+
+        // Helpers para Fornecedor
+        let fornecedorId = null
+        if (row.fornecedor && row.fornecedor !== 'Não informado' && row.fornecedor !== 'N/D') {
+          const { data: existingForn } = await supabase
+            .from('fornecedores').select('id').eq('company_id', currentCompany.id)
+            .ilike('nome', row.fornecedor).limit(1)
+          if (existingForn && existingForn.length > 0) fornecedorId = existingForn[0]!.id
+          else {
+            const { data: newForn } = await supabase.from('fornecedores').insert({ company_id: currentCompany.id, nome: row.fornecedor }).select('id').single()
+            if (newForn) fornecedorId = newForn.id
+          }
+        }
+
+        let parcelaIdParaConciliar = null
+
+        // 2A. DESPESA (Saida)
+        if (row.importPath === 'despesa') {
+           // Tentar achar a Etapa
+           let etapaId = null
+           if (row.departamento) {
+              const { data: etapa } = await supabase.from('etapas').select('id')
+                 .eq('company_id', currentCompany.id).ilike('nome', `%${row.departamento}%`).limit(1).maybeSingle()
+              if (etapa) etapaId = etapa.id
+           }
+
+           if (etapaId) {
+              // 1. Achar o Item na WBS
+              const fallbackItemNome = row.item && row.item !== 'N/D' ? row.item : 'Item Flex (Pago)'
+              const fallbackClean = fallbackItemNome === 'Item Flex (Pago)' ? 'FLEX' : fallbackItemNome
+
+                   let itemId = null
+                   // A busca por item_compra existente (evitar erros de sintaxe no .or do PostgREST)
+                   let query = supabase.from('itens_compra').select('id').eq('etapa_id', etapaId).limit(1)
+                   if (fallbackClean === 'FLEX') {
+                       query = query.eq('codigo', 'FLEX')
+                   } else {
+                       query = query.ilike('descricao', `%${fallbackItemNome}%`)
+                   }
+                   const { data: exItem } = await query.maybeSingle()
+                   
+                   if (exItem) {
+                       itemId = exItem.id
+                   } else {
+                     // Criar item novo (Flex ou planejado fantasma)
+                     const tipoItem = 'MATERIAL'
+                     const { data: ni } = await supabase.from('itens_compra').insert({
+                       company_id: currentCompany.id, etapa_id: etapaId, codigo: fallbackClean === 'FLEX' ? 'FLEX' : 'IMP', 
+                       descricao: fallbackItemNome, tipo: tipoItem, valor_total_orcado: 0
+                     }).select('id').single()
+                     if (ni) {
+                         itemId = ni.id
+                         trackedIds.item_flex_ids.push(ni.id)
+                     }
+                   }
+
+                   if (itemId && fornecedorId) {
+                     // 2. Achar um Pedido existente para este Fornecedor e Item
+                     const { data: exPed } = await supabase.from('pedidos')
+                       .select('id, valor_total_real')
+                       .eq('item_compra_id', itemId)
+                       .eq('fornecedor_id', fornecedorId)
+                       .limit(1).maybeSingle()
+
+                     let pedidoId = exPed?.id
+                     if (!pedidoId) {
+                         // Criar um pedido fantasma estrutural APENAS para ancorar o pagamento
+                         // O valor_total_real = 0 garante que NÃO adicione ao "Consumido" da WBS, apenas ao "Pago".
+                         const { data: pedido, error: pedErr } = await supabase.from('pedidos').insert({
+                           company_id: currentCompany.id, item_compra_id: itemId, fornecedor_id: fornecedorId,
+                           data_entrega_real: dataPgto, valor_total_real: 0, status: 'entregue',
+                           observacoes: 'Pedido Ancoragem de Pagamento (Criado auto - BD Realizado)'
+                         }).select('id').single()
+     
+                         if (pedErr) {
+                           console.error(`[PEDIDO 400] Linha ${row.seq}:`, JSON.stringify(pedErr, null, 2))
+                           errors.push(`#${row.seq} [Pedido]: ${pedErr.message}`)
+                         } else if (pedido) {
+                           pedidoId = pedido.id
+                           trackedIds.pedido_ids.push(pedido.id)
+                           pedidosFlex++; 
+                         }
+                     }
+
+                     if (pedidoId) {
+                        // 3. Criar a parcela atrelada a este pedido
+                        const { data: parc } = await supabase.from('parcelas').insert({
+                          company_id: currentCompany.id, pedido_id: pedidoId, valor: absValor, valor_pago: absValor,
+                          data_vencimento: dataPgto, data_pagamento_real: dataPgto, numero_parcela: 999, status: 'paga',
+                          descricao: 'Parcela BD Realizado'
+                        }).select('id').single()
+                        if (parc) { 
+                            parcelaIdParaConciliar = parc.id; 
+                            trackedIds.parcela_ids.push(parc.id)
+                        }
+                     }
+                   }
+                } else {
+             // Caminho 2: Nao achou Etapa -> Custo Indireto Generico
+             const obsParts = [
+               row.observacao && `Obs: ${row.observacao}`,
+               row.nfCf && `NF: ${row.nfCf}`,
+               row.contaPai && row.contaPai !== 'N/D' && `Conta: ${row.contaPai}`,
+               row.origem && `Origem: ${row.origem}`,
+               row.medicao && `Medicao: ${row.medicao}`,
+             ].filter(Boolean).join(' | ')
+             const { data: despesa } = await supabase.from('despesas_indiretas').insert({
+                company_id: currentCompany.id, categoria: row.categoria || row.departamento || 'Despesa Importada',
+                descricao: [row.departamento, row.fornecedor, row.item].filter(Boolean).join(' - ') || 'Lancamento',
+                valor_orcado: absValor, valor_consumido: absValor, data_inicio: dataPgto, data_fim: dataPgto,
+                fornecedor_id: fornecedorId, ativo: true,
+                observacoes: obsParts || null,
+             }).select('id').single()
+
+             if (despesa) {
+                trackedIds.despesa_ids.push(despesa.id)
+                const { data: parc } = await supabase.from('parcelas').insert({
+                   company_id: currentCompany.id, despesa_indireta_id: despesa.id, valor: absValor, valor_pago: absValor,
+                   data_vencimento: dataPgto, data_pagamento_real: dataPgto, numero_parcela: 1, status: 'paga'
+                }).select('id').single()
+                if (parc) { 
+                    parcelaIdParaConciliar = parc.id; 
+                    trackedIds.parcela_ids.push(parc.id)
+                    despesasCriadas++; 
+                }
+             }
+          }
+        }
+
+
+        else if (row.importPath === 'mutuo') {
+          const { data: mut } = await supabase.from('mutuos').insert({
+            company_id: currentCompany.id,
+            fornecedor_id: fornecedorId,
+            nome: `${row.fornecedor || 'Mútuo'} - ${row.dataPagamento}`,
+            tipo: isSaida ? 'ADIANTAMENTO' : 'MÚTUO',
+            valor_captado: absValor,
+            data_captacao: dataPgto,
+            observacoes: 'Gerado via BD Realizado',
+            status: 'ativo',
+          }).select('id').single()
+          if (mut) trackedIds.mutuo_ids.push(mut.id)
+          mutuosCriados++
+        }
+
+        // 2C. CRÉDITO
+        else if (row.importPath === 'credito') {
+           creditosRegistrados++
+        }
+
+        // 3. Efetivar vínculo na engine de conciliação
+        if (parcelaIdParaConciliar) {
+          const { data: conc } = await supabase.from('conciliacoes').insert({
+            company_id: currentCompany.id,
+            movimentacao_id: mov.id,
+            match_type: 'exact',
+            confidence: 100,
+            diferenca: 0,
+            status: 'confirmado'
+          }).select('id').single()
+          if (conc) {
+            trackedIds.conciliacao_ids.push(conc.id)
+            await supabase.from('conciliacao_parcelas').insert({
+              conciliacao_id: conc.id, parcela_id: parcelaIdParaConciliar, valor_aplicado: absValor
+            })
+          }
+        }
+
+      } catch (err) {
+        errors.push(`#${row.seq}: ${(err as Error).message}`)
+      }
+    }
+
+    // Audit log
+    await supabase.from('audit_logs').insert({
+      company_id: currentCompany.id,
+      tabela: 'despesas_indiretas',
+      acao: 'INSERT',
+      agente: 'sistema',
+      dados_depois: {
+        type: 'import_bd_realizado_v3_history',
+        despesas_criadas: despesasCriadas,
+        pedidos_flex: pedidosFlex,
+        parcelas_atreladas: parcelasAtreladas,
+        creditos: creditosRegistrados,
+        mutuos: mutuosCriados,
+        errors: errors.length,
+        error_details: errors.slice(0, 50),
+        tracked_ids: trackedIds, // IDs gerados para rollback pontual!
+      },
+    })
+
+    qc.invalidateQueries({ queryKey: [] })
+
+    if (errors.length > 0) {
+      toast.warning(`Importação com ${errors.length} avisos/erros. Verifique nos Logs de Importação.`)
+      console.warn('Erros BD Realizado:', errors)
+    }
+    const totalProcessado = despesasCriadas + pedidosFlex + parcelasAtreladas + creditosRegistrados + mutuosCriados
+    toast.success(`✅ ${totalProcessado} ações: ${despesasCriadas} Desp.Ind. · ${pedidosFlex} Itens Flex · ${parcelasAtreladas} Pagamentos Atrelados a Pedidos · ${mutuosCriados} Mútuos`)
+    setIsProcessing(false)
+    setProgress(0)
+    setBdResult(null)
+  }
+
+  const PATH_COLORS: Record<string, string> = {
+    despesa: 'bg-amber-100 text-amber-800',
+    credito: 'bg-blue-100 text-blue-800',
+    mutuo: 'bg-violet-100 text-violet-800',
+    skip: 'bg-gray-100 text-gray-500',
+  }
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+      {/* Upload area */}
+      <div className="rounded-xl border bg-card p-6 shadow-sm">
+        <div className="flex items-start gap-6">
+          <div className="rounded-full bg-primary/10 p-3">
+            <CheckCircle2 className="h-6 w-6 text-primary" />
+          </div>
+          <div className="flex-1">
+            <h3 className="mb-1 text-lg font-semibold">Importar Pagamentos Realizados</h3>
+            <p className="mb-4 text-sm text-muted-foreground">
+              Suba a planilha <strong>BD REALIZADO - CONSTRUTORA</strong> para registrar todos os pagamentos como despesas a nível de etapa. O sistema classifica automaticamente saídas (despesas), entradas (créditos) e empréstimos (mútuos).
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm">
+                <Upload className="h-4 w-4" />
+                Subir BD Realizado (.xlsx)
+                <input type="file" className="hidden" accept=".xlsx,.xls,.csv"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleBdRealizado(f); e.target.value = '' }} />
+              </label>
+              {bdResult && (
+                <button onClick={() => setBdResult(null)} className="rounded-lg border px-3 py-2 text-xs hover:bg-muted">
+                  <X className="h-4 w-4 inline mr-1" />Limpar
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Results */}
+      {bdResult && (
+        <>
+          {/* Stats */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {[
+              { label: 'Total', value: bdResult.stats.total, color: 'bg-card border' },
+              { label: '📋 Despesas', value: bdResult.stats.despesas, color: 'bg-amber-50 border-amber-200' },
+              { label: '💳 Créditos', value: bdResult.stats.creditos, color: 'bg-blue-50 border-blue-200' },
+              { label: '🤝 Mútuos', value: bdResult.stats.mutuos, color: 'bg-violet-50 border-violet-200' },
+              { label: '⏭️ Já Existem', value: bdResult.stats.skipped, color: 'bg-gray-50 border-gray-200' },
+              { label: 'Saídas (R$)', value: null as any, sub: formatCurrency(bdResult.stats.valorSaidas), color: 'bg-red-50 border-red-200' },
+            ].map((s, i) => (
+              <div key={i} className={`rounded-xl border p-3 ${s.color}`}>
+                <p className="text-[10px] font-medium text-muted-foreground">{s.label}</p>
+                {s.value != null ? (
+                  <p className="mt-0.5 text-xl font-bold tabular-nums">{s.value}</p>
+                ) : (
+                  <p className="mt-0.5 text-sm font-bold tabular-nums">{s.sub}</p>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Progress bar during import */}
+          {isProcessing && (
+            <div className="rounded-xl border bg-card p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                  <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress}%` }} />
+                </div>
+                <span className="text-xs font-bold tabular-nums">{progress}%</span>
+              </div>
+            </div>
+          )}
+
+          {/* Table */}
+          <div className="rounded-xl border bg-card shadow-sm">
+            <div className="flex items-center justify-between border-b p-4">
+              <h3 className="text-sm font-semibold">
+                Pré-visualização — {bdResult.rows.length} registros
+              </h3>
+              <button onClick={executeBdImport} disabled={isProcessing}
+                className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors">
+                {isProcessing ? (
+                  <><span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />Processando...</>
+                ) : (
+                  <><ArrowRight className="h-4 w-4" />Confirmar Importação</>
+                )}
+              </button>
+            </div>
+
+            <div className="max-h-[500px] overflow-auto">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-muted z-10">
+                  <tr className="border-b text-left">
+                    <th className="px-3 py-2 font-medium">#</th>
+                    <th className="px-3 py-2 font-medium">Data</th>
+                    <th className="px-3 py-2 font-medium">Fornecedor</th>
+                    <th className="px-3 py-2 font-medium">Departamento</th>
+                    <th className="px-3 py-2 font-medium">Categoria</th>
+                    <th className="px-3 py-2 font-medium text-right">Valor</th>
+                    <th className="px-3 py-2 font-medium">Ação</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {bdResult.rows.map((row) => (
+                    <tr key={row.seq} className={`hover:bg-muted/30 ${row.importPath === 'skip' ? 'opacity-50' : ''}`}>
+                      <td className="px-3 py-2 tabular-nums text-muted-foreground">{row.seq}</td>
+                      <td className="px-3 py-2 tabular-nums whitespace-nowrap">{row.dataPagamento ? fmtDateShort(row.dataPagamento) : '—'}</td>
+                      <td className="px-3 py-2 max-w-[160px] truncate font-medium" title={row.fornecedor}>
+                        {row.fornecedor || '—'}
+                      </td>
+                      <td className="px-3 py-2 max-w-[140px] truncate" title={row.departamento}>
+                        {row.departamento || '—'}
+                      </td>
+                      <td className="px-3 py-2 max-w-[130px] truncate text-muted-foreground" title={row.categoria}>
+                        {row.categoria}
+                      </td>
+                      <td className={`px-3 py-2 text-right tabular-nums font-medium whitespace-nowrap ${row.pagoOuRecebido >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {formatCurrency(Math.abs(row.pagoOuRecebido))}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium whitespace-nowrap ${PATH_COLORS[row.importPath] || ''}`}>
+                          {row.importLabel}
+                        </span>
+                        {row.autoSkipReason && (
+                          <p className="mt-0.5 truncate text-[9px] text-muted-foreground italic max-w-[180px]" title={row.autoSkipReason}>{row.autoSkipReason}</p>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function fmtDateShort(d: string): string {
+  if (!d) return '—'
+  const [, m, day] = d.split('-')
+  return `${day}/${m}`
+}

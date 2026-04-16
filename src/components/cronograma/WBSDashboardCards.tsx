@@ -9,6 +9,11 @@ interface DashboardCardsProps {
   custoIndiretoConsumido: number
   custoPago: number
   custoIndiretoPago: number
+  capitalCaptado?: number
+  capitalDevolucao?: number
+  capitalPago?: number
+  capitalPendente?: number
+  custoFinanceiro?: number
   saldo: number
   execucaoPct: number
   margemRS: number
@@ -20,10 +25,11 @@ export default function WBSDashboardCards({
   custoOrcado, custoIndiretoOrcado,
   custoConsumido, custoIndiretoConsumido,
   custoPago, custoIndiretoPago,
+  capitalCaptado = 0, capitalPendente = 0, custoFinanceiro = 0,
   saldo, execucaoPct, margemRS, margemPct 
 }: DashboardCardsProps) {
   return (
-    <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-9">
+    <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-5 lg:grid-cols-10">
       <MiniCard label="Etapas" value={String(etapasCount)} />
       <MiniCard label="Receita CEF" value={formatCurrency(receitaCEF)} accent="blue" />
       <DualMiniCard 
@@ -45,6 +51,13 @@ export default function WBSDashboardCards({
         subVal1Label="Dir" subVal1={formatCurrency(custoPago)}
         subVal2Label="Ind" subVal2={formatCurrency(custoIndiretoPago)}
         accent="blue"
+      />
+      <DualMiniCard
+        label="Capital"
+        mainValue={formatCurrency(capitalCaptado)}
+        subVal1Label="Pend" subVal1={formatCurrency(capitalPendente)}
+        subVal2Label="Juros" subVal2={formatCurrency(custoFinanceiro)}
+        accent={custoFinanceiro > 0 ? 'red' : 'emerald'}
       />
       <MiniCard label="Saldo" value={formatCurrency(saldo)} accent={saldo >= 0 ? 'emerald' : 'red'} />
       <MiniCard label="Execução" value={`${execucaoPct.toFixed(1)}%`} />

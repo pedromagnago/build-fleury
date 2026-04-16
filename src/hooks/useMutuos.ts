@@ -10,6 +10,7 @@ export interface Mutuo {
   tipo: 'MÚTUO' | 'EMPRÉSTIMO' | 'FINANCIAMENTO' | 'CARTÃO' | 'OUTRO'
   categoria: string
   instituicao: string | null
+  fornecedor_id: string | null
   valor_captado: number
   data_captacao: string
   taxa_juros_mensal: number
@@ -18,6 +19,7 @@ export interface Mutuo {
   created_at: string
   updated_at: string
   parcelas?: MutuoParcela[]
+  fornecedor?: { id: string; nome: string } | null
 }
 
 export interface MutuoParcela {
@@ -45,7 +47,7 @@ export function useMutuos() {
 
       // Fetch mutuos and parcelas separately to avoid PostgREST embed issues
       const [mutuosRes, parcelasRes] = await Promise.all([
-        supabase.from('mutuos').select('*').eq('company_id', companyId).order('created_at', { ascending: false }),
+        supabase.from('mutuos').select('*, fornecedor:fornecedores(id, nome)').eq('company_id', companyId).order('created_at', { ascending: false }),
         supabase.from('mutuo_parcelas').select('*').eq('company_id', companyId).order('numero_parcela'),
       ])
       if (mutuosRes.error) throw mutuosRes.error
@@ -58,10 +60,11 @@ export function useMutuos() {
         parcByMutuo.set(p.mutuo_id, arr)
       }
 
-      return ((mutuosRes.data ?? []) as Mutuo[]).map((m) => ({
+      return ((mutuosRes.data ?? []) as Extract<typeof mutuosRes.data, any[]>).map((m) => ({
         ...m,
+        fornecedor: Array.isArray(m.fornecedor) ? m.fornecedor[0] : m.fornecedor,
         parcelas: parcByMutuo.get(m.id) ?? [],
-      }))
+      })) as Mutuo[]
     },
     enabled: !!companyId,
   })
@@ -129,6 +132,39 @@ export function useDeleteMutuo() {
   })
 }
 
+export function useBatchDeleteMutuos() {
+  const qc = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      const { error } = await supabase.from('mutuos').delete().in('id', ids)
+      if (error) throw error
+    },
+    onSuccess: (_, ids) => {
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+      toast.success(`${ids.length} mútuos excluídos.`)
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
+export function useBatchUpdateMutuosCategory() {
+  const qc = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ ids, categoria }: { ids: string[]; categoria: string }) => {
+      const { error } = await supabase.from('mutuos').update({ categoria }).in('id', ids)
+      if (error) throw error
+    },
+    onSuccess: (_, variables) => {
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
+      toast.success(`Categoria atualizada para ${variables.ids.length} mútuos.`)
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
 export function useUpdateMutuoParcela() {
   const qc = useQueryClient()
 
@@ -144,6 +180,69 @@ export function useUpdateMutuoParcela() {
       qc.invalidateQueries({ queryKey: ['mutuos'] })
       qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
       toast.success('Parcela atualizada')
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
+export function useCreateMutuoParcela() {
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
+
+  return useMutation({
+    mutationFn: async (input: { mutuo_id: string; valor: number; data_vencimento: string; numero_parcela: number }) => {
+      if (!currentCompany) throw new Error('Sem empresa selecionada')
+      const { error } = await supabase.from('mutuo_parcelas').insert({
+        company_id: currentCompany.id,
+        mutuo_id: input.mutuo_id,
+        numero_parcela: input.numero_parcela,
+        valor: input.valor,
+        data_vencimento: input.data_vencimento,
+        status: 'pendente',
+      })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+      toast.success('Parcela adicionada')
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
+export function useDeleteMutuoParcela() {
+  const qc = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('mutuo_parcelas').delete().eq('id', id)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+      toast.success('Parcela excluída')
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
+export function useUpdateMutuo() {
+  const qc = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ id, ...updates }: Partial<Mutuo> & { id: string }) => {
+      const { error } = await supabase
+        .from('mutuos')
+        .update(updates)
+        .eq('id', id)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+      toast.success('Mútuo atualizado')
     },
     onError: (err: Error) => toast.error(err.message),
   })

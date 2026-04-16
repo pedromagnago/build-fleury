@@ -66,17 +66,18 @@ export default function MedicoesPanel() {
     return m
   }, [distribuicoes])
 
-  const getValorProporcional = useCallback((etapa: any, casas: number) => {
+  const getValorProporcional = useCallback((etapa: any, casas: number, valorLiberado?: number | null) => {
+    // Prioridade 1: valor explícito importado da WBS (valor_liberado_faturamento)
+    if (valorLiberado && valorLiberado > 0) return valorLiberado;
+    // Prioridade 2: cálculo proporcional a partir do faturamento da etapa
     if (!etapa || !casas) return 0;
     const pu = Number(etapa.faturamento_preco_unitario) || 0;
     const qtTotal = Number(etapa.faturamento_quantidade_unitaria) || 0;
     const valTotal = Number(etapa.faturamento_valor_total) || 0;
-    
-    // Se temos o Total Oficial CEF, fazemos rateio exato para evitar truncamento/dízimas de centavos:
     if (qtTotal > 0 && valTotal > 0) {
       return (casas / qtTotal) * valTotal;
     }
-    return casas * pu; // Fallback
+    return casas * pu;
   }, []);
 
   const acumulado = useMemo(() => {
@@ -85,7 +86,7 @@ export default function MedicoesPanel() {
       const prev = m.get(d.etapa_id) ?? { casas: 0, valor: 0 }
       const etapa = etapas.find(e => e.id === d.etapa_id)
       prev.casas += d.casas_planejadas ?? 0
-      prev.valor += getValorProporcional(etapa, d.casas_planejadas ?? 0)
+      prev.valor += getValorProporcional(etapa, d.casas_planejadas ?? 0, d.valor_liberado_faturamento)
       m.set(d.etapa_id, prev)
     })
     return m
@@ -97,7 +98,7 @@ export default function MedicoesPanel() {
       const prev = m.get(d.medicao_numero) ?? { casas: 0, valor: 0 }
       const etapa = etapas.find(e => e.id === d.etapa_id)
       prev.casas += d.casas_planejadas ?? 0
-      prev.valor += getValorProporcional(etapa, d.casas_planejadas ?? 0)
+      prev.valor += getValorProporcional(etapa, d.casas_planejadas ?? 0, d.valor_liberado_faturamento)
       m.set(d.medicao_numero, prev)
     })
     return m
@@ -106,7 +107,7 @@ export default function MedicoesPanel() {
   const kpis = useMemo(() => {
     const totalReceita = distribuicoes.reduce((s, d) => {
       const etapa = etapas.find(e => e.id === d.etapa_id)
-      return s + getValorProporcional(etapa, d.casas_planejadas ?? 0)
+      return s + getValorProporcional(etapa, d.casas_planejadas ?? 0, d.valor_liberado_faturamento)
     }, 0)
     const totalAcumCasas = distribuicoes.reduce((s, d) => s + (d.casas_realizadas ?? 0), 0)
     const totalPlanCasas = distribuicoes.reduce((s, d) => s + (d.casas_planejadas ?? 0), 0)
@@ -494,7 +495,7 @@ export default function MedicoesPanel() {
                     {sortedMedicoes.flatMap(med => {
                       const dist = distMatrix.get(etapa.id)?.get(med.numero)
                       const casas = dist?.casas_planejadas ?? 0
-                      const valor = getValorProporcional(etapa, casas)
+                      const valor = getValorProporcional(etapa, casas, dist?.valor_liberado_faturamento)
                       const isEditing = editingCell?.etapaId === etapa.id && editingCell?.medNumero === med.numero
                       const noDates = dist && !dist.data_fim && !dist.data_inicio
 
@@ -534,7 +535,7 @@ export default function MedicoesPanel() {
                 <td className="border-r px-2 py-2.5 text-right tabular-nums text-emerald-600 bg-emerald-50/20 dark:bg-emerald-950/5">
                   {formatCurrency(distribuicoes.reduce((s, d) => {
                     const et = etapas.find(e => e.id === d.etapa_id)
-                    return s + getValorProporcional(et, d.casas_planejadas ?? 0)
+                    return s + getValorProporcional(et, d.casas_planejadas ?? 0, d.valor_liberado_faturamento)
                   }, 0))}
                 </td>
                 {sortedMedicoes.flatMap(med => {

@@ -140,9 +140,9 @@ export default function GerarPedidosWizard({ onClose }: { onClose: () => void })
       for (let li = 0; li < lotes.length; li++) {
         const lote = lotes[li]!
         const qtdPorCasa = item.qtd_por_casa ?? 0
-        const qtd = lote.casas * qtdPorCasa
+        const qtd = Math.round(lote.casas * qtdPorCasa * 100) / 100
         const valorUnit = item.custo_unitario_orcado ?? 0
-        const valorTotal = qtd * valorUnit
+        const valorTotal = Math.round(qtd * valorUnit * 100) / 100
         const parcelasCount = cond ? parsearCondicao(cond).length : 1
 
         rows.push({

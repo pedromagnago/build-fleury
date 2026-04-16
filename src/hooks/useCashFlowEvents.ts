@@ -186,10 +186,15 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       } else if (p.despesa_indireta_id && (p as any).despesas_indiretas) {
         const di = (p as any).despesas_indiretas
         catStr = di.categoria || 'Despesa Indireta'
-        etapaStr = di.categoria || 'Indiretas'
-        fornStr = 'Fornecedor'
+        etapaStr = 'Custos Indiretos'
+        fornStr = di.fornecedor_nome || di.categoria || 'Indireto'
         itemStr = di.descricao
         descStr = `Parc ${p.numero_parcela} — ${di.descricao || 'Despesa'}`
+      } else if (!ped) {
+        // Parcela avulsa (sem pedido nem despesa)
+        descStr = p.descricao ? `Parc ${p.numero_parcela} — ${p.descricao}` : `Parc avulsa ${p.numero_parcela}`
+        catStr = 'Avulsa'
+        etapaStr = 'Outros'
       }
 
       all.push({
@@ -228,41 +233,53 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           date,
           type: 'firme',
           valor: calcVal,
-          meta: { cat: m.tipo, forn: m.nome, desc: `Mútuo Parc ${p.numero_parcela} — ${m.nome}`, orig: calcVal }
+          meta: { cat: m.tipo, etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Mútuo Parc ${p.numero_parcela} — ${m.nome}`, orig: calcVal }
         })
       })
     })
 
     // ═══════════════════════════════════════════════════════════
-    // 5. SAÍDAS — Pedidos confirmados sem parcela
+    // 5. SAÍDAS — Pedidos sem parcela (Firmes ou Planejados)
     // ═══════════════════════════════════════════════════════════
     if (viewMode === 'pedidos' || viewMode === 'planejado') {
       const parcelaPedidoIds = new Set(parcelas.map(p => p.pedido_id).filter(Boolean))
       pedidos
-        .filter(p => p.status === 'confirmado' && !parcelaPedidoIds.has(p.id))
+        .filter(p => p.status !== 'cancelado' && !parcelaPedidoIds.has(p.id))
         .forEach(p => {
           const val = Number(p.valor_total_real ?? 0)
           if (val <= 0) return
 
-          let date = p.data_entrega_prevista || today
-          if (date < today) date = today
-
           const itemObj = itens.find(i => i.id === p.item_compra_id)
           const etapaObj = etapas.find(et => et.id === itemObj?.etapa_id)
 
-          all.push({
-            id: `pedsol-${p.id}`,
-            date,
-            type: 'firme',
-            valor: val,
-            meta: {
-              cat: itemObj?.categoria || 'Obra',
-              etapa: etapaObj?.nome,
-              forn: p.fornecedor_nome,
-              item: p.item_descricao || itemObj?.descricao,
-              desc: `Pedido #${p.numero_pedido || '?'} — ${p.fornecedor_nome || ''}`,
-              orig: val
-            }
+          // Regra solicitada: Se não houver data_entrega_prevista, usa data_inicio_plan da etapa, senao hoje
+          const baseDateStr = p.data_entrega_prevista || etapaObj?.data_inicio_plan || today
+          
+          const cond = p.cond_pagamento || itemObj?.cond_pagamento || 'à vista'
+          const dias = parsearCondicao(cond)
+          const nParts = dias.length
+          const valPart = val / nParts
+
+          dias.forEach((dd, pIdx) => {
+            const dt = localDate(baseDateStr)
+            dt.setDate(dt.getDate() + dd)
+            let dateStr = fmtISO(dt)
+            if (dateStr < today) dateStr = today
+
+            all.push({
+              id: `pedsol-${p.id}-${pIdx}`,
+              date: dateStr,
+              type: 'firme',
+              valor: valPart,
+              meta: {
+                cat: itemObj?.categoria || 'Obra',
+                etapa: etapaObj?.nome,
+                forn: p.fornecedor_nome,
+                item: p.item_descricao || itemObj?.descricao,
+                desc: `Pedido #${p.numero_pedido || '?'} — ${p.fornecedor_nome || ''}${nParts > 1 ? ` (Parc ${pIdx + 1})` : ''}`,
+                orig: valPart
+              }
+            })
           })
         })
     }

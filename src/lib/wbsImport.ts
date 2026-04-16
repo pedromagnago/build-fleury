@@ -319,6 +319,7 @@ export async function buildImportPreview(
     const campos: { campo: string; antigo: string; novo: string }[] = []
     const checks: [string, string, unknown][] = [
       ['Casas Planejadas', 'casas_planejadas', parseNumber(findCol(row, ['Casas Planejadas', 'Casas', 'Qtd Casas']))],
+      ['Casas Realizadas', 'casas_realizadas', parseNumber(findCol(row, ['Casas Realizadas']))],
       ['Data Início', 'data_inicio', toDateISO(findCol(row, ['Data Início', 'Data Inicio']))],
       ['Data Fim', 'data_fim', toDateISO(findCol(row, ['Data Fim']))],
       ['Receita a Liberar', 'valor_liberado_faturamento', parseNumber(findCol(row, ['Receita a Liberar', 'Receita a Liberar (R$)', 'Receita']))],
@@ -493,8 +494,29 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
   const itemsByCod = new Map((currentItems ?? []).map(i => [i.codigo, i.id]))
   
   // Fornecedor mapping
-  const { data: currentFornecedores } = await supabase.from('fornecedores').select('id, nome').eq('company_id', companyId)
+  const { data: currentFornecedores } = await supabase.from('fornecedores').select('id, nome, cond_pagamento_padrao').eq('company_id', companyId)
   const fornecedoresMap = new Map((currentFornecedores ?? []).map(f => [f.nome.trim().toUpperCase(), f.id]))
+
+  // ═══════════════════════════════════════════════════════
+  // AUTO-PATCH FORNECEDORES
+  // ═══════════════════════════════════════════════════════
+  // Quick fix for existing suppliers that didn't get their payment conditions
+  const fornecedoresPatchMap = new Map<string, string>()
+  for (const c of preview.itens) {
+    const fn = String(c.rowData['Fornecedor'] ?? '').trim().toUpperCase()
+    const cond = String(findCol(c.rowData, ['Cond. Pagamento', 'Condição de Pagamento', 'Cond Pagamento', 'Pagamento', 'Cond. Pgto']) ?? '').trim()
+    if (fn && cond) fornecedoresPatchMap.set(fn, cond)
+  }
+  
+  for (const f of (currentFornecedores ?? [])) {
+    if (!f.cond_pagamento_padrao) {
+      const neededCond = fornecedoresPatchMap.get(f.nome.trim().toUpperCase())
+      if (neededCond) {
+        await supabase.from('fornecedores').update({ cond_pagamento_padrao: neededCond }).eq('id', f.id)
+        addLog({ nivel: 'info', fase: 'item', acao: 'atualizar', referencia: `Fornecedor ${f.nome}`, mensagem: `Condição de pagamento auto-corrigida via patch` })
+      }
+    }
+  }
 
   for (const change of preview.itens) {
     if (change.tipo === 'ignorar') continue
@@ -510,9 +532,11 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
       if (existingFid) {
         fornecedorId = existingFid
       } else if (fornecedorStr.length >= 2) {
+        const condPagStr = String(findCol(row, ['Cond. Pagamento', 'Condição de Pagamento', 'Cond Pagamento', 'Pagamento', 'Cond. Pgto']) ?? '') || null;
         const { data: novoF, error: fErr } = await supabase.from('fornecedores').insert({
           company_id: companyId,
           nome: fornecedorStr,
+          cond_pagamento_padrao: condPagStr
         }).select('id').single()
         if (!fErr && novoF) {
           fornecedorId = novoF.id
@@ -656,6 +680,43 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
   // ═══════════════════════════════════════════════════════
   // PHASE 3: DISTRIBUIÇÃO
   // ═══════════════════════════════════════════════════════
+  
+  // 3.0: Auto-create missing Medições parents
+  const { data: currentMedicoes } = await supabase.from('medicoes').select('numero').eq('company_id', companyId)
+  const existingMedNums = new Set((currentMedicoes ?? []).map(m => m.numero))
+  
+  const medNumsToCreate = new Map<number, string>() // numero -> data_prevista (fallback)
+  
+  for (const change of preview.distribuicoes) {
+    if (change.tipo === 'ignorar') continue
+    const row = change.rowData
+    const num = Number(row['Medição']) || change.medicao
+    if (num > 0 && !existingMedNums.has(num)) {
+      if (!medNumsToCreate.has(num)) {
+        let df = toDateISO(findCol(row, ['Data Fim']))
+        if (!df) df = new Date().toISOString().split('T')[0]
+        medNumsToCreate.set(num, df)
+      }
+    }
+  }
+
+  for (const [numero, dataPrevista] of medNumsToCreate.entries()) {
+    const { error: medError } = await supabase.from('medicoes').insert({
+      company_id: companyId,
+      numero,
+      data_prevista: dataPrevista,
+      valor_planejado: 0,
+      percentual_fisico_meta: 0,
+      status: 'futura'
+    })
+    if (medError) {
+      addLog({ nivel: 'warn', fase: 'distribuicao', acao: 'criar', referencia: `Medição ${numero}`, mensagem: `Falha ao criar medição pai: ${formatDbError(medError)}` })
+    } else {
+      existingMedNums.add(numero)
+      addLog({ nivel: 'info', fase: 'distribuicao', acao: 'criar', referencia: `Medição ${numero}`, mensagem: `Medição pai auto-criada` })
+    }
+  }
+
   const { data: currentDists } = await supabase.from('cronograma_distribuicao').select('*').eq('company_id', companyId)
   const distLookup = new Map<string, string>()
   ;(currentDists ?? []).forEach(d => {
@@ -681,12 +742,13 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
       change.campos.forEach(c => {
         const keyMap: Record<string, string> = {
           'Casas Planejadas': 'casas_planejadas',
+          'Casas Realizadas': 'casas_realizadas',
           'Data Início': 'data_inicio', 'Data Fim': 'data_fim',
           'Receita a Liberar': 'valor_liberado_faturamento',
         }
         const dbKey = keyMap[c.campo]
         if (dbKey) {
-          const numFields = ['casas_planejadas', 'valor_liberado_faturamento']
+          const numFields = ['casas_planejadas', 'casas_realizadas', 'valor_liberado_faturamento']
           if (DATE_FIELDS.has(dbKey)) {
             updates[dbKey] = toDateISO(c.novo)
           } else {

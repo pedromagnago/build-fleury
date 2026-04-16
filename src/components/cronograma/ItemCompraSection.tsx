@@ -83,6 +83,7 @@ export default function ItemCompraSection({ etapaId, items, dists, casasTotal, p
                 <th className="px-2 py-1.5 text-center font-medium">Pagamento</th>
                 <th className="px-2 py-1.5 text-right font-medium">Orçado Total</th>
                 <th className="px-2 py-1.5 text-right font-medium">Consumido</th>
+                <th className="px-2 py-1.5 text-right font-medium text-blue-600">Pago</th>
                 <th className="px-2 py-1.5 text-right font-medium">Saldo</th>
                 <th className="px-2 py-1.5 text-center font-medium">%</th>
               </tr>
@@ -229,6 +230,7 @@ function ItemRow({ item, expanded, toggle, pedidos, parcelasByPedido, consumido,
             </td>
             <td className="px-2 py-1.5 text-right font-bold text-[10px]">{formTotal > 0 ? formatCurrency(formTotal) : formatCurrency(item.valor_total_orcado)}</td>
             <td className="px-2 py-1.5 text-right text-amber-600">{formatCurrency(consumido)}</td>
+            <td className="px-2 py-1.5 text-right font-medium text-blue-500 text-[10px]">{formatCurrency(_pago)}</td>
             <td className="px-2 py-1.5 text-right">{formatCurrency(saldo)}</td>
             <td className="px-1 py-1" onClick={e => e.stopPropagation()}>
               <div className="flex gap-0.5 justify-center">
@@ -264,6 +266,7 @@ function ItemRow({ item, expanded, toggle, pedidos, parcelasByPedido, consumido,
             <td className="px-2 py-1.5 text-center text-[10px] font-mono text-muted-foreground">{item.cond_pagamento || '—'}</td>
             <td className="px-2 py-1.5 text-right font-medium">{formatCurrency(item.valor_total_orcado)}</td>
             <td className="px-2 py-1.5 text-right text-amber-600">{formatCurrency(consumido)}</td>
+            <td className="px-2 py-1.5 text-right font-medium text-blue-600">{formatCurrency(_pago)}</td>
             <td className={`px-2 py-1.5 text-right ${saldo >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{formatCurrency(saldo)}</td>
             <td className="px-2 py-1.5 text-center" onClick={e => e.stopPropagation()}>
               <div className="flex items-center gap-0.5 justify-center">

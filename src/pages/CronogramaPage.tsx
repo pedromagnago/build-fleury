@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
@@ -8,6 +8,7 @@ import { useItensCompra, usePedidos, type ItemCompra, type Pedido } from '@/hook
 import { useDistribuicao, type Distribuicao } from '@/hooks/useOperacional'
 import { useParcelas, type Parcela } from '@/hooks/useFinanceiro'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
+import { useMutuos } from '@/hooks/useMutuos'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { formatCurrency } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
@@ -92,22 +93,24 @@ export default function CronogramaPage() {
   const { data: pedidos = [] } = usePedidos()
   const { data: parcelas = [] } = useParcelas()
   const { despesas = [] } = useDespesasIndiretas()
+  const { data: mutuos = [] } = useMutuos()
   const { data: medicoes = [] } = useLocalMedicoes()
   const updateEtapa = useUpdateEtapa()
   const deleteEtapa = useDeleteEtapa()
   const navigate = useNavigate()
   const selection = useSelection()
+  const [searchParams] = useSearchParams()
 
   const [viewMode, setViewMode] = useState<FinancialViewMode>('planejado')
 
-  const [activeTab, setActiveTab] = useState<TabMode>('wbs')
+  const [activeTab, setActiveTab] = useState<TabMode>((searchParams.get('tab') as TabMode) || 'wbs')
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set())
   const [editingEtapa, setEditingEtapa] = useState<Etapa | null>(null)
   const [showModal, setShowModal] = useState(false)
 
   // Filters (for WBS / Gantt / Kanban)
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useState(searchParams.get('search') || '')
   const [statusFilters, setStatusFilters] = useState<Set<StatusKey>>(new Set(STATUSES))
   const [showFilters, setShowFilters] = useState(false)
 
@@ -181,6 +184,18 @@ export default function CronogramaPage() {
       }
     })
 
+    // Capital (mútuos)
+    let capitalCaptado = 0, capitalDevolucao = 0, capitalPago = 0
+    mutuos.forEach(m => {
+      capitalCaptado += Number(m.valor_captado || 0)
+      ;(m.parcelas ?? []).forEach((mp: any) => {
+        capitalDevolucao += Number(mp.valor || 0)
+        capitalPago += Number(mp.valor_pago || 0)
+      })
+    })
+    const capitalPendente = capitalDevolucao - capitalPago
+    const custoFinanceiro = capitalDevolucao - capitalCaptado
+
     const totalOrc = custoOrc + custoIndOrc
     const totalCon = custoCon + custoIndCon
     const saldo = totalOrc - totalCon
@@ -197,12 +212,17 @@ export default function CronogramaPage() {
       custoIndiretoConsumido: custoIndCon,
       custoPago, 
       custoIndiretoPago: custoIndPago,
+      capitalCaptado,
+      capitalDevolucao,
+      capitalPago,
+      capitalPendente,
+      custoFinanceiro,
       saldo, 
       execucaoPct: execPct, 
       margemRS, 
       margemPct 
     }
-  }, [etapas, itemsByEtapa, pedidosByItem, parcelasByPedido, despesas, parcelas])
+  }, [etapas, itemsByEtapa, pedidosByItem, parcelasByPedido, despesas, parcelas, mutuos])
 
   const activeFilterCount = (4 - statusFilters.size) + (search ? 1 : 0)
 

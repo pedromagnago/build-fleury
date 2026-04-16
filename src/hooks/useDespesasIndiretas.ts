@@ -259,6 +259,43 @@ export function useDespesasIndiretas() {
     }
   }
 
+  // Bulk update — update a set of fields for multiple IDs at once
+  const bulkUpdateFields = async (ids: string[], fields: Record<string, any>) => {
+    if (!currentCompany || ids.length === 0) return
+    const { error } = await supabase
+      .from('despesas_indiretas')
+      .update(fields)
+      .in('id', ids)
+    if (error) {
+      console.error('Bulk update error:', error)
+      toast.error('Erro ao atualizar em lote')
+      throw error
+    }
+    queryClient.invalidateQueries({ queryKey: ['despesas_indiretas', currentCompany.id] })
+    queryClient.invalidateQueries({ queryKey: ['parcelas', currentCompany.id] })
+    toast.success(`${ids.length} itens atualizados com sucesso!`)
+  }
+
+  // Bulk delete — soft-delete multiple despesas and remove their future parcelas
+  const bulkDelete = async (ids: string[]) => {
+    if (!currentCompany || ids.length === 0) return
+    // Delete future parcelas
+    await supabase.from('parcelas').delete().in('despesa_indireta_id', ids).eq('status', 'futura')
+    // Soft-delete
+    const { error } = await supabase
+      .from('despesas_indiretas')
+      .update({ deleted_at: new Date().toISOString() })
+      .in('id', ids)
+    if (error) {
+      console.error('Bulk delete error:', error)
+      toast.error('Erro ao excluir em lote')
+      throw error
+    }
+    queryClient.invalidateQueries({ queryKey: ['despesas_indiretas', currentCompany.id] })
+    queryClient.invalidateQueries({ queryKey: ['parcelas', currentCompany.id] })
+    toast.success(`${ids.length} itens excluídos com sucesso!`)
+  }
+
   return {
     despesas,
     isLoading,
@@ -268,5 +305,7 @@ export function useDespesasIndiretas() {
     isUpdating: updateMutation.isPending,
     deleteDespesa: deleteMutation.mutateAsync,
     isDeleting: deleteMutation.isPending,
+    bulkUpdateFields,
+    bulkDelete,
   }
 }

@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/ui/PageHeader'
 import {
   useParcelas, useCreateParcela, useDeleteParcela,
@@ -11,6 +12,7 @@ import { useProject } from '@/contexts/ProjectContext'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
+import { useMutuos, useUpdateMutuoParcela } from '@/hooks/useMutuos'
 import { toast } from 'sonner'
 import { useDropzone } from 'react-dropzone'
 import BulkActionBar from '@/components/BulkActionBar'
@@ -45,9 +47,10 @@ type Tab = 'parcelas' | 'agenda' | 'por_fornecedor' | 'contas'
 // ---------------------------------------------------------------------------
 export default function PagamentosPage() {
   const { restartTour } = useTour('pagamentos', pageTours.pagamentos)
+  const [searchParams] = useSearchParams()
 
-  const [tab, setTab] = useState<Tab>('parcelas')
-  const [search, setSearch] = useState('')
+  const [tab, setTab] = useState<Tab>((searchParams.get('tab') as Tab) || 'parcelas')
+  const [search, setSearch] = useState(searchParams.get('search') || '')
 
   const TABS: Array<{ key: Tab; label: string; icon: typeof Clock }> = [
     { key: 'parcelas', label: 'Parcelas', icon: CalendarClock },
@@ -106,6 +109,8 @@ function ParcelasTab({ search }: { search: string }) {
   const [payingParcela, setPayingParcela] = useState<Parcela | null>(null)
   const selection = useSelection()
   const { data: fornecedores = [] } = useFornecedores()
+  const { data: mutuos = [] } = useMutuos()
+  const updateMutuoParcela = useUpdateMutuoParcela()
 
   // Build fornecedor lookup map for bulk actions
   const fornecedorMap = useMemo(() => {
@@ -148,7 +153,48 @@ function ParcelasTab({ search }: { search: string }) {
     p.status.includes(search.toLowerCase())
   )
 
-  const totals = filtered.reduce(
+  // Merge mutuo parcelas into the list
+  const mutuoParcelas = useMemo(() => {
+    const result: Array<Parcela & { _source: 'mutuo'; _mutuoNome: string }> = []
+    mutuos.forEach(m => {
+      ;(m.parcelas ?? []).forEach((mp: any) => {
+        result.push({
+          id: mp.id,
+          company_id: mp.company_id,
+          pedido_id: null,
+          despesa_indireta_id: null,
+          numero_parcela: mp.numero_parcela,
+          valor: Number(mp.valor),
+          valor_pago: Number(mp.valor_pago || 0),
+          data_vencimento: mp.data_vencimento,
+          data_pagamento_real: mp.data_pagamento_real ?? null,
+          status: mp.status,
+          forma_pagamento: null,
+          comprovante_path: null,
+          pedido_item: null,
+          descricao: `${m.nome} (${m.tipo})`,
+          observacoes: null,
+          _source: 'mutuo' as const,
+          _mutuoNome: m.nome,
+        } as any)
+      })
+    })
+    if (search) {
+      const q = search.toLowerCase()
+      return result.filter(p => p.descricao?.toLowerCase().includes(q) || p._mutuoNome.toLowerCase().includes(q))
+    }
+    return result
+  }, [mutuos, search])
+
+  const allFiltered = useMemo(() => {
+    const combined = [
+      ...filtered.map(p => ({ ...p, _source: 'pedido' as const, _mutuoNome: '' })),
+      ...mutuoParcelas,
+    ]
+    return combined.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
+  }, [filtered, mutuoParcelas])
+
+  const totals = allFiltered.reduce(
     (acc, p) => ({
       total: acc.total + p.valor,
       pago: acc.pago + p.valor_pago,
@@ -163,7 +209,7 @@ function ParcelasTab({ search }: { search: string }) {
         <MiniCard label="Total Parcelas" value={formatCurrency(totals.total)} />
         <MiniCard label="Pago" value={formatCurrency(totals.pago)} accent="emerald" />
         <MiniCard label="Pendente" value={formatCurrency(totals.pendente)} accent="amber" />
-        <MiniCard label="Qtd." value={String(filtered.length)} />
+        <MiniCard label="Qtd." value={`${filtered.length} + ${mutuoParcelas.length} mút.`} />
       </div>
 
       <div className="mb-4 flex items-center gap-2 flex-wrap">
@@ -211,8 +257,8 @@ function ParcelasTab({ search }: { search: string }) {
               <tr>
                 <th className="px-2 py-2.5 text-center">
                   <input type="checkbox"
-                    checked={selection.count === filtered.length && filtered.length > 0}
-                    onChange={() => selection.toggleAll(filtered.map(p => p.id))}
+                    checked={selection.count === allFiltered.length && allFiltered.length > 0}
+                    onChange={() => selection.toggleAll(allFiltered.map(p => p.id))}
                     className="h-3.5 w-3.5 rounded accent-primary" />
                 </th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item</th>
@@ -226,8 +272,9 @@ function ParcelasTab({ search }: { search: string }) {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {filtered.map((p) => {
+              {allFiltered.map((p) => {
                 const cfg = statusConfig[p.status] ?? statusConfig['futura']!
+                const isMutuo = (p as any)._source === 'mutuo'
                 return (
                   <tr key={p.id} className="group hover:bg-muted/20">
                     <td className="px-2 py-2.5 text-center">
@@ -235,7 +282,12 @@ function ParcelasTab({ search }: { search: string }) {
                         onChange={() => selection.toggle(p.id)}
                         className="h-3.5 w-3.5 rounded accent-primary" />
                     </td>
-                    <td className="px-3 py-2.5 text-xs font-medium">{p.pedido_item ?? p.descricao ?? 'Avulsa'}</td>
+                    <td className="px-3 py-2.5 text-xs font-medium">
+                      <div className="flex items-center gap-1.5">
+                        {isMutuo && <span className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[8px] font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">MÚTUO</span>}
+                        {p.pedido_item ?? p.descricao ?? 'Avulsa'}
+                      </div>
+                    </td>
                     <td className="px-3 py-2.5 text-center text-xs text-muted-foreground">{p.numero_parcela}</td>
                     <td className="px-3 py-2.5 text-right text-xs font-medium">{formatCurrency(p.valor)}</td>
                     <td className="px-3 py-2.5 text-center text-xs">{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</td>
@@ -246,19 +298,32 @@ function ParcelasTab({ search }: { search: string }) {
                       </span>
                     </td>
                     <td className="px-3 py-2.5 text-center">
-                      {p.comprovante_path && (
+                      {!isMutuo && p.comprovante_path && (
                         <button onClick={() => window.open(supabase.storage.from('comprovantes').getPublicUrl(p.comprovante_path!).data.publicUrl)} title="Ver comprovante" className="text-muted-foreground hover:text-primary">
                           <Paperclip className="h-3.5 w-3.5" />
                         </button>
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-center flex items-center justify-center gap-1">
-                      {p.status !== 'paga' && (
+                      {p.status !== 'paga' && !isMutuo && (
                         <button onClick={() => setPayingParcela(p)} className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20 transition-colors">
                           Pagar
                         </button>
                       )}
-                      {p.status !== 'paga' && (
+                      {p.status !== 'paga' && isMutuo && (
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Confirmar baixa de ${formatCurrency(p.valor)}?`)) {
+                              updateMutuoParcela.mutate({ id: p.id, status: 'paga', valor_pago: p.valor, data_pagamento_real: new Date().toISOString().split('T')[0] })
+                            }
+                          }}
+                          disabled={updateMutuoParcela.isPending}
+                          className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                        >
+                          Baixar
+                        </button>
+                      )}
+                      {p.status !== 'paga' && !isMutuo && (
                         <button onClick={() => { if (window.confirm('Excluir parcela?')) deleteParcela.mutate(p.id) }} className="rounded-md p-1 text-red-500 hover:bg-red-500/10 transition-colors text-[10px]" title="Excluir">
                           <Trash2 className="h-3 w-3" />
                         </button>
@@ -322,6 +387,7 @@ function PaymentModal({
     valor_pago: String(parcela.valor - parcela.valor_pago),
     forma_pagamento: 'PIX',
     conta_bancaria_id: contas.find((c) => c.ativa)?.id ?? '',
+    observacoes: '',
   })
   const [file, setFile] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
@@ -359,6 +425,7 @@ function PaymentModal({
           conta_bancaria_id: form.conta_bancaria_id || null,
           status: (parcela.valor_pago + valorPago) >= parcela.valor ? 'paga' : 'parcialmente_paga',
           ...(comprovantePath ? { comprovante_path: comprovantePath } : {}),
+          ...(form.observacoes ? { observacoes: form.observacoes } : {}),
         })
         .eq('id', parcela.id)
       if (e1) throw e1
@@ -405,7 +472,7 @@ function PaymentModal({
           data: form.data_pagamento,
           descricao: descLabel,
           valor: valorPago,
-          tipo: 'debito',
+          tipo: 'saida',
           parcela_id: parcela.id,
         })
       }
@@ -489,6 +556,18 @@ function PaymentModal({
                 <span className="text-muted-foreground">Arraste PDF/JPG/PNG ou clique</span>
               )}
             </div>
+          </div>
+
+          {/* Observação — Fix #08 */}
+          <div>
+            <label className={LABEL}>Observação</label>
+            <textarea
+              value={form.observacoes}
+              onChange={(e) => setForm((p) => ({ ...p, observacoes: e.target.value }))}
+              rows={2}
+              className={`${INPUT} resize-none`}
+              placeholder="Notas sobre o pagamento (opcional)"
+            />
           </div>
         </div>
 
@@ -895,7 +974,7 @@ function BatchPaymentModal({
             data: form.data_pagamento,
             descricao: desc,
             valor: valorPago,
-            tipo: 'debito',
+            tipo: 'saida',
             parcela_id: parc.id,
           })
         }

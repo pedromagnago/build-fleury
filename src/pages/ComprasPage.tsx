@@ -2,6 +2,8 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { ConferenciaPedidos } from '@/components/compras/ConferenciaPedidos'
+import { usePedidosConformidade } from '@/hooks/usePedidos'
 import {
   useItensCompra, useFornecedores, useCreateItemCompra, useUpdateItemCompra, useDeleteItemCompra,
   useCreateFornecedor, usePedidos, useCreatePedidoLote, useUpdatePedido, useDeletePedido,
@@ -55,7 +57,7 @@ function toBRLInput(v: number | string): string {
 // Main
 // ---------------------------------------------------------------------------
 
-type Tab = 'itens' | 'pedidos' | 'fornecedores' | 'curva_abc' | 'por_fornecedor' | 'conferencia'
+type Tab = 'itens' | 'pedidos' | 'fornecedores' | 'curva_abc' | 'por_fornecedor' | 'conferencia' | 'conf_cronograma'
 
 export default function Compras() {
   const { restartTour } = useTour('compras', pageTours.compras)
@@ -66,13 +68,20 @@ export default function Compras() {
   const [search, setSearch] = useState('')
   const [showWizard, setShowWizard] = useState(false)
 
-  const TABS: Array<{ key: Tab; label: string; icon: typeof Package }> = [
-    { key: 'itens', label: 'Itens', icon: Package },
-    { key: 'pedidos', label: 'Pedidos', icon: Truck },
-    { key: 'conferencia', label: 'Conferência', icon: BarChart3 },
-    { key: 'fornecedores', label: 'Fornecedores', icon: Users },
-    { key: 'curva_abc', label: 'Curva ABC', icon: BarChart3 },
-    { key: 'por_fornecedor', label: 'Por Fornecedor', icon: Users },
+  // Badge "em risco" para a aba de conferência de cronograma
+  const { data: conformidade = [] } = usePedidosConformidade()
+  const atRiskCount = conformidade.filter(
+    i => i.status_conformidade === 'risco' || i.status_conformidade === 'critico'
+  ).length
+
+  const TABS: Array<{ key: Tab; label: string; icon: typeof Package; badge?: number }> = [
+    { key: 'itens',            label: 'Itens',                  icon: Package },
+    { key: 'pedidos',          label: 'Pedidos',                icon: Truck },
+    { key: 'conferencia',      label: 'Conferência',            icon: BarChart3 },
+    { key: 'conf_cronograma',  label: 'Conf. Cronograma',       icon: CalendarClock, badge: atRiskCount || undefined },
+    { key: 'fornecedores',     label: 'Fornecedores',           icon: Users },
+    { key: 'curva_abc',        label: 'Curva ABC',              icon: BarChart3 },
+    { key: 'por_fornecedor',   label: 'Por Fornecedor',         icon: Users },
   ]
 
   return (
@@ -95,7 +104,7 @@ export default function Compras() {
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors ${
+            className={`relative flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors ${
               tab === t.key
                 ? 'bg-primary text-primary-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground'
@@ -103,12 +112,17 @@ export default function Compras() {
           >
             <t.icon className="h-3.5 w-3.5" />
             {t.label}
+            {t.badge != null && t.badge > 0 && (
+              <span className="ml-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[9px] font-bold leading-none text-white">
+                {t.badge}
+              </span>
+            )}
           </button>
         ))}
       </div>
 
       {/* Search (not for charts) */}
-      {(tab === 'itens' || tab === 'pedidos' || tab === 'fornecedores' || tab === 'conferencia') && (
+      {(tab === 'itens' || tab === 'pedidos' || tab === 'fornecedores' || tab === 'conferencia' || tab === 'conf_cronograma') && (
         <div className="mb-4 flex gap-3">
           <div id="tour-compras-filters" className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -123,12 +137,13 @@ export default function Compras() {
         </div>
       )}
 
-      {tab === 'itens' && <ItensTab search={search} filterEtapa={initialEtapa} />}
-      {tab === 'pedidos' && <PedidosTab search={search} />}
-      {tab === 'conferencia' && <ConferenciaWBSTab search={search} />}
-      {tab === 'fornecedores' && <FornecedoresTab search={search} />}
-      {tab === 'curva_abc' && <CurvaABCTab />}
-      {tab === 'por_fornecedor' && <PorFornecedorTab />}
+      {tab === 'itens'           && <ItensTab search={search} filterEtapa={initialEtapa} />}
+      {tab === 'pedidos'         && <PedidosTab search={search} />}
+      {tab === 'conferencia'     && <ConferenciaWBSTab search={search} />}
+      {tab === 'conf_cronograma' && <ConferenciaPedidos search={search} />}
+      {tab === 'fornecedores'    && <FornecedoresTab search={search} />}
+      {tab === 'curva_abc'       && <CurvaABCTab />}
+      {tab === 'por_fornecedor'  && <PorFornecedorTab />}
     </div>
   )
 }
@@ -249,6 +264,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
         <MiniCard label="Itens" value={String(filtered.length)} />
         <MiniCard label="Orçado" value={formatCurrency(totals.orcado)} />
         <MiniCard label="Consumido" value={formatCurrency(totals.consumido)} accent="amber" />
+        <MiniCard label="% Consumido" value={`${totals.orcado > 0 ? ((totals.consumido / totals.orcado) * 100).toFixed(0) : 0}%`} accent="amber" />
         <MiniCard label="Pago" value={formatCurrency(totals.pago)} accent="blue" />
         <MiniCard label="Saldo" value={formatCurrency(totals.orcado - totals.consumido)} accent={totals.orcado - totals.consumido >= 0 ? 'emerald' : 'red'} />
       </div>
@@ -307,6 +323,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fornecedor</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orçado</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Consumido</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">% Consum.</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pago</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Saldo</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ações</th>
@@ -348,6 +365,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                   </td>
                   <td className="px-3 py-2.5 text-right text-xs">{formatCurrency(item.valor_total_orcado)}</td>
                   <td className="px-3 py-2.5 text-right text-xs text-amber-500">{formatCurrency(itemConsumido)}</td>
+                  <td className="px-3 py-2.5 text-right text-xs text-amber-500 font-mono text-[10px]">{item.valor_total_orcado > 0 ? ((itemConsumido / item.valor_total_orcado) * 100).toFixed(0) : 0}%</td>
                   <td className="px-3 py-2.5 text-right text-xs text-blue-500 font-medium">{formatCurrency(itemPago)}</td>
                   <td className={`px-3 py-2.5 text-right text-xs font-medium ${saldoReal >= 0 ? '' : 'text-red-500'}`}>{formatCurrency(saldoReal)}</td>
                   <td className="px-3 py-2.5 text-center">
@@ -483,8 +501,8 @@ function PedidosTab({ search }: { search: string }) {
       const casasLote = parseFloat(li.casas_lote?.replace(',', '.') || '0') || 0
       const qtdPorCasa = selectedItem?.qtd_por_casa ?? 0
       const precoUnit = parseBRL(li.valor_unitario_real)
-      const qtdLoteCalc = casasLote * qtdPorCasa
-      const valorTotalCalc = qtdLoteCalc * precoUnit
+      const qtdLoteCalc = Math.round(casasLote * qtdPorCasa * 100) / 100
+      const valorTotalCalc = Math.round(qtdLoteCalc * precoUnit * 100) / 100
 
       let used = 0
       if (selectedItem) {
@@ -738,25 +756,32 @@ function PedidosTab({ search }: { search: string }) {
         finalCond = 'à vista'
       }
 
-      let finalDate = globalForm.data_entrega_prevista || null
-      if (!finalDate) {
-        const d30 = new Date()
-        d30.setDate(d30.getDate() + 30)
-        finalDate = d30.toISOString().split('T')[0]!
-      }
-
-      const payloads = validItems.map(li => ({
-        item_compra_id: li.item_compra_id,
-
-        casas_lote: li.casasLote || null,
-        qtd_lote: li.qtdLoteCalc || null,
-        valor_unitario_real: li.precoUnit || null,
-        valor_total_real: li.valorTotalCalc || null,
-        fornecedor_id: globalForm.fornecedor_id || null,
-        cond_pagamento: finalCond,
-        data_entrega_prevista: finalDate,
-        status: globalForm.status,
-      }))
+      const payloads = validItems.map(li => {
+        let finalDate = globalForm.data_entrega_prevista || null
+        if (!finalDate) {
+          const itemObj = itens.find(i => i.id === li.item_compra_id)
+          const etapaObj = etapas.find(e => e.id === itemObj?.etapa_id)
+          if (etapaObj?.data_inicio_plan) {
+            finalDate = etapaObj.data_inicio_plan
+          } else {
+            const d30 = new Date()
+            d30.setDate(d30.getDate() + 30)
+            finalDate = d30.toISOString().split('T')[0]!
+          }
+        }
+        
+        return {
+          item_compra_id: li.item_compra_id,
+          casas_lote: li.casasLote || null,
+          qtd_lote: li.qtdLoteCalc || null,
+          valor_unitario_real: li.precoUnit || null,
+          valor_total_real: li.valorTotalCalc || null,
+          fornecedor_id: globalForm.fornecedor_id || null,
+          cond_pagamento: finalCond,
+          data_entrega_prevista: finalDate,
+          status: globalForm.status,
+        }
+      })
 
       const createdPedidos = await createPedidoLote.mutateAsync(payloads)
 
@@ -859,7 +884,21 @@ function PedidosTab({ search }: { search: string }) {
     })
   }, [filtered])
 
-  const totals = filtered.reduce((acc, p) => ({ valor: acc.valor + (p.valor_total_real ?? 0), casas: acc.casas + (p.casas_lote ?? 0) }), { valor: 0, casas: 0 })
+  const totals = useMemo(() => {
+    const valor = filtered.reduce((acc, p) => acc + (p.valor_total_real ?? 0), 0)
+    // Fix #03: casas cobertas = max(casas_lote) por item, limitado ao total do projeto
+    const qtdCasasProjeto = currentCompany?.qtd_casas ?? 64
+    const casasPorItem = new Map<string, number>()
+    filtered.forEach(p => {
+      const cur = casasPorItem.get(p.item_compra_id) ?? 0
+      casasPorItem.set(p.item_compra_id, Math.min(cur + (p.casas_lote ?? 0), qtdCasasProjeto))
+    })
+    // Média ponderada de cobertura: quantos itens únicos e até quantas casas cada
+    const maxCasas = casasPorItem.size > 0
+      ? Math.max(...Array.from(casasPorItem.values()))
+      : 0
+    return { valor, casas: Math.min(maxCasas, qtdCasasProjeto) }
+  }, [filtered, currentCompany])
 
   // #18: Cascade grouping: Etapa → Item → Pedidos
   const cascadeGrouped = useMemo(() => {
@@ -1503,22 +1542,30 @@ function ConferenciaWBSTab({ search }: { search: string }) {
   const { data: itens = [], isLoading } = useItensCompra()
   const { data: pedidos = [] } = usePedidos()
   const { data: etapas = [] } = useEtapas()
+  const { data: parcelas = [] } = useParcelas()
   const [expandedEtapas, setExpandedEtapas] = useState<Record<string, boolean>>({})
 
   const toggleEtapa = (id: string) => setExpandedEtapas(p => ({ ...p, [id]: !p[id] }))
 
   const data = useMemo(() => {
-    // Build pedido spend per item
-    const pedidoPorItem = new Map<string, { totalPedido: number; qtdPedidos: number }>()
+    // Build pedido and pago spend per item
+    const statsPorItem = new Map<string, { totalPedido: number; qtdPedidos: number; totalPago: number }>()
     pedidos.forEach(p => {
-      const prev = pedidoPorItem.get(p.item_compra_id) || { totalPedido: 0, qtdPedidos: 0 }
+      const prev = statsPorItem.get(p.item_compra_id) || { totalPedido: 0, qtdPedidos: 0, totalPago: 0 }
       prev.totalPedido += Number(p.valor_total_real || 0)
       prev.qtdPedidos += 1
-      pedidoPorItem.set(p.item_compra_id, prev)
+      statsPorItem.set(p.item_compra_id, prev)
+    })
+
+    parcelas.forEach(p => {
+      if (!p.item_compra_id || p.status !== 'paga') return
+      const prev = statsPorItem.get(p.item_compra_id) || { totalPedido: 0, qtdPedidos: 0, totalPago: 0 }
+      prev.totalPago += Number(p.valor_pago || 0)
+      statsPorItem.set(p.item_compra_id, prev)
     })
 
     // Group by etapa
-    const etapaMap = new Map<string, { etapa: typeof etapas[0]; items: Array<typeof itens[0] & { totalPedido: number; qtdPedidos: number; saldo: number; pctUsado: number }> }>()
+    const etapaMap = new Map<string, { etapa: typeof etapas[0]; items: Array<typeof itens[0] & { totalPedido: number; qtdPedidos: number; totalPago: number; saldo: number; pctUsado: number }> }>()
 
     itens.forEach(item => {
       const s = search.toLowerCase()
@@ -1528,7 +1575,7 @@ function ConferenciaWBSTab({ search }: { search: string }) {
       if (!etapa) return
 
       if (!etapaMap.has(etapa.id)) etapaMap.set(etapa.id, { etapa, items: [] })
-      const ped = pedidoPorItem.get(item.id) || { totalPedido: 0, qtdPedidos: 0 }
+      const ped = statsPorItem.get(item.id) || { totalPedido: 0, qtdPedidos: 0, totalPago: 0 }
       const saldo = item.valor_total_orcado - ped.totalPedido
       const pctUsado = item.valor_total_orcado > 0 ? (ped.totalPedido / item.valor_total_orcado) * 100 : 0
 
@@ -1546,9 +1593,9 @@ function ConferenciaWBSTab({ search }: { search: string }) {
 
   // Totals
   const totals = useMemo(() => {
-    let orcado = 0, pedido = 0, saldo = 0
-    data.forEach(g => g.items.forEach(i => { orcado += i.valor_total_orcado; pedido += i.totalPedido; saldo += i.saldo }))
-    return { orcado, pedido, saldo }
+    let orcado = 0, pedido = 0, saldo = 0, pago = 0
+    data.forEach(g => g.items.forEach(i => { orcado += i.valor_total_orcado; pedido += i.totalPedido; saldo += i.saldo; pago += i.totalPago }))
+    return { orcado, pedido, saldo, pago }
   }, [data])
 
   if (isLoading) return <Spinner />
@@ -1556,10 +1603,11 @@ function ConferenciaWBSTab({ search }: { search: string }) {
   return (
     <>
       {/* Summary cards */}
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
         <MiniCard label="Itens WBS" value={String(itens.length)} />
         <MiniCard label="Orçado Total" value={formatCurrency(totals.orcado)} />
         <MiniCard label="Pedido Total" value={formatCurrency(totals.pedido)} accent="amber" />
+        <MiniCard label="Total Pago" value={formatCurrency(totals.pago)} accent="blue" />
         <MiniCard label="Saldo Disponível" value={formatCurrency(totals.saldo)} accent={totals.saldo >= 0 ? 'emerald' : 'red'} />
       </div>
 
@@ -1568,6 +1616,7 @@ function ConferenciaWBSTab({ search }: { search: string }) {
           {data.map(group => {
             const etTotal = group.items.reduce((s, i) => s + i.valor_total_orcado, 0)
             const etPedido = group.items.reduce((s, i) => s + i.totalPedido, 0)
+            const etPago = group.items.reduce((s, i) => s + i.totalPago, 0)
             const etSaldo = etTotal - etPedido
             const hasFuro = group.items.some(i => i.saldo < 0)
 
@@ -1606,6 +1655,10 @@ function ConferenciaWBSTab({ search }: { search: string }) {
                       <p className="font-medium text-amber-600">{formatCurrency(etPedido)}</p>
                     </div>
                     <div className="text-right">
+                      <p className="text-[9px] text-muted-foreground uppercase">Pago</p>
+                      <p className="font-medium text-blue-600">{formatCurrency(etPago)}</p>
+                    </div>
+                    <div className="text-right">
                       <p className="text-[9px] text-muted-foreground uppercase">Saldo</p>
                       <p className={`font-bold ${etSaldo < 0 ? 'text-red-600' : 'text-emerald-600'}`}>{formatCurrency(etSaldo)}</p>
                     </div>
@@ -1622,6 +1675,7 @@ function ConferenciaWBSTab({ search }: { search: string }) {
                           <th className="py-1.5 text-center">Pedidos</th>
                           <th className="py-1.5 text-right">Orçado</th>
                           <th className="py-1.5 text-right">Pedido</th>
+                          <th className="py-1.5 text-right">Pago</th>
                           <th className="py-1.5 text-right">Saldo</th>
                           <th className="py-1.5 text-right">Uso</th>
                         </tr>
@@ -1634,6 +1688,7 @@ function ConferenciaWBSTab({ search }: { search: string }) {
                             <td className="py-1.5 text-center font-mono">{item.qtdPedidos || '—'}</td>
                             <td className="py-1.5 text-right">{formatCurrency(item.valor_total_orcado)}</td>
                             <td className="py-1.5 text-right text-amber-600">{item.totalPedido > 0 ? formatCurrency(item.totalPedido) : '—'}</td>
+                            <td className="py-1.5 text-right text-blue-600">{item.totalPago > 0 ? formatCurrency(item.totalPago) : '—'}</td>
                             <td className={`py-1.5 text-right font-bold ${item.saldo < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                               {formatCurrency(item.saldo)}
                             </td>

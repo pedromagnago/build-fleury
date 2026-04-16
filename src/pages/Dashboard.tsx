@@ -75,9 +75,9 @@ export default function Dashboard() {
       <div id="tour-kpi-cards" className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard label="Orçamento Total" value={formatCurrency(kpis.totalOrcado)} icon={Target} accent="blue" />
         <KpiCard label="Total Consumido" value={formatCurrency(kpis.totalConsumido)} icon={PiggyBank} accent="amber" sub={formatPercent(kpis.percentualConsumido)} />
+        <KpiCard label="Total Pago" value={formatCurrency(kpis.totalPago)} icon={CheckCircle2} accent="emerald" sub={formatPercent(kpis.percentualPago)} />
         <KpiCard label="Saldo Disponível" value={formatCurrency(kpis.saldoOrcamento)} icon={kpis.saldoOrcamento >= 0 ? TrendingUp : TrendingDown} accent={kpis.saldoOrcamento >= 0 ? 'emerald' : 'red'} />
         <KpiCard label="Cobertura Pedidos" value={`${kpis.coberturaPercent.toFixed(0)}%`} icon={ShieldCheck} accent={kpis.coberturaPercent >= 80 ? 'emerald' : kpis.coberturaPercent >= 50 ? 'amber' : 'red'} sub={`${formatCurrency(kpis.comPedido)} de ${formatCurrency(kpis.totalOrcado)}`} />
-        <KpiCard label="% Execução" value={formatPercent(kpis.percentualConsumido)} icon={BarChart3} accent="primary" />
       </div>
 
       {/* ROW 3: Fluxo de Caixa (2/3) + Maturidade Donut (1/3) */}

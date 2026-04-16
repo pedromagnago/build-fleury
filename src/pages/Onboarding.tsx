@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProject } from '@/contexts/ProjectContext'
 import { HardHat, Building2, MapPin, Home, Calendar, DollarSign, ArrowRight } from 'lucide-react'
@@ -14,12 +14,8 @@ export default function Onboarding() {
   const navigate = useNavigate()
   const [submitting, setSubmitting] = useState(false)
 
-  // If user already has companies, skip onboarding
-  useEffect(() => {
-    if (!loading && companies.length > 0) {
-      navigate('/dashboard', { replace: true })
-    }
-  }, [loading, companies, navigate])
+  // Redirecionamento removido para que o usuário possa criar múltiplas empresas.
+  // if (loading) and companies.length check is handled in the UI gracefully.
 
   const [form, setForm] = useState({
     razao_social: '',
