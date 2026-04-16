@@ -14,7 +14,6 @@ import {
   useTabelaConformidade,
   useAtualizarPedidoConformidade,
   type LinhaTabela,
-  type TabelaConformidade,
 } from '@/hooks/usePedidos'
 import { gerarParcelas, localDate, parsearCondicao } from '@/lib/parcelas'
 
