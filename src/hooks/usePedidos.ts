@@ -96,6 +96,40 @@ type EtapaRow = {
   id: string
   nome: string
   codigo: string
+  ordem: number
+}
+
+// ─── Tipos para visão tabela (planilha) ───────────────────────────────────────
+
+export type CellStatus = 'ok' | 'risco' | 'critico' | 'sem_pedido'
+
+export interface CelulaConformidade {
+  dias_folga: number | null
+  status: CellStatus
+  data_inicio: string
+}
+
+export interface LinhaTabela {
+  etapa_id: string
+  etapa_nome: string
+  etapa_codigo: string
+  etapa_ordem: number
+  item_id: string
+  item_descricao: string
+  item_codigo: string | null
+  pedido_id: string | null
+  numero_pedido: number | null
+  fornecedor_nome: string
+  condicao_pagamento: string
+  valor_total: number
+  data_entrega_prevista: string | null
+  por_medicao: { [medicao: number]: CelulaConformidade }
+  parcelas: ParcelaConformidade[]
+}
+
+export interface TabelaConformidade {
+  colunas: Array<{ numero: number; data_inicio: string; data_fim: string | null; dias_ate_inicio: number }>
+  linhas: LinhaTabela[]
 }
 
 // ─── Tipos para visão agrupada por Medição ────────────────────────────────────
@@ -352,6 +386,7 @@ export function useAtualizarPedidoConformidade() {
       toast.success(`Pedido atualizado · ${qtd} parcela(s) recalculada(s)`)
       qc.invalidateQueries({ queryKey: ['pedidos_conformidade'] })
       qc.invalidateQueries({ queryKey: ['medicoes_conformidade'] })
+      qc.invalidateQueries({ queryKey: ['tabela_conformidade'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['pedidos'] })
     },
@@ -563,6 +598,204 @@ export function useMedicoesConformidade() {
 
       result.sort((a, b) => a.medicao_numero - b.medicao_numero)
       return result
+    },
+  })
+}
+
+// ─── useTabelaConformidade ────────────────────────────────────────────────────
+
+export function useTabelaConformidade() {
+  const { currentCompany } = useProject()
+  const cid = currentCompany?.id
+
+  return useQuery({
+    queryKey: ['tabela_conformidade', cid],
+    staleTime: 60_000,
+    enabled: !!cid,
+    queryFn: async (): Promise<TabelaConformidade> => {
+      if (!cid) return { colunas: [], linhas: [] }
+
+      const [pedRes, itemRes, distRes, fornRes, etapaRes, parcRes] = await Promise.all([
+        supabase
+          .from('pedidos')
+          .select('id, item_compra_id, fornecedor_id, cond_pagamento, data_entrega_prevista, valor_total_real, numero_pedido')
+          .eq('company_id', cid),
+
+        supabase
+          .from('itens_compra')
+          .select('id, etapa_id, descricao, codigo')
+          .eq('company_id', cid)
+          .is('deleted_at', null),
+
+        supabase
+          .from('cronograma_distribuicao')
+          .select('etapa_id, medicao_numero, data_inicio, data_fim')
+          .eq('company_id', cid)
+          .not('data_inicio', 'is', null),
+
+        supabase
+          .from('fornecedores')
+          .select('id, nome, cond_pagamento_padrao')
+          .eq('company_id', cid),
+
+        supabase
+          .from('etapas')
+          .select('id, nome, codigo, ordem')
+          .eq('company_id', cid),
+
+        supabase
+          .from('parcelas')
+          .select('id, pedido_id, valor, data_vencimento, status, valor_pago')
+          .eq('company_id', cid)
+          .is('deleted_at', null),
+      ])
+
+      if (pedRes.error)   throw pedRes.error
+      if (itemRes.error)  throw itemRes.error
+      if (distRes.error)  throw distRes.error
+      if (fornRes.error)  throw fornRes.error
+      if (etapaRes.error) throw etapaRes.error
+      if (parcRes.error)  throw parcRes.error
+
+      const pedidos = (pedRes.data  ?? []) as PedidoRow[]
+      const itens   = (itemRes.data ?? []) as ItemRow[]
+      const dists   = (distRes.data ?? []) as DistribuicaoRow[]
+      const forns   = (fornRes.data ?? []) as FornecedorRow[]
+      const etapas  = (etapaRes.data ?? []) as EtapaRow[]
+      const parcs   = (parcRes.data ?? []) as ParcelaRow[]
+
+      // Lookup maps
+      const fornMap  = new Map(forns.map(f  => [f.id, f]))
+      const etapaMap = new Map(etapas.map(e => [e.id, e]))
+
+      // item_id → PedidoRow[]
+      const itemPedidosMap = new Map<string, PedidoRow[]>()
+      for (const ped of pedidos) {
+        const list = itemPedidosMap.get(ped.item_compra_id) ?? []
+        list.push(ped)
+        itemPedidosMap.set(ped.item_compra_id, list)
+      }
+
+      // pedido_id → ParcelaConformidade[]
+      const parcMap = new Map<string, ParcelaConformidade[]>()
+      for (const p of parcs) {
+        if (!p.pedido_id) continue
+        const list = parcMap.get(p.pedido_id) ?? []
+        list.push({ id: p.id, data_vencimento: p.data_vencimento, valor: Number(p.valor), status: p.status, valor_pago: Number(p.valor_pago) })
+        parcMap.set(p.pedido_id, list)
+      }
+
+      // etapa_id → Map<medicao_numero, { data_inicio, data_fim }>
+      type MedInfo2 = { data_inicio: string; data_fim: string | null }
+      const etapaMedMap = new Map<string, Map<number, MedInfo2>>()
+      const globalMedMap = new Map<number, MedInfo2>()
+      for (const dist of dists) {
+        // etapa level
+        if (!etapaMedMap.has(dist.etapa_id)) etapaMedMap.set(dist.etapa_id, new Map())
+        etapaMedMap.get(dist.etapa_id)!.set(dist.medicao_numero, {
+          data_inicio: dist.data_inicio,
+          data_fim: dist.data_fim ?? null,
+        })
+        // global (for columns)
+        const ex = globalMedMap.get(dist.medicao_numero)
+        if (!ex) {
+          globalMedMap.set(dist.medicao_numero, { data_inicio: dist.data_inicio, data_fim: dist.data_fim ?? null })
+        } else {
+          if (dist.data_inicio < ex.data_inicio) ex.data_inicio = dist.data_inicio
+          if (dist.data_fim && (!ex.data_fim || dist.data_fim > ex.data_fim)) ex.data_fim = dist.data_fim
+        }
+      }
+
+      // Build columns
+      const nd = new Date()
+      const todayISO2 = `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, '0')}-${String(nd.getDate()).padStart(2, '0')}`
+
+      const colunas = Array.from(globalMedMap.entries())
+        .map(([numero, info]) => ({
+          numero,
+          data_inicio:     info.data_inicio,
+          data_fim:        info.data_fim,
+          dias_ate_inicio: Math.round((localDate(info.data_inicio).getTime() - localDate(todayISO2).getTime()) / 86_400_000),
+        }))
+        .sort((a, b) => a.numero - b.numero)
+
+      // Build rows
+      const linhas: LinhaTabela[] = []
+
+      for (const item of itens) {
+        const etapa = etapaMap.get(item.etapa_id)
+        if (!etapa) continue
+
+        const etapaMeds = etapaMedMap.get(item.etapa_id)
+        if (!etapaMeds || etapaMeds.size === 0) continue // item sem medição → não aparece
+
+        const itemPedidos = itemPedidosMap.get(item.id) ?? []
+
+        if (itemPedidos.length === 0) {
+          // Sem pedido — uma linha de aviso
+          const por_medicao: LinhaTabela['por_medicao'] = {}
+          for (const [medNum, medInfo] of etapaMeds) {
+            por_medicao[medNum] = { dias_folga: null, status: 'sem_pedido', data_inicio: medInfo.data_inicio }
+          }
+          linhas.push({
+            etapa_id:              item.etapa_id,
+            etapa_nome:            etapa.nome,
+            etapa_codigo:          etapa.codigo,
+            etapa_ordem:           etapa.ordem,
+            item_id:               item.id,
+            item_descricao:        item.descricao,
+            item_codigo:           item.codigo,
+            pedido_id:             null,
+            numero_pedido:         null,
+            fornecedor_nome:       '—',
+            condicao_pagamento:    '',
+            valor_total:           0,
+            data_entrega_prevista: null,
+            por_medicao,
+            parcelas:              [],
+          })
+        } else {
+          for (const ped of itemPedidos) {
+            const forn = ped.fornecedor_id ? fornMap.get(ped.fornecedor_id) : undefined
+            const cond = ped.cond_pagamento ?? forn?.cond_pagamento_padrao ?? ''
+
+            const por_medicao: LinhaTabela['por_medicao'] = {}
+            for (const [medNum, medInfo] of etapaMeds) {
+              if (ped.data_entrega_prevista) {
+                const folga = diasFolga(ped.data_entrega_prevista, medInfo.data_inicio)
+                por_medicao[medNum] = { dias_folga: folga, status: calcStatus(folga), data_inicio: medInfo.data_inicio }
+              } else {
+                por_medicao[medNum] = { dias_folga: null, status: 'sem_pedido', data_inicio: medInfo.data_inicio }
+              }
+            }
+
+            linhas.push({
+              etapa_id:              item.etapa_id,
+              etapa_nome:            etapa.nome,
+              etapa_codigo:          etapa.codigo,
+              etapa_ordem:           etapa.ordem,
+              item_id:               item.id,
+              item_descricao:        item.descricao,
+              item_codigo:           item.codigo,
+              pedido_id:             ped.id,
+              numero_pedido:         ped.numero_pedido,
+              fornecedor_nome:       forn?.nome ?? '—',
+              condicao_pagamento:    cond,
+              valor_total:           Number(ped.valor_total_real ?? 0),
+              data_entrega_prevista: ped.data_entrega_prevista,
+              por_medicao,
+              parcelas:              parcMap.get(ped.id) ?? [],
+            })
+          }
+        }
+      }
+
+      linhas.sort((a, b) => {
+        if (a.etapa_ordem !== b.etapa_ordem) return a.etapa_ordem - b.etapa_ordem
+        return a.item_descricao.localeCompare(b.item_descricao, 'pt-BR')
+      })
+
+      return { colunas, linhas }
     },
   })
 }
