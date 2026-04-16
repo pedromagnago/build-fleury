@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react'
-import { X, Layers, AlertCircle, Building2, HelpCircle } from 'lucide-react'
+import { useState } from 'react'
+import { X, Layers, AlertCircle, Building2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabase'
 import { useFornecedores } from '@/hooks/useCompras'
@@ -138,10 +138,8 @@ export function AcaoManualModal({
       } else if (mode === 'mutuo') {
         if (!fornecedorId) throw new Error('Selecione um fornecedor ou favorecido')
         
-        const isEntrada = match.transaction.amount > 0
-
         // 1. Criar Mutuo
-        const { data: mut, error: errMut } = await supabase
+        const { error: errMut } = await supabase
           .from('mutuos')
           .insert({
             projeto_id: 'default',
@@ -159,7 +157,7 @@ export function AcaoManualModal({
         // Neste caso a WBS Mútuos geralmente representa entradas que vamos pagar. Se for Adiantamento, é saída que vamos receber.
         // O BD vai linkar diretamente nas parcelas se quisermos, mas como é só marcação manual, 
         // criamos a conciliação marcando o movId como resolvido
-        const { data: concData, error: concErr } = await supabase
+        const { error: concErr } = await supabase
           .from('conciliacoes')
           .insert({
             projeto_id: 'default',

@@ -41,10 +41,8 @@ function fmtBRL(v: number): string {
 function CelulaStatus({
   cell, onClick,
 }: {
-  cell: TabelaConformidade['colunas'][number] extends infer C ? C : never
-  onClick?: () => void
-} & {
   cell: { dias_folga: number | null; status: string } | undefined
+  onClick?: () => void
 }) {
   if (!cell) {
     return <td className="px-2 py-2 text-center text-[11px] text-muted-foreground/40 border-l border-border/50">—</td>

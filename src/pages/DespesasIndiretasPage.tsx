@@ -4,7 +4,6 @@ import { format, parseISO } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { useDespesasIndiretas, DespesaIndireta } from '@/hooks/useDespesasIndiretas'
 import { DespesaIndiretaModal } from '@/components/despesas-indiretas/DespesaIndiretaModal'
-import { toast } from 'sonner'
 
 function formatCurrency(v: number | string | null | undefined): string {
   if (v == null || isNaN(Number(v))) return 'R$ 0,00'

@@ -13,7 +13,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
-import { localDate, gerarParcelas, regenerarParcelas } from '@/lib/parcelas'
+import { localDate, regenerarParcelas } from '@/lib/parcelas'
 import { writeAuditLog } from '@/lib/auditLog'
 import { toast } from 'sonner'
 

@@ -136,7 +136,7 @@ export function ConciliacaoWorkspace({
     : null
 
   // Find active parcela for detail display
-  const activeParcela = activeParcelaId ? parcelas.find(p => p.id === activeParcelaId) : null
+  const activeParcela = activeParcelaId ? (parcelas.find(p => p.id === activeParcelaId) ?? null) : null
 
   const totalSelected = selectedMovIds.size + selectedParcelaIds.size
 

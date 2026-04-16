@@ -693,8 +693,7 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
     const num = Number(row['Medição']) || change.medicao
     if (num > 0 && !existingMedNums.has(num)) {
       if (!medNumsToCreate.has(num)) {
-        let df = toDateISO(findCol(row, ['Data Fim']))
-        if (!df) df = new Date().toISOString().split('T')[0]
+        const df = toDateISO(findCol(row, ['Data Fim'])) ?? new Date().toISOString().split('T')[0]!
         medNumsToCreate.set(num, df)
       }
     }

@@ -15,7 +15,7 @@ import { formatCurrency, formatPercent, formatNumber } from '@/lib/utils'
 import {
   LayoutDashboard, TrendingUp, TrendingDown,
   Target, PiggyBank, AlertTriangle, Calendar,
-  BarChart3, FileText, ArrowDown, Clock, CheckCircle2,
+  FileText, ArrowDown, Clock, CheckCircle2,
   ShieldCheck, Layers,
 } from 'lucide-react'
 import {

@@ -230,7 +230,7 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
 
 // ─── Parcela Inline Edit Row ────────────────────────────────
 
-function ParcelaRow({ parcela, mutuoId, onUpdate }: { parcela: MutuoParcela; mutuoId: string; onUpdate: ReturnType<typeof useUpdateMutuoParcela> }) {
+function ParcelaRow({ parcela, onUpdate }: { parcela: MutuoParcela; mutuoId: string; onUpdate: ReturnType<typeof useUpdateMutuoParcela> }) {
   const deleteParcela = useDeleteMutuoParcela()
   const [editing, setEditing] = useState(false)
   const [editValor, setEditValor] = useState(String(parcela.valor))

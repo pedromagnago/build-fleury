@@ -119,7 +119,6 @@ function parseOFX(content: string): ParseResult {
 
   while ((match = txnRegex.exec(content)) !== null) {
     const block = match[1]!
-    const trnType = extractTag(block, 'TRNTYPE').toUpperCase()
     const dtPosted = parseOFXDate(extractTag(block, 'DTPOSTED'))
     const trnAmt = parseFloat(extractTag(block, 'TRNAMT')) || 0
     const fitid = extractTag(block, 'FITID') || `gen-${idx}-${Date.now()}`
@@ -155,9 +154,9 @@ function parseOFX(content: string): ParseResult {
       bankId,
       accountId,
       startDate: dtStart || (transactions[0]?.date ?? ''),
-      endDate: dtEnd || (transactions.at(-1)?.date ?? ''),
+      endDate: dtEnd || (transactions[transactions.length - 1]?.date ?? ''),
       openingBalance: balAmt,
-      closingBalance: transactions.at(-1)?.balance ?? balAmt,
+      closingBalance: transactions[transactions.length - 1]?.balance ?? balAmt,
       currency,
       transactionCount: transactions.length,
     },
@@ -227,9 +226,9 @@ function parseJSON(content: string): ParseResult {
       bankId: 'fintech',
       accountId: json.accountId || '',
       startDate: transactions[0]?.date ?? '',
-      endDate: transactions.at(-1)?.date ?? '',
+      endDate: transactions[transactions.length - 1]?.date ?? '',
       openingBalance: 0,
-      closingBalance: transactions.at(-1)?.balance ?? 0,
+      closingBalance: transactions[transactions.length - 1]?.balance ?? 0,
       currency: 'BRL',
       transactionCount: transactions.length,
     },

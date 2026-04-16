@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 import { Trash2, AlertTriangle, RefreshCw } from 'lucide-react'
 
 // NOVO: import de dependências para o Recalcular Parcelas
-import { parsearCondicao, gerarParcelas, localDate } from '@/lib/parcelas'
+import { gerarParcelas, localDate } from '@/lib/parcelas'
 
 interface Props {
   pedidos: Pedido[]
