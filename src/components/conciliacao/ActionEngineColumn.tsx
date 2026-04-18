@@ -523,7 +523,7 @@ export function ActionEngineColumn({ activeMov, activeParcela, activeMatch, save
       if (mode === 'transferencia') {
         if (!contaDestinoId) throw new Error('Selecione a conta destino')
         // Create matching entry in destination account
-        const { data: entryMov, error: errEntry } = await supabase
+        const { error: errEntry } = await supabase
           .from('movimentacoes_bancarias')
           .insert({
             company_id: activeMov.company_id,

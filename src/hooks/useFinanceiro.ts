@@ -25,6 +25,7 @@ export interface Parcela {
   // Joined
   pedido_item?: string
   item_compra_id?: string | null
+  observacoes?: string | null
 }
 
 export interface ContaBancaria {

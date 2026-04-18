@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import {
@@ -10,7 +9,7 @@ import {
   useEstornarParcela,
 } from '@/hooks/useFinanceiro'
 import { formatCurrency } from '@/lib/utils'
-import { localDate } from '@/lib/parcelas'
+// localDate imported if needed for date formatting
 import {
   X, Pencil, RotateCcw, ChevronRight, Building2, Package, Layers, FileText, CreditCard, AlertTriangle,
 } from 'lucide-react'
@@ -36,7 +35,7 @@ interface ParcelaDetail {
 }
 
 export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
-  const qc = useQueryClient()
+
   const { data: contas = [] } = useContasBancarias()
   const updateParcela = useUpdateParcela()
   const estornarParcela = useEstornarParcela()

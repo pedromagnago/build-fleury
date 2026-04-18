@@ -4,7 +4,7 @@ import { useEtapas } from '@/hooks/useEtapas'
 import {
   useMedicoes, useCreateMedicao, useUpdateMedicao,
   useDistribuicao, useCreateDistribuicao,
-  type Distribuicao, type Medicao,
+  type Distribuicao,
 } from '@/hooks/useOperacional'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'

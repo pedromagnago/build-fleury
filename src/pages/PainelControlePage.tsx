@@ -13,7 +13,7 @@ import { useState, useMemo } from 'react'
 import { PageHeader } from '@/components/ui/PageHeader'
 import {
   Gauge, ChevronDown, ChevronRight, TrendingUp, TrendingDown,
-  Package, CreditCard, Building2, Wallet, FileCheck2, Landmark, AlertTriangle,
+  Package, CreditCard, Wallet, FileCheck2, Landmark, AlertTriangle,
 } from 'lucide-react'
 import { useItensCompra, usePedidos } from '@/hooks/useCompras'
 import { useParcelas } from '@/hooks/useFinanceiro'
@@ -22,7 +22,7 @@ import { useMutuos } from '@/hooks/useMutuos'
 import { useMedicoes, useMovimentacoes } from '@/hooks/useOperacional'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useProject } from '@/contexts/ProjectContext'
-import { formatCurrency, formatNumber } from '@/lib/utils'
+import { formatCurrency } from '@/lib/utils'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -90,7 +90,7 @@ export default function PainelControlePage() {
   const { data: itens = [] } = useItensCompra()
   const { data: pedidos = [] } = usePedidos()
   const { data: parcelas = [] } = useParcelas()
-  const { data: despesas = [] } = useDespesasIndiretas()
+  const { despesas = [] } = useDespesasIndiretas()
   const { data: mutuos = [] } = useMutuos()
   const { data: medicoes = [] } = useMedicoes()
   const { data: movimentacoes = [] } = useMovimentacoes()
@@ -109,10 +109,10 @@ export default function PainelControlePage() {
       .reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
 
     // Indiretos
-    const orcadoIndiretos = despesas.reduce((s, d) => s + (Number(d.valor_orcado) || 0), 0)
+    const orcadoIndiretos = despesas.reduce((s: number, d: any) => s + (Number(d.valor_orcado) || 0), 0)
     const pagoIndiretos = parcelas
       .filter(p => p.despesa_indireta_id != null)
-      .reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
+      .reduce((s: number, p: any) => s + (Number(p.valor_pago) || 0), 0)
 
     // Capital de giro — operação financeira, NÃO é custo do projeto.
     // Só os JUROS (diferença entre o total contratado em parcelas e o valor captado)
@@ -443,7 +443,7 @@ export default function PainelControlePage() {
         <div className="grid gap-3 md:grid-cols-4">
           <div className="rounded-xl border p-4">
             <div className="text-[10px] uppercase text-muted-foreground">Pago (parcelas)</div>
-            <div className="mt-1 text-xl font-bold tabular-nums">{formatCurrency(agg.pagoTotal)}</div>
+            <div className="mt-1 text-xl font-bold tabular-nums">{formatCurrency(agg.pagoOperacional)}</div>
             <div className="mt-1 text-[11px] text-muted-foreground">
               {parcelas.filter(p => p.valor_pago > 0).length} parcelas com pagamento
             </div>

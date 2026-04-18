@@ -6,7 +6,7 @@ import { BankColumn } from './BankColumn'
 import { ActionEngineColumn } from './ActionEngineColumn'
 import { BulkActionBar } from './BulkActionBar'
 import { formatCurrency } from '@/lib/utils'
-import { TrendingUp, TrendingDown, Scale, AlertTriangle } from 'lucide-react'
+import { TrendingUp, Scale, AlertTriangle } from 'lucide-react'
 
 export interface ConciliacaoWorkspaceProps {
   parcelas: Parcela[]
@@ -140,8 +140,7 @@ export function ConciliacaoWorkspace({
   // Find active parcela for detail display
   const activeParcela = activeParcelaId ? (parcelas.find(p => p.id === activeParcelaId) ?? null) : null
 
-  // Dual selection state: both mov and parcela selected = manual conciliation mode
-  const isDualSelected = !!activeMovId && !!activeParcelaId
+  // Dual selection: activeMovId && activeParcelaId = manual conciliation mode
 
   const totalSelected = selectedMovIds.size + selectedParcelaIds.size
 
