@@ -9,7 +9,7 @@ import { localDate } from '@/lib/parcelas'
 import { exportToExcel } from '@/lib/exportExcel'
 import { toast } from 'sonner'
 import {
-  X, CreditCard, CalendarClock, Download, AlertTriangle, ArrowRight, Trash2,
+  X, CreditCard, CalendarClock, Download, AlertTriangle, ArrowRight, Trash2, Pencil, RotateCcw,
 } from 'lucide-react'
 
 interface Props {
@@ -19,22 +19,27 @@ interface Props {
   onDone: () => void
 }
 
-type ModalType = 'pagar' | 'adiar' | 'excluir' | null
+type ModalType = 'pagar' | 'adiar' | 'excluir' | 'editar' | 'estornar' | null
 
 export default function PagamentosBulkActions({ parcelas, selectedIds, fornecedorMap, onDone }: Props) {
   const [modal, setModal] = useState<ModalType>(null)
   const selected = useMemo(() => parcelas.filter(p => selectedIds.has(p.id)), [parcelas, selectedIds])
+  const hasPagas = selected.some(p => p.status === 'paga')
 
   return (
     <>
-      <BulkBtn icon={CreditCard} label="Pagar selecionadas" onClick={() => setModal('pagar')} />
+      <BulkBtn icon={CreditCard} label="Pagar" onClick={() => setModal('pagar')} />
+      <BulkBtn icon={Pencil} label="Editar em Lote" onClick={() => setModal('editar')} />
       <BulkBtn icon={CalendarClock} label="Adiar" onClick={() => setModal('adiar')} />
       <BulkBtn icon={Download} label="Exportar" onClick={() => handleExport(selected, fornecedorMap)} />
+      {hasPagas && <BulkBtn icon={RotateCcw} label="Estornar" onClick={() => setModal('estornar')} />}
       <BulkBtn icon={Trash2} label="Excluir" onClick={() => setModal('excluir')} />
 
       {modal === 'pagar' && <PagarLoteModal parcelas={selected} fornecedorMap={fornecedorMap} onClose={() => setModal(null)} onDone={onDone} />}
       {modal === 'adiar' && <AdiarModal parcelas={selected} onClose={() => setModal(null)} onDone={onDone} />}
       {modal === 'excluir' && <ExcluirLoteModal parcelas={selected} onClose={() => setModal(null)} onDone={onDone} />}
+      {modal === 'editar' && <EditarLoteModal parcelas={selected} onClose={() => setModal(null)} onDone={onDone} />}
+      {modal === 'estornar' && <EstornarLoteModal parcelas={selected.filter(p => p.status === 'paga')} onClose={() => setModal(null)} onDone={onDone} />}
     </>
   )
 }
@@ -363,6 +368,141 @@ function ExcluirLoteModal({ parcelas, onClose, onDone }: { parcelas: Parcela[]; 
         </div>
       </div>
       <Footer onClose={onClose} onConfirm={handleConfirm} saving={saving} label="Excluir parcelas" variant="destructive" />
+    </Modal>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Editar em Lote
+// ---------------------------------------------------------------------------
+function EditarLoteModal({ parcelas, onClose, onDone }: { parcelas: Parcela[]; onClose: () => void; onDone: () => void }) {
+  const qc = useQueryClient()
+  const { data: contas = [] } = useContasBancarias()
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({
+    forma_pagamento: '',
+    conta_bancaria_id: '',
+    observacoes: '',
+  })
+
+  const handleConfirm = async () => {
+    setSaving(true)
+    try {
+      const updates: any = {}
+      if (form.forma_pagamento) updates.forma_pagamento = form.forma_pagamento
+      if (form.conta_bancaria_id) updates.conta_bancaria_id = form.conta_bancaria_id
+      if (form.observacoes) updates.observacoes = form.observacoes
+
+      if (Object.keys(updates).length === 0) {
+        toast.error('Preencha ao menos um campo para editar')
+        setSaving(false)
+        return
+      }
+
+      const ids = parcelas.map(p => p.id)
+      for (let i = 0; i < ids.length; i += 50) {
+        const chunk = ids.slice(i, i + 50)
+        const { error } = await supabase.from('parcelas').update(updates).in('id', chunk)
+        if (error) throw error
+      }
+
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      toast.success(`${parcelas.length} parcelas atualizadas`)
+      onDone()
+      onClose()
+    } catch (err: any) {
+      toast.error('Erro: ' + err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`Editar ${parcelas.length} parcelas em lote`} onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-xs text-muted-foreground">Preencha apenas os campos que deseja alterar. Campos vazios não serão modificados.</p>
+        <div>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Forma de Pagamento</label>
+          <select value={form.forma_pagamento} onChange={e => setForm(p => ({ ...p, forma_pagamento: e.target.value }))} className="w-full rounded-lg border bg-background px-3 py-2 text-sm">
+            <option value="">— Não alterar —</option>
+            <option value="PIX">PIX</option>
+            <option value="Boleto">Boleto</option>
+            <option value="Transferência">Transferência</option>
+            <option value="Cheque">Cheque</option>
+            <option value="Cartão">Cartão</option>
+            <option value="Dinheiro">Dinheiro</option>
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Conta Bancária</label>
+          <select value={form.conta_bancaria_id} onChange={e => setForm(p => ({ ...p, conta_bancaria_id: e.target.value }))} className="w-full rounded-lg border bg-background px-3 py-2 text-sm">
+            <option value="">— Não alterar —</option>
+            {contas.filter(c => c.ativa).map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Observações (append)</label>
+          <input type="text" value={form.observacoes} onChange={e => setForm(p => ({ ...p, observacoes: e.target.value }))} placeholder="Texto a adicionar..." className="w-full rounded-lg border bg-background px-3 py-2 text-sm" />
+        </div>
+      </div>
+      <Footer onClose={onClose} onConfirm={handleConfirm} saving={saving} label="Aplicar Alterações" />
+    </Modal>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Estornar em Lote
+// ---------------------------------------------------------------------------
+function EstornarLoteModal({ parcelas, onClose, onDone }: { parcelas: Parcela[]; onClose: () => void; onDone: () => void }) {
+  const qc = useQueryClient()
+  const [saving, setSaving] = useState(false)
+
+  const totalPago = parcelas.reduce((s, p) => s + (p.valor_pago ?? 0), 0)
+
+  const handleConfirm = async () => {
+    setSaving(true)
+    try {
+      const ids = parcelas.map(p => p.id)
+      for (let i = 0; i < ids.length; i += 50) {
+        const chunk = ids.slice(i, i + 50)
+        const { error } = await supabase.from('parcelas').update({
+          status: 'a_vencer',
+          valor_pago: 0,
+          data_pagamento_real: null,
+          forma_pagamento: null,
+          comprovante_path: null,
+        }).in('id', chunk)
+        if (error) throw error
+      }
+
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+      toast.success(`${parcelas.length} parcelas estornadas`)
+      onDone()
+      onClose()
+    } catch (err: any) {
+      toast.error('Erro ao estornar: ' + err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`Estornar ${parcelas.length} parcelas pagas`} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="rounded-lg bg-red-500/10 p-3 text-sm text-red-600">
+          <p className="font-semibold flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            Atenção — Estorno em lote
+          </p>
+          <p className="mt-1">
+            Essa ação reverterá <strong>{parcelas.length}</strong> parcelas pagas (total: <strong>{formatCurrency(totalPago)}</strong>).
+            O status voltará para "A Vencer" e valores pagos serão zerados.
+          </p>
+        </div>
+      </div>
+      <Footer onClose={onClose} onConfirm={handleConfirm} saving={saving} label="Confirmar Estorno" variant="destructive" />
     </Modal>
   )
 }

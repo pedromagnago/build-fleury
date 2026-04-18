@@ -214,6 +214,46 @@ export function useRunConciliacao() {
         })
       }
 
+      // Incluir MÚTUOS de entrada (captações = receber) e devolução (= pagar) na conciliação
+      const { data: mutuos } = await supabase
+        .from('mutuos')
+        .select('*, mutuo_parcelas(*), fornecedores(nome)')
+        .eq('company_id', currentCompany.id)
+      
+      for (const mut of (mutuos ?? []) as any[]) {
+        // Captação = entrada de dinheiro → tipo 'receber'
+        if (mut.tipo === 'captacao' || mut.valor_captado) {
+          payables.push({
+            id: `mut-cap-${mut.id}`,
+            valor: Number(mut.valor_captado || 0),
+            dataVencimento: mut.data_captacao,
+            dataPagamento: mut.data_captacao, // captação já ocorreu
+            valorPago: Number(mut.valor_captado || 0),
+            status: 'paga',
+            descricao: `Mútuo Captação: ${mut.nome}`,
+            fornecedorNome: mut.fornecedores?.nome ?? null,
+            documentoRef: null,
+            tipo: 'receber',
+          })
+        }
+        
+        // Parcelas de devolução = saída de dinheiro → tipo 'pagar'
+        for (const mp of (mut.mutuo_parcelas ?? []) as any[]) {
+          payables.push({
+            id: `mut-parc-${mp.id}`,
+            valor: Number(mp.valor),
+            dataVencimento: mp.data_vencimento,
+            dataPagamento: mp.data_pagamento_real || null,
+            valorPago: mp.valor_pago ? Number(mp.valor_pago) : null,
+            status: mp.status,
+            descricao: `Mútuo Devolução: ${mut.nome} - P${mp.numero_parcela}`,
+            fornecedorNome: mut.fornecedores?.nome ?? null,
+            documentoRef: null,
+            tipo: 'pagar',
+          })
+        }
+      }
+
       // 7. Converter regras bancárias → BankRule[]
       const bankRules = (regras ?? []).map((r: any) => ({
         id: r.id,

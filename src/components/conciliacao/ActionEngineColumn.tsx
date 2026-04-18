@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { CheckCircle2, Fingerprint, Coins, Sparkles, BookmarkPlus, FileText, Clock, AlertTriangle } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { CheckCircle2, Fingerprint, Coins, Sparkles, BookmarkPlus, FileText, Clock, AlertTriangle, Layers, Package, Building2, CreditCard, ChevronRight, ArrowLeftRight, Link } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabase'
 import { useFornecedores } from '@/hooks/useCompras'
@@ -7,7 +7,9 @@ import { useEtapas } from '@/hooks/useEtapas'
 import type { ReconciliationMatch } from '@/lib/reconciliationEngine'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { useCreateBankRule, suggestRuleFromTransaction } from '@/hooks/useBankRules'
-import { Parcela } from '@/hooks/useFinanceiro'
+import { Parcela, useContasBancarias } from '@/hooks/useFinanceiro'
+import { useProject } from '@/contexts/ProjectContext'
+import { useQueryClient } from '@tanstack/react-query'
 
 
 const INPUT = "flex h-9 w-full rounded-md border border-input bg-background/50 px-3 py-1 text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
@@ -48,13 +50,16 @@ function statusLabel(status: Parcela['status']): { label: string; cls: string } 
 }
 
 export function ActionEngineColumn({ activeMov, activeParcela, activeMatch, savedConcs, onSuccess, isProcessing }: ActionEngineColumnProps) {
-  const [mode, setMode] = useState<'indireto' | 'fantasma' | 'mutuo'>('indireto')
+  const [mode, setMode] = useState<'indireto' | 'fantasma' | 'mutuo' | 'transferencia'>('indireto')
   const [isSaving, setIsSaving] = useState(false)
   const [showRuleSuggestion, setShowRuleSuggestion] = useState(false)
   const [ruleSuggestion, setRuleSuggestion] = useState<ReturnType<typeof suggestRuleFromTransaction> | null>(null)
+  const { currentCompany } = useProject()
+  const qc = useQueryClient()
 
   const { data: fornecedores = [] } = useFornecedores()
   const { data: etapas = [] } = useEtapas()
+  const { data: contasBancarias = [] } = useContasBancarias()
   const createRule = useCreateBankRule()
 
   // Form states
@@ -62,6 +67,44 @@ export function ActionEngineColumn({ activeMov, activeParcela, activeMatch, save
   const [descricao, setDescricao] = useState('')
   const [etapaId, setEtapaId] = useState('')
   const [fornecedorId, setFornecedorId] = useState('')
+  const [contaDestinoId, setContaDestinoId] = useState('')
+
+  // Drill-down parcela detail
+  interface ParcelaDetail {
+    etapa_nome?: string; etapa_codigo?: string;
+    item_descricao?: string; item_codigo?: string;
+    fornecedor_nome?: string; fornecedor_cnpj?: string;
+    cond_pagamento?: string; numero_pedido?: number;
+  }
+  const [parcelaDetail, setParcelaDetail] = useState<ParcelaDetail | null>(null)
+
+  useEffect(() => {
+    if (!activeParcela?.pedido_id) { setParcelaDetail(null); return }
+    let cancelled = false
+    ;(async () => {
+      const { data: ped } = await supabase
+        .from('pedidos')
+        .select(`
+          numero_pedido, cond_pagamento, fornecedor_id,
+          itens_compra!inner(descricao, codigo, etapa_id, etapas(nome, codigo)),
+          fornecedores(nome, cnpj, cond_pagamento_padrao)
+        `)
+        .eq('id', activeParcela.pedido_id!)
+        .single()
+      if (cancelled || !ped) return
+      const item = ped.itens_compra as any
+      const forn = ped.fornecedores as any
+      const etapa = item?.etapas as any
+      setParcelaDetail({
+        etapa_nome: etapa?.nome, etapa_codigo: etapa?.codigo,
+        item_descricao: item?.descricao, item_codigo: item?.codigo,
+        fornecedor_nome: forn?.nome, fornecedor_cnpj: forn?.cnpj,
+        cond_pagamento: ped.cond_pagamento ?? forn?.cond_pagamento_padrao,
+        numero_pedido: ped.numero_pedido,
+      })
+    })()
+    return () => { cancelled = true }
+  }, [activeParcela?.pedido_id])
 
   // === ESTADO: NADA SELECIONADO ===
   if (!activeMov && !activeParcela) {
@@ -70,6 +113,118 @@ export function ActionEngineColumn({ activeMov, activeParcela, activeMatch, save
         <Fingerprint className="mb-3 h-10 w-10 opacity-20" />
         <h3 className="font-semibold text-sm text-foreground mb-1">Cérebro de Conciliação</h3>
         <p className="text-xs max-w-[200px]">Selecione uma transação do extrato ou uma parcela para ver os detalhes.</p>
+        <p className="text-[10px] mt-2 max-w-[240px] text-muted-foreground/60">
+          💡 Selecione uma parcela E uma transação simultaneamente para conciliação manual.
+        </p>
+      </div>
+    )
+  }
+
+  // === ESTADO: AMBOS SELECIONADOS → CONCILIAÇÃO MANUAL ===
+  if (activeMov && activeParcela) {
+    const diff = Math.abs(Number(activeMov.valor) - Number(activeParcela.valor))
+    const diffPerc = Number(activeParcela.valor) > 0 ? (diff / Number(activeParcela.valor) * 100) : 0
+
+    const handleManualConciliar = async () => {
+      if (!currentCompany) return
+      setIsSaving(true)
+      try {
+        // Mark movement as conciliado
+        await supabase
+          .from('movimentacoes_bancarias')
+          .update({ conciliado: true, conciliado_em: new Date().toISOString() })
+          .eq('id', activeMov.id)
+
+        // Create conciliacao link
+        await supabase.from('conciliacoes').upsert({
+          company_id: currentCompany.id,
+          movimentacao_id: activeMov.id,
+          parcela_id: activeParcela.id,
+          status: 'confirmado',
+          tipo_match: 'manual',
+          confianca: 100,
+        }, { onConflict: 'company_id,movimentacao_id' })
+
+        // Update parcela status if needed
+        if (activeParcela.status !== 'paga') {
+          await supabase.from('parcelas').update({
+            status: 'paga',
+            valor_pago: activeParcela.valor,
+            data_pagamento_real: activeMov.data,
+          }).eq('id', activeParcela.id)
+        }
+
+        qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+        qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+        qc.invalidateQueries({ queryKey: ['parcelas'] })
+        toast.success('Conciliação manual confirmada!')
+        onSuccess()
+      } catch (err: any) {
+        toast.error('Erro: ' + err.message)
+      } finally {
+        setIsSaving(false)
+      }
+    }
+
+    return (
+      <div className="flex flex-col rounded-xl border bg-card/60 shadow-sm overflow-hidden backdrop-blur-md h-full">
+        <div className="border-b bg-blue-500/5 p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Link className="h-4 w-4 text-blue-600" />
+            <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Conciliação Manual</p>
+          </div>
+          <p className="text-[10px] text-muted-foreground">Extrato e parcela selecionados simultaneamente</p>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Extrato side */}
+          <div className="rounded-lg border bg-muted/20 p-3">
+            <p className="text-[9px] uppercase font-bold text-muted-foreground mb-2">Transação Extrato</p>
+            <div className="flex justify-between items-center">
+              <p className="text-xs font-medium truncate max-w-[150px]">{activeMov.descricao ?? activeMov.memo_raw ?? '—'}</p>
+              <p className="text-sm font-bold tabular-nums">{fmt(Math.abs(Number(activeMov.valor)))}</p>
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1">{fmtDate(activeMov.data)}</p>
+          </div>
+
+          {/* Arrow */}
+          <div className="flex items-center justify-center">
+            <ArrowLeftRight className="h-5 w-5 text-blue-500" />
+          </div>
+
+          {/* Parcela side */}
+          <div className="rounded-lg border bg-muted/20 p-3">
+            <p className="text-[9px] uppercase font-bold text-muted-foreground mb-2">Parcela Sistema</p>
+            <div className="flex justify-between items-center">
+              <p className="text-xs font-medium truncate max-w-[150px]">{activeParcela.descricao ?? activeParcela.pedido_item ?? '—'}</p>
+              <p className="text-sm font-bold tabular-nums">{fmt(Number(activeParcela.valor))}</p>
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1">Venc. {fmtDate(activeParcela.data_vencimento)}</p>
+          </div>
+
+          {/* Difference */}
+          <div className={`rounded-lg p-3 ${diff < 0.01 ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-amber-500/10 border border-amber-500/20'}`}>
+            <div className="flex justify-between items-center">
+              <span className="text-[10px] font-bold uppercase">Diferença</span>
+              <span className={`text-sm font-bold ${diff < 0.01 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                {fmt(diff)} {diffPerc > 0.01 && `(${diffPerc.toFixed(1)}%)`}
+              </span>
+            </div>
+            {diff < 0.01 && <p className="text-[10px] text-emerald-600 mt-1">✓ Valores idênticos — match perfeito</p>}
+          </div>
+        </div>
+
+        {/* Action */}
+        <div className="border-t p-4">
+          <button
+            onClick={handleManualConciliar}
+            disabled={isSaving}
+            className="w-full flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            <CheckCircle2 className="h-4 w-4" />
+            {isSaving ? 'Conciliando...' : 'Conciliar Manualmente'}
+          </button>
+        </div>
       </div>
     )
   }
@@ -166,6 +321,57 @@ export function ActionEngineColumn({ activeMov, activeParcela, activeMatch, save
               <div className="flex items-center justify-between py-2 border-b border-muted/50">
                 <span className="text-xs text-muted-foreground">Forma de Pagamento</span>
                 <span className="text-xs font-semibold capitalize">{activeParcela.forma_pagamento}</span>
+              </div>
+            )}
+
+            {/* Drill-down: Rastreabilidade */}
+            {parcelaDetail && (
+              <div className="mt-4 rounded-lg border bg-muted/20 p-3">
+                <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Rastreabilidade</p>
+                <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                  {parcelaDetail.etapa_nome && (
+                    <>
+                      <span className="inline-flex items-center gap-0.5 rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-600 font-medium">
+                        <Layers className="h-2.5 w-2.5" />
+                        {parcelaDetail.etapa_codigo}: {parcelaDetail.etapa_nome}
+                      </span>
+                      <ChevronRight className="h-2.5 w-2.5 text-muted-foreground" />
+                    </>
+                  )}
+                  {parcelaDetail.item_descricao && (
+                    <>
+                      <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-600 font-medium">
+                        <Package className="h-2.5 w-2.5" />
+                        {parcelaDetail.item_codigo}: {parcelaDetail.item_descricao}
+                      </span>
+                      <ChevronRight className="h-2.5 w-2.5 text-muted-foreground" />
+                    </>
+                  )}
+                  {parcelaDetail.fornecedor_nome && (
+                    <span className="inline-flex items-center gap-0.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 font-medium">
+                      <Building2 className="h-2.5 w-2.5" />
+                      {parcelaDetail.fornecedor_nome}
+                    </span>
+                  )}
+                  {parcelaDetail.cond_pagamento && (
+                    <>
+                      <ChevronRight className="h-2.5 w-2.5 text-muted-foreground" />
+                      <span className="inline-flex items-center gap-0.5 rounded bg-primary/10 px-1.5 py-0.5 text-primary font-medium">
+                        <CreditCard className="h-2.5 w-2.5" />
+                        {parcelaDetail.cond_pagamento}
+                      </span>
+                    </>
+                  )}
+                  {parcelaDetail.numero_pedido && (
+                    <>
+                      <ChevronRight className="h-2.5 w-2.5 text-muted-foreground" />
+                      <span className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 text-foreground font-medium">
+                        <FileText className="h-2.5 w-2.5" />
+                        Pedido #{parcelaDetail.numero_pedido}
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
             )}
 
@@ -314,11 +520,43 @@ export function ActionEngineColumn({ activeMov, activeParcela, activeMatch, save
         await linkConciliacao(movId, null)
       }
 
+      if (mode === 'transferencia') {
+        if (!contaDestinoId) throw new Error('Selecione a conta destino')
+        // Create matching entry in destination account
+        const { data: entryMov, error: errEntry } = await supabase
+          .from('movimentacoes_bancarias')
+          .insert({
+            company_id: activeMov.company_id,
+            conta_id: contaDestinoId,
+            tipo: 'entrada',
+            valor: valorAbs,
+            data: dataPag,
+            descricao: `Transferência de ${activeMov.conta_nome ?? 'outra conta'}`,
+            memo_raw: `TRANSF ${activeMov.descricao || ''}`,
+            conciliado: true,
+            conciliado_em: new Date().toISOString(),
+          }).select().single()
+        if (errEntry) throw errEntry
+
+        // Mark source movement as conciliado
+        await supabase.from('movimentacoes_bancarias')
+          .update({
+            conciliado: true,
+            conciliado_em: new Date().toISOString(),
+            observacao: `Transferência para conta ${contaDestinoId}`,
+          })
+          .eq('id', movId)
+
+        // Link both via conciliacao
+        await linkConciliacao(movId, null)
+        setContaDestinoId('')
+      }
+
       toast.success('Conciliação manual efetuada com sucesso.')
 
       // Suggest creating a bank rule
       const memo = activeMov.descricao || activeMov.memo_raw || ''
-      if (memo.trim()) {
+      if (memo.trim() && mode !== 'transferencia') {
         const suggestion = suggestRuleFromTransaction(memo, activeMov.valor)
         if (categoria) suggestion.categoria = categoria
         setRuleSuggestion(suggestion)
@@ -452,6 +690,12 @@ export function ActionEngineColumn({ activeMov, activeParcela, activeMatch, save
               >
                 Mútuos
               </button>
+              <button
+                onClick={() => setMode('transferencia')}
+                className={`flex-1 rounded-md py-1.5 px-2 text-center transition-all ${mode === 'transferencia' ? 'bg-background shadow text-foreground' : 'text-muted-foreground hover:bg-foreground/5'}`}
+              >
+                Transferência
+              </button>
             </div>
 
             <form id="acao-form" onSubmit={handleSaveManual} className="space-y-3.5 mt-2">
@@ -480,24 +724,49 @@ export function ActionEngineColumn({ activeMov, activeParcela, activeMatch, save
                 </>
               )}
 
-              {mode !== 'mutuo' && (
+              {mode === 'transferencia' && (
+                <>
+                  <div className="rounded-lg bg-blue-500/5 border border-blue-500/10 p-3">
+                    <p className="text-[10px] font-bold text-blue-600 mb-1">Transferência entre contas</p>
+                    <p className="text-[10px] text-muted-foreground">Registra saída nesta conta e entrada na conta destino. Ambas serão auto-conciliadas.</p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">Conta Destino *</label>
+                    <select
+                      value={contaDestinoId}
+                      onChange={e => setContaDestinoId(e.target.value)}
+                      className={INPUT}
+                      required
+                    >
+                      <option value="">Selecione...</option>
+                      {contasBancarias
+                        .filter(c => c.ativa && c.id !== activeMov?.conta_id)
+                        .map(c => <option key={c.id} value={c.id}>{c.nome} ({c.banco})</option>)}
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {mode !== 'mutuo' && mode !== 'transferencia' && (
                 <div>
                   <label className="mb-1 block text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">Descrição Breve</label>
                   <input type="text" value={descricao} onChange={e => setDescricao(e.target.value)} className={INPUT} placeholder={activeMov.descricao || "Item novo"} />
                 </div>
               )}
 
-              <div>
-                <label className="mb-1 block text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
-                  {mode === 'mutuo' ? 'Favorecido/Fornecedor (Obrigatório)' : 'Fornecedor (Opcional)'}
-                </label>
-                <SearchableSelect
-                  value={fornecedorId}
-                  onChange={setFornecedorId}
-                  options={fornecedores.map(f => ({ value: f.id, label: f.nome }))}
-                  placeholder="Buscar fornecedor..."
-                />
-              </div>
+              {mode !== 'transferencia' && (
+                <div>
+                  <label className="mb-1 block text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                    {mode === 'mutuo' ? 'Favorecido/Fornecedor (Obrigatório)' : 'Fornecedor (Opcional)'}
+                  </label>
+                  <SearchableSelect
+                    value={fornecedorId}
+                    onChange={setFornecedorId}
+                    options={fornecedores.map(f => ({ value: f.id, label: f.nome }))}
+                    placeholder="Buscar fornecedor..."
+                  />
+                </div>
+              )}
 
               <button
                 type="submit"

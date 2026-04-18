@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
+import { useMovimentacoes } from '@/hooks/useOperacional'
 import { toast } from 'sonner'
 
 export interface Parcela {
@@ -176,7 +178,7 @@ export function useContasBancarias() {
   return useQuery({
     queryKey: ['contas_bancarias', companyId],
     queryFn: async () => {
-      if (!companyId) return []
+      if (!companyId) return [] as ContaBancaria[]
       const { data, error } = await supabase
         .from('contas_bancarias')
         .select('*')
@@ -210,6 +212,192 @@ export function useCreateContaBancaria() {
     },
     onError: (err: Error) => toast.error(err.message),
   })
+}
+
+export function useUpdateContaBancaria() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, ...updates }: Partial<ContaBancaria> & { id: string }) => {
+      const { data, error } = await supabase
+        .from('contas_bancarias')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single()
+      if (error) throw error
+      return data as ContaBancaria
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contas_bancarias'] })
+      toast.success('Conta bancária atualizada')
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
+export function useDeleteContaBancaria() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (id: string) => {
+      // Check if conta has movimentações
+      const { count, error: countErr } = await supabase
+        .from('movimentacoes_bancarias')
+        .select('id', { count: 'exact', head: true })
+        .eq('conta_id', id)
+      if (countErr) throw countErr
+      if ((count ?? 0) > 0) {
+        throw new Error(`Conta possui ${count} movimentações. Desative (inativar) ao invés de excluir.`)
+      }
+      const { error } = await supabase.from('contas_bancarias').delete().eq('id', id)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contas_bancarias'] })
+      toast.success('Conta bancária excluída')
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
+export function useEstornarParcela() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (parcelaId: string) => {
+      const { data: parcela, error: fetchErr } = await supabase
+        .from('parcelas')
+        .select('*')
+        .eq('id', parcelaId)
+        .single()
+      if (fetchErr) throw fetchErr
+
+      const { error } = await supabase.from('parcelas').update({
+        status: 'a_vencer',
+        valor_pago: 0,
+        data_pagamento_real: null,
+        forma_pagamento: null,
+        comprovante_path: null,
+      }).eq('id', parcelaId)
+      if (error) throw error
+
+      // Audit log
+      await supabase.from('audit_logs').insert({
+        company_id: parcela.company_id,
+        tabela: 'parcelas',
+        acao: 'UPDATE',
+        agente: 'humano',
+        dados_antes: { operacao: 'estorno', id: parcelaId, status: parcela.status, valor_pago: parcela.valor_pago },
+        dados_depois: { status: 'a_vencer', valor_pago: 0 },
+      })
+
+      return parcela
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['itens_compra'] })
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+      toast.success('Parcela estornada com sucesso')
+    },
+    onError: (err: Error) => toast.error('Erro ao estornar: ' + err.message),
+  })
+}
+
+export function useConsolidarParcelas() {
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
+
+  return useMutation({
+    mutationFn: async ({ pedidoIds, parcelas: novasParcelas }: {
+      pedidoIds: string[]
+      parcelas: Array<{ valor: number; data_vencimento: string; numero_parcela: number }>
+    }) => {
+      if (!currentCompany) throw new Error('No company')
+      const cid = currentCompany.id
+
+      // 1. Soft-delete parcelas atuais dos pedidos
+      const { error: delErr } = await supabase
+        .from('parcelas')
+        .update({ deleted_at: new Date().toISOString() })
+        .in('pedido_id', pedidoIds)
+        .neq('status', 'paga')
+      if (delErr) throw delErr
+
+      // 2. Criar parcelas consolidadas (pedido_id = null, com referência nos observacoes)
+      const rows = novasParcelas.map(p => ({
+        company_id: cid,
+        pedido_id: null,
+        numero_parcela: p.numero_parcela,
+        valor: p.valor,
+        data_vencimento: p.data_vencimento,
+        status: 'futura',
+        descricao: `Consolidado: ${pedidoIds.length} pedidos`,
+        observacoes: JSON.stringify({ consolidado: true, pedido_ids: pedidoIds }),
+      }))
+      const { data, error: insErr } = await supabase.from('parcelas').insert(rows).select()
+      if (insErr) throw insErr
+
+      // 3. Audit log
+      await supabase.from('audit_logs').insert({
+        company_id: cid,
+        tabela: 'parcelas',
+        acao: 'INSERT',
+        agente: 'humano',
+        dados_depois: {
+          operacao: 'consolidar_pedidos',
+          pedido_ids: pedidoIds,
+          parcelas_criadas: novasParcelas.length,
+          valor_total: novasParcelas.reduce((s, p) => s + p.valor, 0),
+        },
+      })
+
+      return data
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['pedidos'] })
+      toast.success(`${vars.pedidoIds.length} pedidos consolidados com sucesso`)
+    },
+    onError: (err: Error) => toast.error('Erro na consolidação: ' + err.message),
+  })
+}
+
+/** Hook para calcular saldo de contas bancárias (extrato vs sistema) */
+export function useSaldoContas() {
+  const { data: contas = [] } = useContasBancarias()
+  const { data: movs = [] } = useMovimentacoes()
+
+  return useMemo(() => {
+    return contas.map(conta => {
+      const contaMovs = movs.filter((m: any) => m.conta_id === conta.id)
+      const totalEntradas = contaMovs.filter((m: any) => m.tipo === 'entrada').reduce((s, m: any) => s + Number(m.valor), 0)
+      const totalSaidas = contaMovs.filter((m: any) => m.tipo === 'saida').reduce((s, m: any) => s + Number(m.valor), 0)
+      const saldoSistema = conta.saldo_inicial + totalEntradas - totalSaidas
+
+      // Último saldo do extrato (movimentação mais recente com saldo_acumulado)
+      const lastMov = contaMovs
+        .filter((m: any) => m.saldo_acumulado != null && Number(m.saldo_acumulado) !== 0)
+        .sort((a: any, b: any) => (b.data ?? '').localeCompare(a.data ?? ''))[0]
+      const saldoExtrato = lastMov ? Number((lastMov as any).saldo_acumulado) : null
+
+      const conciliadas = contaMovs.filter((m: any) => m.conciliado).length
+      const pendentes = contaMovs.filter((m: any) => !m.conciliado).length
+
+      return {
+        conta_id: conta.id,
+        conta_nome: conta.nome,
+        banco: conta.banco,
+        saldo_inicial: conta.saldo_inicial,
+        total_entradas: totalEntradas,
+        total_saidas: totalSaidas,
+        saldo_sistema: saldoSistema,
+        saldo_extrato: saldoExtrato,
+        diferenca: saldoExtrato != null ? saldoSistema - saldoExtrato : null,
+        movimentacoes_total: contaMovs.length,
+        conciliadas,
+        pendentes,
+      }
+    })
+  }, [contas, movs])
 }
 
 // Dashboard KPIs

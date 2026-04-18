@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
-import { useUserRole } from '@/hooks/useUserRole'
+import { useUserRole, ROLE_LABELS } from '@/hooks/useUserRole'
 import { cn } from '@/lib/utils'
 import { CompanySwitcher } from './CompanySwitcher'
 import {
@@ -19,6 +19,9 @@ import {
   X,
   HardHat,
   Building2,
+  Users,
+  ChevronRight,
+  Gauge,
 } from 'lucide-react'
 
 const sections = [
@@ -47,10 +50,12 @@ const sections = [
   {
     label: 'Gestão',
     items: [
+      { to: '/painel-controle', icon: Gauge, label: 'Painel de Controle' },
       { to: '/documentos', icon: FileText, label: 'Documentos' },
       { to: '/auditoria', icon: Shield, label: 'Auditoria' },
       { to: '/relatorios', icon: BarChart3, label: 'Relatórios' },
       { to: '/importacao', icon: Upload, label: 'Importação' },
+      { to: '/usuarios', icon: Users, label: 'Usuários' },
     ],
   },
 ]
@@ -62,13 +67,21 @@ interface SidebarProps {
 
 export function Sidebar({ open, onClose }: SidebarProps) {
   const { user, signOut } = useAuth()
-  const { role } = useUserRole()
+  const { role, canAccess } = useUserRole()
   const navigate = useNavigate()
 
   const handleSignOut = async () => {
     await signOut()
     navigate('/login')
   }
+
+  // Filter sections based on RBAC
+  const filteredSections = sections
+    .map(section => ({
+      ...section,
+      items: section.items.filter(item => canAccess(item.to)),
+    }))
+    .filter(section => section.items.length > 0)
 
   return (
     <>
@@ -111,7 +124,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto p-3">
-          {sections.map((section) => (
+          {filteredSections.map((section) => (
             <div key={section.label} className="mb-3">
               <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/40">
                 {section.label}
@@ -140,34 +153,48 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             </div>
           ))}
 
-          {/* Settings — always at the bottom of nav */}
-          <div className="mt-1 border-t border-sidebar-border/50 pt-2">
-            <NavLink
-              to="/configuracoes"
-              onClick={onClose}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                  isActive
-                    ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                    : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
-                )
-              }
-            >
-              <Settings className="h-4 w-4 shrink-0" />
-              Configurações
-            </NavLink>
-          </div>
+          {/* Settings — only for admins */}
+          {canAccess('/configuracoes') && (
+            <div className="mt-1 border-t border-sidebar-border/50 pt-2">
+              <NavLink
+                to="/configuracoes"
+                onClick={onClose}
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                      : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+                  )
+                }
+              >
+                <Settings className="h-4 w-4 shrink-0" />
+                Configurações
+              </NavLink>
+            </div>
+          )}
         </nav>
 
-        {/* User info */}
+        {/* User info — clickable to profile */}
         <div className="border-t border-sidebar-border p-3">
-          <div className="mb-2 rounded-lg bg-sidebar-accent/50 px-3 py-2">
-            <p className="truncate text-xs font-medium">{user?.email}</p>
-            <p className="text-[10px] uppercase tracking-wider text-sidebar-foreground/50">
-              {role ?? 'Sem role'}
-            </p>
-          </div>
+          <button
+            onClick={() => {
+              navigate('/perfil')
+              onClose()
+            }}
+            className="mb-2 flex w-full items-center gap-2 rounded-lg bg-sidebar-accent/50 px-3 py-2 text-left transition-colors hover:bg-sidebar-accent"
+          >
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+              {user?.email?.slice(0, 2).toUpperCase() ?? '??'}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium">{user?.email}</p>
+              <p className="text-[10px] text-sidebar-foreground/50">
+                {role ? ROLE_LABELS[role] : 'Sem role'}
+              </p>
+            </div>
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-sidebar-foreground/30" />
+          </button>
           <button
             onClick={handleSignOut}
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"

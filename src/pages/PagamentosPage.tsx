@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import {
   useParcelas, useCreateParcela, useDeleteParcela,
   useContasBancarias, useCreateContaBancaria,
+  useUpdateContaBancaria, useDeleteContaBancaria,
   type Parcela, type ContaBancaria,
 } from '@/hooks/useFinanceiro'
 import { usePedidos, useFornecedores, type Pedido, type Fornecedor } from '@/hooks/useCompras'
@@ -17,11 +18,14 @@ import { toast } from 'sonner'
 import { useDropzone } from 'react-dropzone'
 import BulkActionBar from '@/components/BulkActionBar'
 import PagamentosBulkActions from '@/components/PagamentosBulkActions'
+import EditParcelaModal from '@/components/financeiro/EditParcelaModal'
+import ConsolidarPedidosWizard from '@/components/financeiro/ConsolidarPedidosWizard'
 import { useSelection } from '@/hooks/useSelection'
 import {
   Wallet, Plus, X, Check, AlertTriangle, Clock,
   CheckCircle2, CreditCard, Search, CalendarClock,
-  Calendar, Users, Upload, Paperclip, ChevronDown, ChevronRight, Trash2
+  Calendar, Users, Upload, Paperclip, ChevronDown, ChevronRight, Trash2,
+  Pencil, Package, Power, PowerOff,
 } from 'lucide-react'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
@@ -97,6 +101,8 @@ export default function PagamentosPage() {
 // PARCELAS TAB — with full payment flow modal
 // ═══════════════════════════════════════════════════════════════
 
+type TypeFilter = 'todos' | 'pedidos' | 'mutuos' | 'avulsas'
+
 function ParcelasTab({ search }: { search: string }) {
   const { currentCompany } = useProject()
   const qc = useQueryClient()
@@ -107,6 +113,8 @@ function ParcelasTab({ search }: { search: string }) {
   const deleteParcela = useDeleteParcela()
   const [showForm, setShowForm] = useState(false)
   const [payingParcela, setPayingParcela] = useState<Parcela | null>(null)
+  const [editingParcela, setEditingParcela] = useState<Parcela | null>(null)
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('todos')
   const selection = useSelection()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: mutuos = [] } = useMutuos()
@@ -148,10 +156,14 @@ function ParcelasTab({ search }: { search: string }) {
     setForm({ pedido_id: '', numero_parcela: '1', valor: '', data_vencimento: '', forma_pagamento: '', status: 'futura', descricao: '' })
   }
 
-  const filtered = parcelas.filter((p) =>
-    (p.pedido_item ?? p.descricao ?? '').toLowerCase().includes(search.toLowerCase()) ||
-    p.status.includes(search.toLowerCase())
-  )
+  const filtered = parcelas.filter((p) => {
+    const matchesSearch = (p.pedido_item ?? p.descricao ?? '').toLowerCase().includes(search.toLowerCase()) ||
+      p.status.includes(search.toLowerCase())
+    if (!matchesSearch) return false
+    if (typeFilter === 'pedidos') return !!p.pedido_id
+    if (typeFilter === 'avulsas') return !p.pedido_id
+    return true // 'todos' and 'mutuos' handled separately
+  })
 
   // Merge mutuo parcelas into the list
   const mutuoParcelas = useMemo(() => {
@@ -187,12 +199,16 @@ function ParcelasTab({ search }: { search: string }) {
   }, [mutuos, search])
 
   const allFiltered = useMemo(() => {
+    // If type filter is 'mutuos', show only mutuos
+    if (typeFilter === 'mutuos') {
+      return mutuoParcelas.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
+    }
     const combined = [
       ...filtered.map(p => ({ ...p, _source: 'pedido' as const, _mutuoNome: '' })),
-      ...mutuoParcelas,
+      ...(typeFilter === 'todos' ? mutuoParcelas : []),
     ]
     return combined.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
-  }, [filtered, mutuoParcelas])
+  }, [filtered, mutuoParcelas, typeFilter])
 
   const totals = allFiltered.reduce(
     (acc, p) => ({
@@ -216,6 +232,14 @@ function ParcelasTab({ search }: { search: string }) {
         <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
           <Plus className="h-4 w-4" /> Nova Parcela
         </button>
+        {/* Type Filter Chips */}
+        <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
+          {([['todos', 'Todas'], ['pedidos', 'Pedidos'], ['mutuos', 'Mútuos'], ['avulsas', 'Avulsas']] as const).map(([k, label]) => (
+            <button key={k} onClick={() => setTypeFilter(k)}
+              className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${typeFilter === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            >{label}</button>
+          ))}
+        </div>
         <div className="ml-auto flex gap-1.5">
           <button onClick={selectVencidas} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-red-500 hover:bg-red-500/10">Vencidas</button>
           <button onClick={selectSemana} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-amber-600 hover:bg-amber-500/10">Esta semana</button>
@@ -304,30 +328,38 @@ function ParcelasTab({ search }: { search: string }) {
                         </button>
                       )}
                     </td>
-                    <td className="px-3 py-2.5 text-center flex items-center justify-center gap-1">
-                      {p.status !== 'paga' && !isMutuo && (
-                        <button onClick={() => setPayingParcela(p)} className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20 transition-colors">
-                          Pagar
-                        </button>
-                      )}
-                      {p.status !== 'paga' && isMutuo && (
-                        <button
-                          onClick={() => {
-                            if (window.confirm(`Confirmar baixa de ${formatCurrency(p.valor)}?`)) {
-                              updateMutuoParcela.mutate({ id: p.id, status: 'paga', valor_pago: p.valor, data_pagamento_real: new Date().toISOString().split('T')[0] })
-                            }
-                          }}
-                          disabled={updateMutuoParcela.isPending}
-                          className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
-                        >
-                          Baixar
-                        </button>
-                      )}
-                      {p.status !== 'paga' && !isMutuo && (
-                        <button onClick={() => { if (window.confirm('Excluir parcela?')) deleteParcela.mutate(p.id) }} className="rounded-md p-1 text-red-500 hover:bg-red-500/10 transition-colors text-[10px]" title="Excluir">
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      )}
+                    <td className="px-3 py-2.5 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        {/* Edit button — works for all parcelas */}
+                        {!isMutuo && (
+                          <button onClick={() => setEditingParcela(p)} className="rounded-md bg-primary/10 p-1.5 text-primary hover:bg-primary/20 transition-colors" title="Editar">
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                        )}
+                        {p.status !== 'paga' && !isMutuo && (
+                          <button onClick={() => setPayingParcela(p)} className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20 transition-colors">
+                            Pagar
+                          </button>
+                        )}
+                        {p.status !== 'paga' && isMutuo && (
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Confirmar baixa de ${formatCurrency(p.valor)}?`)) {
+                                updateMutuoParcela.mutate({ id: p.id, status: 'paga', valor_pago: p.valor, data_pagamento_real: new Date().toISOString().split('T')[0] })
+                              }
+                            }}
+                            disabled={updateMutuoParcela.isPending}
+                            className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                          >
+                            Baixar
+                          </button>
+                        )}
+                        {p.status !== 'paga' && !isMutuo && (
+                          <button onClick={() => { if (window.confirm('Excluir parcela?')) deleteParcela.mutate(p.id) }} className="rounded-md p-1 text-red-500 hover:bg-red-500/10 transition-colors text-[10px]" title="Excluir">
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 )
@@ -357,6 +389,21 @@ function ParcelasTab({ search }: { search: string }) {
           onClose={() => setPayingParcela(null)}
           onDone={() => {
             setPayingParcela(null)
+            qc.invalidateQueries({ queryKey: ['parcelas'] })
+            qc.invalidateQueries({ queryKey: ['itens_compra'] })
+            qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+            qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+          }}
+        />
+      )}
+
+      {/* Edit Parcela Modal */}
+      {editingParcela && (
+        <EditParcelaModal
+          parcela={editingParcela}
+          onClose={() => setEditingParcela(null)}
+          onDone={() => {
+            setEditingParcela(null)
             qc.invalidateQueries({ queryKey: ['parcelas'] })
             qc.invalidateQueries({ queryKey: ['itens_compra'] })
             qc.invalidateQueries({ queryKey: ['movimentacoes'] })
@@ -744,6 +791,7 @@ function PorFornecedorTab() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [batchModal, setBatchModal] = useState(false)
+  const [showConsolidar, setShowConsolidar] = useState(false)
 
   // Group parcelas by fornecedor
   const groups = useMemo(() => {
@@ -781,6 +829,25 @@ function PorFornecedorTab() {
     }).sort((a, b) => b.totalPendente - a.totalPendente)
   }, [parcelas, pedidos, fornecedores])
 
+  // Count consolidatable groups
+  const consolidatableCount = useMemo(() => {
+    const keys = new Set<string>()
+    pedidos.forEach(ped => {
+      if (!ped.fornecedor_id || !ped.data_entrega_prevista) return
+      keys.add(`${ped.fornecedor_id}|${ped.data_entrega_prevista}|${ped.cond_pagamento ?? ''}`)
+    })
+    // Count keys that have 2+ pedidos
+    let count = 0
+    for (const key of keys) {
+      const parts = key.split('|')
+      const matching = pedidos.filter(p =>
+        p.fornecedor_id === parts[0] && p.data_entrega_prevista === parts[1] && (p.cond_pagamento ?? '') === parts[2]
+      )
+      if (matching.length >= 2) count++
+    }
+    return count
+  }, [pedidos])
+
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
@@ -801,6 +868,22 @@ function PorFornecedorTab() {
 
   return (
     <>
+      {/* Consolidar button */}
+      {consolidatableCount > 0 && (
+        <div className="mb-4">
+          <button
+            onClick={() => setShowConsolidar(true)}
+            className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-4 py-2.5 text-sm font-medium text-primary hover:bg-primary/10 transition-colors"
+          >
+            <Package className="h-4 w-4" />
+            Consolidar Pedidos
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold">
+              {consolidatableCount} grupo(s)
+            </span>
+          </button>
+        </div>
+      )}
+
       {selectedIds.size > 0 && (
         <div className="mb-4 flex items-center justify-between rounded-xl border border-primary/30 bg-primary/5 p-3">
           <p className="text-xs font-medium">
@@ -902,6 +985,20 @@ function PorFornecedorTab() {
             qc.invalidateQueries({ queryKey: ['itens_compra'] })
             qc.invalidateQueries({ queryKey: ['movimentacoes'] })
             qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+          }}
+        />
+      )}
+
+      {/* Consolidar Pedidos Wizard */}
+      {showConsolidar && (
+        <ConsolidarPedidosWizard
+          pedidos={pedidos}
+          parcelas={parcelas}
+          onClose={() => setShowConsolidar(false)}
+          onDone={() => {
+            setShowConsolidar(false)
+            qc.invalidateQueries({ queryKey: ['parcelas'] })
+            qc.invalidateQueries({ queryKey: ['pedidos'] })
           }}
         />
       )}
@@ -1054,18 +1151,48 @@ function BatchPaymentModal({
 function ContasTab({ search }: { search: string }) {
   const { data: contas = [], isLoading } = useContasBancarias()
   const createConta = useCreateContaBancaria()
+  const updateConta = useUpdateContaBancaria()
+  const deleteConta = useDeleteContaBancaria()
   const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState({ nome: '', banco: '', agencia: '', conta: '', tipo: 'corrente', saldo_inicial: '' })
+
+  const startEdit = (c: ContaBancaria) => {
+    setEditingId(c.id)
+    setForm({
+      nome: c.nome, banco: c.banco ?? '', agencia: c.agencia ?? '',
+      conta: c.conta ?? '', tipo: c.tipo ?? 'corrente', saldo_inicial: String(c.saldo_inicial),
+    })
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    await createConta.mutateAsync({
-      nome: form.nome, banco: form.banco || null,
-      agencia: form.agencia || null, conta: form.conta || null,
-      tipo: form.tipo || null, saldo_inicial: form.saldo_inicial ? parseFloat(form.saldo_inicial) : 0,
-    })
+    if (editingId) {
+      await updateConta.mutateAsync({
+        id: editingId,
+        nome: form.nome, banco: form.banco || null,
+        agencia: form.agencia || null, conta: form.conta || null,
+        tipo: form.tipo || null, saldo_inicial: form.saldo_inicial ? parseFloat(form.saldo_inicial) : 0,
+      })
+      setEditingId(null)
+    } else {
+      await createConta.mutateAsync({
+        nome: form.nome, banco: form.banco || null,
+        agencia: form.agencia || null, conta: form.conta || null,
+        tipo: form.tipo || null, saldo_inicial: form.saldo_inicial ? parseFloat(form.saldo_inicial) : 0,
+      })
+    }
     setShowForm(false)
     setForm({ nome: '', banco: '', agencia: '', conta: '', tipo: 'corrente', saldo_inicial: '' })
+  }
+
+  const handleToggleAtiva = async (c: ContaBancaria) => {
+    await updateConta.mutateAsync({ id: c.id, ativa: !c.ativa })
+  }
+
+  const handleDelete = async (c: ContaBancaria) => {
+    if (!window.confirm(`Excluir conta "${c.nome}"? Esta a\u00e7\u00e3o \u00e9 irrevers\u00edvel.`)) return
+    deleteConta.mutate(c.id)
   }
 
   const filtered = contas.filter((c) =>
@@ -1075,27 +1202,31 @@ function ContasTab({ search }: { search: string }) {
   return (
     <>
       <div className="mb-4 flex justify-end">
-        <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
+        <button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ nome: '', banco: '', agencia: '', conta: '', tipo: 'corrente', saldo_inicial: '' }) }} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
           <Plus className="h-4 w-4" /> Nova Conta
         </button>
       </div>
 
-      {showForm && (
+      {(showForm || editingId) && (
         <div className="mb-4 rounded-xl border bg-card p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold">{editingId ? 'Editar Conta' : 'Nova Conta'}</h3>
+            <button onClick={() => { setShowForm(false); setEditingId(null) }} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
+          </div>
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="grid gap-3 md:grid-cols-3">
               <div><label className={LABEL}>Nome *</label><input type="text" value={form.nome} onChange={(e) => setForm((p) => ({ ...p, nome: e.target.value }))} required className={INPUT} /></div>
               <div><label className={LABEL}>Banco</label><input type="text" value={form.banco} onChange={(e) => setForm((p) => ({ ...p, banco: e.target.value }))} className={INPUT} /></div>
-              <div><label className={LABEL}>Tipo</label><select value={form.tipo} onChange={(e) => setForm((p) => ({ ...p, tipo: e.target.value }))} className={INPUT}><option value="corrente">Corrente</option><option value="poupanca">Poupança</option><option value="investimento">Investimento</option></select></div>
+              <div><label className={LABEL}>Tipo</label><select value={form.tipo} onChange={(e) => setForm((p) => ({ ...p, tipo: e.target.value }))} className={INPUT}><option value="corrente">Corrente</option><option value="poupanca">Poupan\u00e7a</option><option value="investimento">Investimento</option></select></div>
             </div>
             <div className="grid gap-3 md:grid-cols-3">
-              <div><label className={LABEL}>Agência</label><input type="text" value={form.agencia} onChange={(e) => setForm((p) => ({ ...p, agencia: e.target.value }))} className={INPUT} /></div>
+              <div><label className={LABEL}>Ag\u00eancia</label><input type="text" value={form.agencia} onChange={(e) => setForm((p) => ({ ...p, agencia: e.target.value }))} className={INPUT} /></div>
               <div><label className={LABEL}>Conta</label><input type="text" value={form.conta} onChange={(e) => setForm((p) => ({ ...p, conta: e.target.value }))} className={INPUT} /></div>
               <div><label className={LABEL}>Saldo Inicial (R$)</label><input type="number" step="0.01" value={form.saldo_inicial} onChange={(e) => setForm((p) => ({ ...p, saldo_inicial: e.target.value }))} className={INPUT} /></div>
             </div>
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setShowForm(false)} className="rounded-lg border px-4 py-2 text-sm hover:bg-accent">Cancelar</button>
-              <button type="submit" className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"><Check className="h-4 w-4" />Criar</button>
+              <button type="button" onClick={() => { setShowForm(false); setEditingId(null) }} className="rounded-lg border px-4 py-2 text-sm hover:bg-accent">Cancelar</button>
+              <button type="submit" className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"><Check className="h-4 w-4" />{editingId ? 'Salvar' : 'Criar'}</button>
             </div>
           </form>
         </div>
@@ -1104,22 +1235,49 @@ function ContasTab({ search }: { search: string }) {
       {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhuma conta cadastrada" /> : (
         <div className="grid gap-3 md:grid-cols-2">
           {filtered.map((c) => (
-            <div key={c.id} className="rounded-xl border bg-card p-5 transition-shadow hover:shadow-md">
+            <div key={c.id} className={`rounded-xl border bg-card p-5 transition-shadow hover:shadow-md ${!c.ativa ? 'opacity-60' : ''}`}>
               <div className="flex items-center justify-between">
                 <h4 className="font-medium">{c.nome}</h4>
-                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${c.ativa ? 'bg-emerald-500/10 text-emerald-600' : 'bg-red-500/10 text-red-500'}`}>
-                  {c.ativa ? 'Ativa' : 'Inativa'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${c.ativa ? 'bg-emerald-500/10 text-emerald-600' : 'bg-red-500/10 text-red-500'}`}>
+                    {c.ativa ? 'Ativa' : 'Inativa'}
+                  </span>
+                </div>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                 {c.banco && <p>Banco: <span className="font-medium text-foreground">{c.banco}</span></p>}
-                {c.agencia && <p>Agência: <span className="font-medium text-foreground">{c.agencia}</span></p>}
+                {c.agencia && <p>Ag\u00eancia: <span className="font-medium text-foreground">{c.agencia}</span></p>}
                 {c.conta && <p>Conta: <span className="font-medium text-foreground">{c.conta}</span></p>}
                 {c.tipo && <p>Tipo: <span className="font-medium text-foreground capitalize">{c.tipo}</span></p>}
               </div>
-              <div className="mt-3 border-t pt-3">
-                <p className="text-xs text-muted-foreground">Saldo Inicial</p>
-                <p className="text-lg font-bold">{formatCurrency(c.saldo_inicial)}</p>
+              <div className="mt-3 border-t pt-3 flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-muted-foreground">Saldo Inicial</p>
+                  <p className="text-lg font-bold">{formatCurrency(c.saldo_inicial)}</p>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => { startEdit(c); setShowForm(true) }}
+                    className="rounded-lg p-2 text-muted-foreground hover:bg-primary/10 hover:text-primary transition-colors"
+                    title="Editar"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => handleToggleAtiva(c)}
+                    className={`rounded-lg p-2 transition-colors ${c.ativa ? 'text-amber-500 hover:bg-amber-500/10' : 'text-emerald-500 hover:bg-emerald-500/10'}`}
+                    title={c.ativa ? 'Inativar' : 'Ativar'}
+                  >
+                    {c.ativa ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(c)}
+                    className="rounded-lg p-2 text-red-500 hover:bg-red-500/10 transition-colors"
+                    title="Excluir (somente sem movimenta\u00e7\u00f5es)"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
           ))}

@@ -38,7 +38,7 @@ export default function MedicoesPanel() {
   const [showNewModal, setShowNewModal] = useState(false)
   const [newForm, setNewForm] = useState({ numero: '', data_prevista: '', data_inicio: '', data_fim: '' })
   const [editingCell, setEditingCell] = useState<{ distId: string | null; etapaId: string; medNumero: number; value: string } | null>(null)
-  const [editingMed, setEditingMed] = useState<{ id: string; data_prevista: string; data_liberacao: string; status: string } | null>(null)
+  const [editingMed, setEditingMed] = useState<{ id: string; nome: string; data_prevista: string; data_liberacao: string; data_inicio: string; data_fim: string; status: string } | null>(null)
   const [editingPreco, setEditingPreco] = useState<{ etapaId: string; value: string } | null>(null)
   const [search, setSearch] = useState('')
 
@@ -342,14 +342,33 @@ export default function MedicoesPanel() {
                 {sortedMedicoes.map((med, medIdx) => {
                   const cfg = STATUS_COLORS[med.status] ?? STATUS_COLORS['futura']!
                   const isEditingThis = editingMed?.id === med.id
+                  const prevMed = medIdx > 0 ? sortedMedicoes[medIdx - 1] : null
+                  // Read dates from actual distributions (source of truth after save)
+                  const firstDist = distribuicoes.find(d => d.medicao_numero === med.numero)
+                  const dataInicio = firstDist?.data_inicio ?? prevMed?.data_prevista ?? null
+                  const dataFim = firstDist?.data_fim ?? med.data_prevista ?? null
                   return (
                     <th key={med.id} colSpan={2} className="border-r px-2 py-1.5 text-center min-w-[160px] relative">
                       {isEditingThis ? (
-                        <div className="absolute top-full left-1/2 -translate-x-1/2 z-50 mt-1 w-56 rounded-xl border bg-card p-3 shadow-2xl text-left" onClick={e => e.stopPropagation()}>
+                        <div className="absolute top-full left-1/2 -translate-x-1/2 z-50 mt-1 w-64 rounded-xl border bg-card p-3 shadow-2xl text-left" onClick={e => e.stopPropagation()}>
                           <p className="text-[10px] font-bold uppercase text-muted-foreground mb-2">Editar Med {String(med.numero).padStart(2, '0')}</p>
                           <div className="space-y-2">
                             <div>
-                              <label className="text-[9px] font-medium text-muted-foreground">Data Prevista</label>
+                              <label className="text-[9px] font-medium text-muted-foreground">Nome / Descrição</label>
+                              <input type="text" value={editingMed.nome} onChange={e => setEditingMed({ ...editingMed, nome: e.target.value })} placeholder={`Medição ${String(med.numero).padStart(2, '0')}`} className={`${INPUT} mt-0.5`} />
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="text-[9px] font-medium text-muted-foreground">Data Início</label>
+                                <input type="date" value={editingMed.data_inicio} onChange={e => setEditingMed({ ...editingMed, data_inicio: e.target.value })} className={`${INPUT} mt-0.5`} />
+                              </div>
+                              <div>
+                                <label className="text-[9px] font-medium text-muted-foreground">Data Fim</label>
+                                <input type="date" value={editingMed.data_fim} onChange={e => setEditingMed({ ...editingMed, data_fim: e.target.value })} className={`${INPUT} mt-0.5`} />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-[9px] font-medium text-muted-foreground">Data Prevista (Referência)</label>
                               <input type="date" value={editingMed.data_prevista} onChange={e => setEditingMed({ ...editingMed, data_prevista: e.target.value })} className={`${INPUT} mt-0.5`} />
                             </div>
                             <div>
@@ -370,40 +389,62 @@ export default function MedicoesPanel() {
                             <button onClick={() => setEditingMed(null)} className="rounded px-2 py-1 text-[10px] hover:bg-accent">Cancelar</button>
                             <button
                               onClick={async () => {
-                                const prevMed = medIdx > 0 ? sortedMedicoes[medIdx - 1] : null
-                                const nextMed = medIdx < sortedMedicoes.length - 1 ? sortedMedicoes[medIdx + 1] : null
-                                if (prevMed?.data_prevista && editingMed.data_prevista && editingMed.data_prevista < prevMed.data_prevista) {
-                                  toast.error(`Data não pode ser anterior à Med ${String(prevMed.numero).padStart(2, '0')} (${fmtDate(prevMed.data_prevista)})`)
-                                  return
-                                }
-                                if (nextMed?.data_prevista && editingMed.data_prevista && editingMed.data_prevista > nextMed.data_prevista) {
-                                  toast.warning(`Atenção: data posterior à Med ${String(nextMed.numero).padStart(2, '0')} (${fmtDate(nextMed.data_prevista)})`)
-                                }
-                                await updateMedicao.mutateAsync({
-                                  id: med.id,
-                                  data_prevista: editingMed.data_prevista || undefined,
-                                  data_liberacao: editingMed.data_liberacao || undefined,
-                                  status: editingMed.status as Medicao['status'],
-                                })
-
-                                // Cascade: update distribution dates for this measurement
-                                if (editingMed.data_prevista && editingMed.data_prevista !== med.data_prevista) {
-                                  // data_fim of this measurement's distributions = data_prevista
-                                  const thisDists = distribuicoes.filter(d => d.medicao_numero === med.numero)
-                                  for (const d of thisDists) {
-                                    await supabase.from('cronograma_distribuicao').update({ data_fim: editingMed.data_prevista }).eq('id', d.id)
+                                try {
+                                  const prevMed = medIdx > 0 ? sortedMedicoes[medIdx - 1] : null
+                                  const nextMed = medIdx < sortedMedicoes.length - 1 ? sortedMedicoes[medIdx + 1] : null
+                                  if (prevMed?.data_prevista && editingMed.data_prevista && editingMed.data_prevista < prevMed.data_prevista) {
+                                    toast.error(`Data não pode ser anterior à Med ${String(prevMed.numero).padStart(2, '0')} (${fmtDate(prevMed.data_prevista)})`)
+                                    return
                                   }
-                                  // data_inicio of next measurement's distributions = data_prevista
-                                  if (nextMed) {
-                                    const nextDists = distribuicoes.filter(d => d.medicao_numero === nextMed.numero)
-                                    for (const d of nextDists) {
-                                      await supabase.from('cronograma_distribuicao').update({ data_inicio: editingMed.data_prevista }).eq('id', d.id)
+                                  if (nextMed?.data_prevista && editingMed.data_prevista && editingMed.data_prevista > nextMed.data_prevista) {
+                                    toast.warning(`Atenção: data posterior à Med ${String(nextMed.numero).padStart(2, '0')} (${fmtDate(nextMed.data_prevista)})`)
+                                  }
+
+                                  // Build clean payload — no undefined values
+                                  const medUpdate: Record<string, unknown> = {
+                                    id: med.id,
+                                    observacoes: editingMed.nome || null,
+                                    status: editingMed.status,
+                                  }
+                                  if (editingMed.data_prevista) medUpdate.data_prevista = editingMed.data_prevista
+                                  if (editingMed.data_liberacao) medUpdate.data_liberacao = editingMed.data_liberacao
+
+                                  await updateMedicao.mutateAsync(medUpdate as any)
+
+                                  // Cascade: update distribution dates for this measurement
+                                  const thisDists = distribuicoes.filter(d => d.medicao_numero === med.numero)
+
+                                  if (thisDists.length > 0) {
+                                    const effDataInicio = editingMed.data_inicio || null
+                                    const effDataFim = editingMed.data_fim || editingMed.data_prevista || null
+
+                                    for (const d of thisDists) {
+                                      const patch: Record<string, string | null> = {}
+                                      if (effDataInicio !== null) patch.data_inicio = effDataInicio
+                                      if (effDataFim !== null) patch.data_fim = effDataFim
+                                      if (Object.keys(patch).length > 0) {
+                                        await supabase.from('cronograma_distribuicao').update(patch).eq('id', d.id)
+                                      }
+                                    }
+
+                                    // Update next measurement's data_inicio if data_fim changed
+                                    if (nextMed && effDataFim) {
+                                      const nextDists = distribuicoes.filter(d => d.medicao_numero === nextMed.numero)
+                                      for (const d of nextDists) {
+                                        await supabase.from('cronograma_distribuicao').update({ data_inicio: effDataFim }).eq('id', d.id)
+                                      }
                                     }
                                   }
-                                  qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
-                                }
 
-                                setEditingMed(null)
+                                  // Force refresh all related data
+                                  await qc.invalidateQueries({ queryKey: ['medicoes'] })
+                                  await qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+
+                                  setEditingMed(null)
+                                } catch (err: any) {
+                                  toast.error('Erro ao salvar medição: ' + (err?.message || 'erro desconhecido'))
+                                  console.error('Save medicao error:', err)
+                                }
                               }}
                               className="rounded bg-primary px-2 py-1 text-[10px] font-medium text-primary-foreground hover:opacity-90"
                             >Salvar</button>
@@ -412,16 +453,23 @@ export default function MedicoesPanel() {
                       ) : null}
                       <div className="flex flex-col items-center gap-0.5">
                         <div className="flex items-center gap-1">
-                          <span className="font-bold text-[11px]">Med {String(med.numero).padStart(2, '0')}</span>
+                          <span className="font-bold text-[11px]">{med.observacoes || `Med ${String(med.numero).padStart(2, '0')}`}</span>
                           <button
-                            onClick={(e) => { e.stopPropagation(); setEditingMed({ id: med.id, data_prevista: med.data_prevista || '', data_liberacao: med.data_liberacao || '', status: med.status }) }}
+                            onClick={(e) => { e.stopPropagation(); setEditingMed({ id: med.id, nome: med.observacoes || '', data_prevista: med.data_prevista || '', data_liberacao: med.data_liberacao || '', data_inicio: dataInicio ?? '', data_fim: dataFim ?? '', status: med.status }) }}
                             className="rounded p-0.5 hover:bg-accent text-muted-foreground/50 hover:text-muted-foreground transition-colors"
                             title="Editar medição"
                           >
                             <Pencil className="h-2.5 w-2.5 text-muted-foreground" />
                           </button>
                         </div>
-                        {med.data_prevista && <span className="text-[9px] text-muted-foreground">{fmtDate(med.data_prevista)}</span>}
+                        {med.observacoes && (
+                          <span className="text-[9px] text-muted-foreground font-medium">Nº {String(med.numero).padStart(2, '0')}</span>
+                        )}
+                        {(dataInicio || dataFim) && (
+                          <span className="text-[9px] text-muted-foreground tabular-nums" title={`Início: ${dataInicio ? fmtDate(dataInicio) : '—'} · Fim: ${dataFim ? fmtDate(dataFim) : '—'}`}>
+                            {dataInicio ? fmtDate(dataInicio) : '—'} → {dataFim ? fmtDate(dataFim) : '—'}
+                          </span>
+                        )}
                         <span className={`rounded-full px-2 py-0.5 text-[8px] font-semibold ${cfg.cls}`}>{cfg.label}</span>
                       </div>
                     </th>

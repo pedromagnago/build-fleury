@@ -1,10 +1,12 @@
 import { useState, useCallback, useMemo } from 'react'
-import { Parcela } from '@/hooks/useFinanceiro'
+import { Parcela, useSaldoContas } from '@/hooks/useFinanceiro'
 import { ReconciliationResult } from '@/hooks/useConciliacao'
 import { SystemColumn } from './SystemColumn'
 import { BankColumn } from './BankColumn'
 import { ActionEngineColumn } from './ActionEngineColumn'
 import { BulkActionBar } from './BulkActionBar'
+import { formatCurrency } from '@/lib/utils'
+import { TrendingUp, TrendingDown, Scale, AlertTriangle } from 'lucide-react'
 
 export interface ConciliacaoWorkspaceProps {
   parcelas: Parcela[]
@@ -98,16 +100,16 @@ export function ConciliacaoWorkspace({
     return map
   }, [savedConcs])
 
-  // Handle clicking an extrato row -> filter parcelas to its linked ones
+  // Handle clicking an extrato row — keep parcela selection for manual conciliation
   const handleSelectMov = useCallback((id: string) => {
     setActiveMovId(prev => prev === id ? null : id)
-    setActiveParcelaId(null) // clear parcela selection when selecting extrato
+    // Don't clear parcela selection — allow dual selection for manual conciliation
   }, [])
 
-  // Handle clicking a parcela row -> filter extrato to its linked one
+  // Handle clicking a parcela row — keep extrato selection for manual conciliation
   const handleSelectParcela = useCallback((id: string) => {
     setActiveParcelaId(prev => prev === id ? null : id)
-    setActiveMovId(null) // clear extrato selection when selecting parcela
+    // Don't clear extrato selection — allow dual selection for manual conciliation
   }, [])
 
   // When an extrato is selected, find linked parcela IDs (from engine results OR saved concs)
@@ -138,10 +140,54 @@ export function ConciliacaoWorkspace({
   // Find active parcela for detail display
   const activeParcela = activeParcelaId ? (parcelas.find(p => p.id === activeParcelaId) ?? null) : null
 
+  // Dual selection state: both mov and parcela selected = manual conciliation mode
+  const isDualSelected = !!activeMovId && !!activeParcelaId
+
   const totalSelected = selectedMovIds.size + selectedParcelaIds.size
+
+  // Balance summary
+  const saldoContas = useSaldoContas()
 
   return (
     <div className="space-y-3">
+      {/* Balance Summary Panel */}
+      {saldoContas.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {saldoContas.map(s => (
+            <div key={s.conta_id} className="rounded-xl border bg-card p-3">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">{s.conta_nome}</p>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-muted-foreground flex items-center gap-1"><Scale className="h-2.5 w-2.5" />Sistema</span>
+                  <span className="text-xs font-bold">{formatCurrency(s.saldo_sistema)}</span>
+                </div>
+                {s.saldo_extrato != null && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-muted-foreground flex items-center gap-1"><TrendingUp className="h-2.5 w-2.5" />Extrato</span>
+                      <span className="text-xs font-bold">{formatCurrency(s.saldo_extrato)}</span>
+                    </div>
+                    <div className={`flex items-center justify-between rounded-md px-1.5 py-0.5 ${s.diferenca === 0 ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+                      <span className="text-[10px] font-medium flex items-center gap-1">
+                        {s.diferenca !== 0 && <AlertTriangle className="h-2.5 w-2.5 text-red-500" />}
+                        Diferença
+                      </span>
+                      <span className={`text-xs font-bold ${s.diferenca === 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {formatCurrency(s.diferenca!)}
+                      </span>
+                    </div>
+                  </>
+                )}
+                <div className="flex items-center gap-2 text-[9px] text-muted-foreground mt-0.5">
+                  <span className="text-emerald-600">{s.conciliadas} concil.</span>
+                  <span className="text-amber-600">{s.pendentes} pend.</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Bulk Action Bar — shown when items are selected */}
       {totalSelected > 0 && (
         <BulkActionBar

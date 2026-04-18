@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { ConferenciaPedidos } from '@/components/compras/ConferenciaPedidos'
+import { MatrizCompras } from '@/components/compras/MatrizCompras'
 import { usePedidosConformidade } from '@/hooks/usePedidos'
 import {
   useItensCompra, useFornecedores, useCreateItemCompra, useUpdateItemCompra, useDeleteItemCompra,
@@ -57,7 +58,7 @@ function toBRLInput(v: number | string): string {
 // Main
 // ---------------------------------------------------------------------------
 
-type Tab = 'itens' | 'pedidos' | 'fornecedores' | 'curva_abc' | 'por_fornecedor' | 'conferencia' | 'conf_cronograma'
+type Tab = 'itens' | 'pedidos' | 'matriz' | 'fornecedores' | 'curva_abc' | 'por_fornecedor' | 'conferencia' | 'conf_cronograma'
 
 export default function Compras() {
   const { restartTour } = useTour('compras', pageTours.compras)
@@ -77,6 +78,7 @@ export default function Compras() {
   const TABS: Array<{ key: Tab; label: string; icon: typeof Package; badge?: number }> = [
     { key: 'itens',            label: 'Itens',                  icon: Package },
     { key: 'pedidos',          label: 'Pedidos',                icon: Truck },
+    { key: 'matriz',           label: 'Matriz',                 icon: Boxes },
     { key: 'conferencia',      label: 'Conferência',            icon: BarChart3 },
     { key: 'conf_cronograma',  label: 'Conf. Cronograma',       icon: CalendarClock, badge: atRiskCount || undefined },
     { key: 'fornecedores',     label: 'Fornecedores',           icon: Users },
@@ -122,7 +124,7 @@ export default function Compras() {
       </div>
 
       {/* Search (not for charts) */}
-      {(tab === 'itens' || tab === 'pedidos' || tab === 'fornecedores' || tab === 'conferencia' || tab === 'conf_cronograma') && (
+      {(tab === 'itens' || tab === 'pedidos' || tab === 'matriz' || tab === 'fornecedores' || tab === 'conferencia' || tab === 'conf_cronograma') && (
         <div className="mb-4 flex gap-3">
           <div id="tour-compras-filters" className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -139,6 +141,7 @@ export default function Compras() {
 
       {tab === 'itens'           && <ItensTab search={search} filterEtapa={initialEtapa} />}
       {tab === 'pedidos'         && <PedidosTab search={search} />}
+      {tab === 'matriz'          && <MatrizCompras search={search} />}
       {tab === 'conferencia'     && <ConferenciaWBSTab search={search} />}
       {tab === 'conf_cronograma' && <ConferenciaPedidos search={search} />}
       {tab === 'fornecedores'    && <FornecedoresTab search={search} />}
