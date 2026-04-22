@@ -2167,30 +2167,56 @@ function PagamentosRealizadosTab() {
       return false
     }
     /**
-     * Match de pagamento com parcela existente.
-     * Ordem de prioridade:
-     *   1. Match EXATO: valor igual ao da parcela (±2%) + data próxima
-     *   2. Match PARCIAL: valor ≤ saldo restante da parcela (valor - valor_pago) — suporta
-     *      múltiplos pagamentos parciais contra a mesma parcela
+     * Match com SCORE BLEND (v2).
+     * Pesos: fornecedor compatível > valor próximo > data próxima.
+     *
+     * Escala do score (menor = melhor):
+     *   - Fornecedor incompatível: +10000 (fora salvo)
+     *   - Match exato de valor (±1%): score base + data
+     *   - Match parcial (saldo >= valor): score base + distância do valor + data
+     *
+     * Janela de data: 120 dias (antes 90) — cobre condições 30/60/90/120
+     * Tolerância valor exato: 1% (antes 2%)
      */
     function findMatchParcela(forn: string, valor: number, dataPgto: string): { cand: Candidato; exato: boolean } | null {
-      const tolValor = Math.max(valor * 0.02, 1)
-      const dataPgtoDt = new Date(dataPgto)
+      const tolExato = Math.max(valor * 0.01, 0.5)
+      const dataPgtoDt = new Date(dataPgto + 'T12:00:00').getTime()
       const matches: { cand: Candidato; exato: boolean; score: number }[] = []
+
       for (const p of parcelasPool) {
-        if (!fornCompatvel(forn, p.fornNome)) continue
-        const diffDias = Math.abs((new Date(p.data_vencimento).getTime() - dataPgtoDt.getTime()) / 86400000)
-        if (diffDias > 90) continue
         const saldo = p.valor - p.valor_pago
-        const exato = Math.abs(p.valor - valor) <= tolValor
-        const parcial = saldo + 0.01 >= valor && saldo > 0.01
+        if (saldo <= 0.005) continue
+
+        const diffDias = Math.abs((new Date(p.data_vencimento + 'T12:00:00').getTime() - dataPgtoDt) / 86400000)
+        if (diffDias > 120) continue
+
+        const fornOK = fornCompatvel(forn, p.fornNome)
+        const exato = Math.abs(p.valor - valor) <= tolExato
+        const parcial = saldo + 0.01 >= valor
+
         if (!exato && !parcial) continue
-        const score = (exato ? 0 : 1000) + diffDias + Math.abs(saldo - valor) * 0.001
+
+        // Score blend (menor = melhor):
+        //  - match exato: base 0, senão 500 (parcial)
+        //  - + fornecedor incompatível: +2000 (penalidade grande, mas ainda candidato)
+        //  - + distância relativa do valor (0-100)
+        //  - + distância em dias (0-120)
+        let score = exato ? 0 : 500
+        if (!fornOK) score += 2000
+        score += Math.abs(saldo - valor) / Math.max(valor, 1) * 50
+        score += diffDias * 2
+
         matches.push({ cand: p, exato, score })
       }
+
       if (matches.length === 0) return null
       matches.sort((a, b) => a.score - b.score)
+
+      // Só aceita se o melhor tem fornecedor compatível (score < 2000) OU é match exato (mesmo sem fornecedor)
       const best = matches[0]!
+      const fornBestOK = fornCompatvel(forn, best.cand.fornNome)
+      if (!fornBestOK && !best.exato) return null
+
       return { cand: best.cand, exato: best.exato }
     }
     let pedidosBaixados = 0

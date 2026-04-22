@@ -20,12 +20,13 @@ import BulkActionBar from '@/components/BulkActionBar'
 import PagamentosBulkActions from '@/components/PagamentosBulkActions'
 import EditParcelaModal from '@/components/financeiro/EditParcelaModal'
 import ConsolidarPedidosWizard from '@/components/financeiro/ConsolidarPedidosWizard'
+import { VinculosMovsPanel } from '@/components/conciliacao/VinculosMovsPanel'
 import { useSelection } from '@/hooks/useSelection'
 import {
   Wallet, Plus, X, Check, AlertTriangle, Clock,
   CheckCircle2, CreditCard, Search, CalendarClock,
   Calendar, Users, Upload, Paperclip, ChevronDown, ChevronRight, Trash2,
-  Pencil, Package, Power, PowerOff,
+  Pencil, Package, Power, PowerOff, Link as LinkIcon,
 } from 'lucide-react'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
@@ -114,6 +115,7 @@ function ParcelasTab({ search }: { search: string }) {
   const [showForm, setShowForm] = useState(false)
   const [payingParcela, setPayingParcela] = useState<Parcela | null>(null)
   const [editingParcela, setEditingParcela] = useState<Parcela | null>(null)
+  const [viewingVinculos, setViewingVinculos] = useState<Parcela | null>(null)
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('todos')
   const selection = useSelection()
   const { data: fornecedores = [] } = useFornecedores()
@@ -330,6 +332,11 @@ function ParcelasTab({ search }: { search: string }) {
                     </td>
                     <td className="px-3 py-2.5 text-center">
                       <div className="flex items-center justify-center gap-1">
+                        <button onClick={() => setViewingVinculos(p)}
+                          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                          title="Ver movimentos vinculados">
+                          <LinkIcon className="h-3 w-3" />
+                        </button>
                         {/* Edit button — works for all parcelas */}
                         {!isMutuo && (
                           <button onClick={() => setEditingParcela(p)} className="rounded-md bg-primary/10 p-1.5 text-primary hover:bg-primary/20 transition-colors" title="Editar">
@@ -409,6 +416,18 @@ function ParcelasTab({ search }: { search: string }) {
             qc.invalidateQueries({ queryKey: ['movimentacoes'] })
             qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
           }}
+        />
+      )}
+
+      {viewingVinculos && (
+        <VinculosMovsPanel
+          origem={(viewingVinculos as any)._source === 'mutuo' ? 'mutuo_parcela' : 'parcela'}
+          origemId={viewingVinculos.id}
+          titulo={viewingVinculos.pedido_item ?? viewingVinculos.descricao ?? 'Parcela'}
+          subtitulo={`Venc ${localDate(viewingVinculos.data_vencimento).toLocaleDateString('pt-BR')} · Parcela ${viewingVinculos.numero_parcela}`}
+          valor={Number(viewingVinculos.valor)}
+          valorPago={Number(viewingVinculos.valor_pago || 0)}
+          onClose={() => setViewingVinculos(null)}
         />
       )}
     </>

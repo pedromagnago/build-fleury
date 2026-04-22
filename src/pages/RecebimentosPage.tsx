@@ -21,6 +21,7 @@ import { useMedicoes } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
 import { formatCurrency } from '@/lib/utils'
 import { NovoAdiantamentoDialog } from '@/components/financeiro/NovoAdiantamentoDialog'
+import { VinculosMovsPanel } from '@/components/conciliacao/VinculosMovsPanel'
 
 type Tab = 'geral' | 'medicoes' | 'adiantamentos'
 
@@ -49,6 +50,7 @@ export default function RecebimentosPage() {
   const [tab, setTab] = useState<Tab>('geral')
   const [search, setSearch] = useState('')
   const [showNovo, setShowNovo] = useState(false)
+  const [viewingVinculos, setViewingVinculos] = useState<RecebimentoItem | null>(null)
 
   // Consolidar: medições + adiantamentos a receber (sem movs bancárias)
   const todosRecebimentos: RecebimentoItem[] = useMemo(() => {
@@ -217,7 +219,7 @@ export default function RecebimentosPage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {filtrados.map(r => <RecebimentoRow key={r.id} item={r} />)}
+                {filtrados.map(r => <RecebimentoRow key={r.id} item={r} onShowVinculos={() => setViewingVinculos(r)} />)}
               </tbody>
               <tfoot className="bg-muted/30 font-bold">
                 <tr>
@@ -251,6 +253,19 @@ export default function RecebimentosPage() {
       {showNovo && (
         <NovoAdiantamentoDialog onClose={() => setShowNovo(false)} />
       )}
+
+      {/* Visão reversa: movs vinculados ao recebimento */}
+      {viewingVinculos && (
+        <VinculosMovsPanel
+          origem={viewingVinculos.origem === 'medicao' ? 'medicao' : 'mutuo_parcela'}
+          origemId={viewingVinculos.raw.id}
+          titulo={viewingVinculos.descricao}
+          subtitulo={`${viewingVinculos.parceiro ?? ''} · Previsto ${viewingVinculos.data_prevista}`}
+          valor={viewingVinculos.valor}
+          valorPago={viewingVinculos.raw.valor_liberado ?? viewingVinculos.raw.valor_pago ?? 0}
+          onClose={() => setViewingVinculos(null)}
+        />
+      )}
     </div>
   )
 }
@@ -269,7 +284,7 @@ function KpiCard({ icon: Icon, label, value, color }: {
   )
 }
 
-function RecebimentoRow({ item }: { item: RecebimentoItem }) {
+function RecebimentoRow({ item, onShowVinculos }: { item: RecebimentoItem; onShowVinculos: () => void }) {
   const statusCfg = {
     previsto: { label: 'Previsto', cls: 'bg-blue-500/10 text-blue-600', Icon: Clock },
     recebido: { label: 'Recebido', cls: 'bg-emerald-500/10 text-emerald-600', Icon: CheckCircle2 },
@@ -306,9 +321,14 @@ function RecebimentoRow({ item }: { item: RecebimentoItem }) {
         {formatCurrency(item.valor)}
       </td>
       <td className="px-3 py-2 text-center">
-        <Link to={linkTo} className="text-muted-foreground hover:text-primary" title="Ver detalhes">
-          <ExternalLink className="h-3.5 w-3.5 inline" />
-        </Link>
+        <div className="inline-flex items-center gap-2">
+          <button onClick={onShowVinculos} className="text-muted-foreground hover:text-primary" title="Ver movs vinculados">
+            🔗
+          </button>
+          <Link to={linkTo} className="text-muted-foreground hover:text-primary" title="Ver origem">
+            <ExternalLink className="h-3.5 w-3.5 inline" />
+          </Link>
+        </div>
       </td>
     </tr>
   )

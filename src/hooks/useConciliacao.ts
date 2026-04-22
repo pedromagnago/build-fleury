@@ -38,11 +38,18 @@ export function useConciliacoes() {
       if (!currentCompany) return []
       const { data, error } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, valor_aplicado)')
+        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, valor_aplicado)')
         .eq('company_id', currentCompany.id)
         .order('created_at', { ascending: false })
       if (error) throw error
-      return (data ?? []) as (Conciliacao & { conciliacao_parcelas: { parcela_id: string; valor_aplicado: number }[] })[]
+      return (data ?? []) as (Conciliacao & {
+        conciliacao_parcelas: {
+          parcela_id: string | null
+          medicao_id: string | null
+          mutuo_parcela_id: string | null
+          valor_aplicado: number
+        }[]
+      })[]
     },
     enabled: !!currentCompany,
   })
@@ -433,6 +440,74 @@ async function computeParcelaStatus(
   return { status: 'paga', data_pagamento_real: p.data_pagamento_real ?? today }
 }
 
+// ─── Helpers para v\u00ednculos polim\u00f3rficos (N:N com 3 tipos de origem) ─────
+export type VinculoOrigem = 'parcela' | 'medicao' | 'mutuo_parcela'
+export interface VinculoPayload {
+  origem: VinculoOrigem
+  origem_id: string
+  valor_aplicado: number
+}
+
+// Aplica delta (pode ser negativo ao desfazer) no valor_pago da origem e atualiza status
+async function aplicarDeltaOrigem(
+  origem: VinculoOrigem,
+  origemId: string,
+  delta: number,
+  dataPgto: string,
+) {
+  if (Math.abs(delta) < 0.005) return
+
+  if (origem === 'parcela') {
+    const { data: p } = await supabase.from('parcelas').select('valor_pago').eq('id', origemId).single()
+    if (!p) return
+    const novoPago = Math.max(0, (Number(p.valor_pago) || 0) + delta)
+    const { status, data_pagamento_real } = await computeParcelaStatus(origemId, novoPago)
+    await supabase.from('parcelas').update({ valor_pago: novoPago, status, data_pagamento_real }).eq('id', origemId)
+  }
+  else if (origem === 'mutuo_parcela') {
+    const { data: mp } = await supabase.from('mutuo_parcelas').select('valor, valor_pago, data_vencimento').eq('id', origemId).single()
+    if (!mp) return
+    const novoPago = Math.max(0, (Number(mp.valor_pago) || 0) + delta)
+    const total = Number(mp.valor)
+    const today = new Date().toISOString().split('T')[0]!
+    const novoStatus = novoPago <= 0.005 ? (mp.data_vencimento < today ? 'vencida' : 'pendente')
+      : novoPago >= total - 0.005 ? 'paga' : 'parcialmente_paga'
+    await supabase.from('mutuo_parcelas').update({
+      valor_pago: novoPago, status: novoStatus,
+      data_pagamento_real: novoPago > 0 ? dataPgto : null,
+    }).eq('id', origemId)
+  }
+  else if (origem === 'medicao') {
+    const { data: m } = await supabase.from('medicoes').select('valor_planejado, valor_liberado').eq('id', origemId).single()
+    if (!m) return
+    const novoLiberado = Math.max(0, (Number(m.valor_liberado) || 0) + delta)
+    const total = Number(m.valor_planejado) || 0
+    const novoStatus = novoLiberado <= 0.005 ? 'futura'
+      : novoLiberado >= total - 0.005 ? 'paga' : 'liberada'
+    await supabase.from('medicoes').update({
+      valor_liberado: novoLiberado, status: novoStatus,
+      data_liberacao: novoLiberado > 0 ? dataPgto : null,
+    }).eq('id', origemId)
+  }
+}
+
+// Infere tipo de origem de um link de conciliacao_parcelas
+function inferirOrigem(link: any): { origem: VinculoOrigem; origem_id: string } | null {
+  if (link.parcela_id) return { origem: 'parcela', origem_id: link.parcela_id }
+  if (link.medicao_id) return { origem: 'medicao', origem_id: link.medicao_id }
+  if (link.mutuo_parcela_id) return { origem: 'mutuo_parcela', origem_id: link.mutuo_parcela_id }
+  return null
+}
+
+// Monta row para insert em conciliacao_parcelas baseado na origem
+function buildLinkRow(conciliacaoId: string, v: VinculoPayload) {
+  const base: any = { conciliacao_id: conciliacaoId, valor_aplicado: v.valor_aplicado }
+  if (v.origem === 'parcela') base.parcela_id = v.origem_id
+  else if (v.origem === 'medicao') base.medicao_id = v.origem_id
+  else if (v.origem === 'mutuo_parcela') base.mutuo_parcela_id = v.origem_id
+  return base
+}
+
 export function useUndoConciliacao() {
   const qc = useQueryClient()
   const { currentCompany } = useProject()
@@ -443,13 +518,14 @@ export function useUndoConciliacao() {
 
       const { data: conc, error: concErr } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, valor_aplicado)')
+        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, valor_aplicado)')
         .eq('id', conciliacaoId)
         .single()
       if (concErr) throw concErr
       if (!conc) throw new Error('Conciliação não encontrada')
 
       const snapshot = { ...conc }
+      const today = new Date().toISOString().split('T')[0]!
 
       await supabase.from('movimentacoes_bancarias').update({
         conciliado: false,
@@ -457,22 +533,11 @@ export function useUndoConciliacao() {
         parcela_id: null,
       }).eq('id', conc.movimentacao_id)
 
-      for (const link of (conc.conciliacao_parcelas ?? [])) {
-        const { data: parcela } = await supabase
-          .from('parcelas')
-          .select('valor, valor_pago')
-          .eq('id', link.parcela_id)
-          .single()
-        if (!parcela) continue
-
-        const novoPago = Math.max(0, (Number(parcela.valor_pago) || 0) - Number(link.valor_aplicado))
-        const { status, data_pagamento_real } = await computeParcelaStatus(link.parcela_id, novoPago)
-
-        await supabase.from('parcelas').update({
-          valor_pago: novoPago,
-          status,
-          data_pagamento_real,
-        }).eq('id', link.parcela_id)
+      for (const link of (conc.conciliacao_parcelas ?? []) as any[]) {
+        const origem = inferirOrigem(link)
+        if (!origem) continue
+        // Delta negativo (reverte valor_pago)
+        await aplicarDeltaOrigem(origem.origem, origem.origem_id, -Number(link.valor_aplicado), today)
       }
 
       await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conciliacaoId)
@@ -504,7 +569,10 @@ export function useUndoConciliacao() {
 
 export interface UpdateConciliacaoPayload {
   conciliacaoId: string
-  parcelas: { parcela_id: string; valor_aplicado: number }[]
+  // Novo formato polim\u00f3rfico (preferido)
+  vinculos?: VinculoPayload[]
+  // Legado (mantido por compatibilidade)
+  parcelas?: { parcela_id: string; valor_aplicado: number }[]
 }
 
 export function useUpdateConciliacao() {
@@ -512,56 +580,60 @@ export function useUpdateConciliacao() {
   const { currentCompany } = useProject()
 
   return useMutation({
-    mutationFn: async ({ conciliacaoId, parcelas: novasParcelas }: UpdateConciliacaoPayload) => {
+    mutationFn: async ({ conciliacaoId, vinculos, parcelas: parcelasLegacy }: UpdateConciliacaoPayload) => {
       if (!currentCompany) throw new Error('No company')
+
+      const novosVinculos: VinculoPayload[] = vinculos ?? (parcelasLegacy ?? []).map(p => ({
+        origem: 'parcela' as VinculoOrigem,
+        origem_id: p.parcela_id,
+        valor_aplicado: p.valor_aplicado,
+      }))
 
       const { data: conc, error: concErr } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, valor_aplicado)')
+        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, valor_aplicado)')
         .eq('id', conciliacaoId)
         .single()
       if (concErr) throw concErr
       if (!conc) throw new Error('Conciliação não encontrada')
 
       const snapshot = { ...conc }
-      const linksAntigos: { parcela_id: string; valor_aplicado: number }[] = conc.conciliacao_parcelas ?? []
+      const today = new Date().toISOString().split('T')[0]!
 
-      const antigoMap = new Map(linksAntigos.map(l => [l.parcela_id, Number(l.valor_aplicado)]))
-      const novoMap = new Map(novasParcelas.map(l => [l.parcela_id, Number(l.valor_aplicado)]))
+      // Mapa de links antigos por chave `${origem}:${id}` → valor_aplicado
+      const antigoMap = new Map<string, number>()
+      for (const link of (conc.conciliacao_parcelas ?? []) as any[]) {
+        const o = inferirOrigem(link); if (!o) continue
+        antigoMap.set(`${o.origem}:${o.origem_id}`, Number(link.valor_aplicado))
+      }
+      const novoMap = new Map<string, { payload: VinculoPayload; valor: number }>()
+      for (const v of novosVinculos) {
+        novoMap.set(`${v.origem}:${v.origem_id}`, { payload: v, valor: Number(v.valor_aplicado) })
+      }
 
-      const afetadas = new Set([...antigoMap.keys(), ...novoMap.keys()])
+      const chavesAfetadas = new Set([...antigoMap.keys(), ...novoMap.keys()])
 
-      for (const parcelaId of afetadas) {
-        const delta = (novoMap.get(parcelaId) ?? 0) - (antigoMap.get(parcelaId) ?? 0)
+      for (const chave of chavesAfetadas) {
+        const antigo = antigoMap.get(chave) ?? 0
+        const novo = novoMap.get(chave)?.valor ?? 0
+        const delta = novo - antigo
         if (Math.abs(delta) < 0.005) continue
 
-        const { data: parcela } = await supabase
-          .from('parcelas')
-          .select('valor_pago')
-          .eq('id', parcelaId)
-          .single()
-        if (!parcela) continue
-
-        const novoPago = Math.max(0, (Number(parcela.valor_pago) || 0) + delta)
-        const { status, data_pagamento_real } = await computeParcelaStatus(parcelaId, novoPago)
-
-        await supabase.from('parcelas').update({
-          valor_pago: novoPago,
-          status,
-          data_pagamento_real,
-        }).eq('id', parcelaId)
+        const [origem, origem_id] = chave.split(':') as [VinculoOrigem, string]
+        await aplicarDeltaOrigem(origem, origem_id, delta, today)
       }
 
       await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conciliacaoId)
-      if (novasParcelas.length > 0) {
+      if (novosVinculos.length > 0) {
         await supabase.from('conciliacao_parcelas').insert(
-          novasParcelas.map(p => ({ conciliacao_id: conciliacaoId, ...p }))
+          novosVinculos.map(v => buildLinkRow(conciliacaoId, v))
         )
       }
 
-      const primeiraParcela = novasParcelas[0]?.parcela_id ?? null
+      // movimentacoes.parcela_id — só se primeiro vínculo for de parcela
+      const primeiro = novosVinculos[0]
       await supabase.from('movimentacoes_bancarias').update({
-        parcela_id: primeiraParcela,
+        parcela_id: primeiro?.origem === 'parcela' ? primeiro.origem_id : null,
       }).eq('id', conc.movimentacao_id)
 
       const { data: movData } = await supabase
@@ -569,7 +641,7 @@ export function useUpdateConciliacao() {
         .select('valor')
         .eq('id', conc.movimentacao_id)
         .single()
-      const totalAplicado = novasParcelas.reduce((s, p) => s + Number(p.valor_aplicado), 0)
+      const totalAplicado = novosVinculos.reduce((s, v) => s + Number(v.valor_aplicado), 0)
       const diferenca = movData ? Number(movData.valor) - totalAplicado : 0
 
       await supabase.from('conciliacoes').update({
@@ -584,7 +656,7 @@ export function useUpdateConciliacao() {
         acao: 'UPDATE',
         agente: 'usuario',
         dados_antes: snapshot,
-        dados_depois: { type: 'edit_conciliacao', novas_parcelas: novasParcelas, diferenca },
+        dados_depois: { type: 'edit_conciliacao', novos_vinculos: novosVinculos, diferenca },
       })
 
       return conciliacaoId
@@ -593,9 +665,77 @@ export function useUpdateConciliacao() {
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
       toast.success('Conciliação atualizada')
     },
     onError: (err: Error) => toast.error('Erro ao atualizar: ' + err.message),
+  })
+}
+
+// Hook para CRIAR concilia\u00e7\u00e3o nova (mov sem vinculo pr\u00e9vio)
+export interface CreateConciliacaoPayload {
+  movimentacaoId: string
+  vinculos: VinculoPayload[]
+  matchType?: string
+  dataPgto: string
+}
+export function useCreateConciliacao() {
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
+
+  return useMutation({
+    mutationFn: async ({ movimentacaoId, vinculos, matchType = 'manual_ui', dataPgto }: CreateConciliacaoPayload) => {
+      if (!currentCompany) throw new Error('No company')
+      if (vinculos.length === 0) throw new Error('Sem v\u00ednculos')
+
+      const { data: mov } = await supabase
+        .from('movimentacoes_bancarias')
+        .select('valor')
+        .eq('id', movimentacaoId)
+        .single()
+      const valorMov = Number(mov?.valor ?? 0)
+      const totalAplicado = vinculos.reduce((s, v) => s + Number(v.valor_aplicado), 0)
+      const diferenca = valorMov - totalAplicado
+
+      const { data: conc, error } = await supabase.from('conciliacoes').insert({
+        company_id: currentCompany.id,
+        movimentacao_id: movimentacaoId,
+        match_type: matchType,
+        confidence: 100,
+        diferenca,
+        status: 'confirmado',
+      }).select('id').single()
+      if (error) throw error
+      if (!conc) throw new Error('Falha ao criar concilia\u00e7\u00e3o')
+
+      await supabase.from('conciliacao_parcelas').insert(
+        vinculos.map(v => buildLinkRow(conc.id, v))
+      )
+
+      // Aplica delta positivo (adiciona valor_pago na origem)
+      for (const v of vinculos) {
+        await aplicarDeltaOrigem(v.origem, v.origem_id, v.valor_aplicado, dataPgto)
+      }
+
+      const primeiro = vinculos[0]!
+      await supabase.from('movimentacoes_bancarias').update({
+        conciliado: true,
+        conciliado_em: new Date().toISOString(),
+        parcela_id: primeiro.origem === 'parcela' ? primeiro.origem_id : null,
+      }).eq('id', movimentacaoId)
+
+      return conc.id
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
+      toast.success('V\u00ednculo criado')
+    },
+    onError: (err: Error) => toast.error('Erro ao vincular: ' + err.message),
   })
 }
 

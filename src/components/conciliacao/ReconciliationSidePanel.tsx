@@ -18,12 +18,11 @@ import {
 import {
   useConfirmConciliacao, useRejectConciliacao, useUndoConciliacao,
   useDeleteMovimento, useUpdateConciliacao, useConciliacaoHistory,
-  useConciliacoes,
+  useConciliacoes, useCreateConciliacao,
 } from '@/hooks/useConciliacao'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useMedicoes } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
-import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { EditConciliacaoDialog } from './EditConciliacaoDialog'
 import { CriarLancamentoFromMovDialog } from './CriarLancamentoFromMovDialog'
@@ -77,6 +76,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   const undoConc = useUndoConciliacao()
   const deleteMov = useDeleteMovimento()
   const updateConc = useUpdateConciliacao()
+  const createConc = useCreateConciliacao()
 
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState(false)
@@ -198,17 +198,56 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     .map(x => x.c)
   }, [poolCandidatos, search, row])
 
-  // Parcelas já vinculadas ao movimento (via conciliacao_parcelas)
-  const parcelasVinculadas = useMemo(() => {
+  // Itens já vinculados ao movimento (via conciliacao_parcelas polimórfico)
+  const vinculosDoMov = useMemo(() => {
     if (!row?.conciliacao_id) return []
     const conc = concs.find((c: any) => c.id === row.conciliacao_id)
     if (!conc) return []
     const links = (conc as any).conciliacao_parcelas ?? []
     return links.map((link: any) => {
-      const parc = parcelas.find(p => p.id === link.parcela_id)
-      return { link, parc }
-    }).filter((x: any) => x.parc)
-  }, [row, concs, parcelas])
+      if (link.parcela_id) {
+        const parc = parcelas.find(p => p.id === link.parcela_id)
+        if (!parc) return null
+        return {
+          tipo: 'parcela' as const,
+          link,
+          descricao: (parc as any).pedido_item ?? parc.descricao ?? 'Parcela',
+          fornecedor: (parc as any).fornecedor_nome ?? null,
+          valor: Number(parc.valor),
+          venc: parc.data_vencimento,
+        }
+      }
+      if (link.medicao_id) {
+        const med = medicoes.find(m => m.id === link.medicao_id)
+        if (!med) return null
+        return {
+          tipo: 'medicao' as const,
+          link,
+          descricao: `Medição nº ${med.numero}`,
+          fornecedor: 'Cliente (Contrato)',
+          valor: Number(med.valor_planejado),
+          venc: med.data_prevista,
+        }
+      }
+      if (link.mutuo_parcela_id) {
+        // localizar parcela de mútuo
+        for (const mut of (mutuos as any[])) {
+          const mp = (mut.parcelas ?? []).find((p: any) => p.id === link.mutuo_parcela_id)
+          if (mp) {
+            return {
+              tipo: 'mutuo_parcela' as const,
+              link,
+              descricao: `${mut.nome} · P${mp.numero_parcela}`,
+              fornecedor: mut.fornecedor?.nome ?? null,
+              valor: Number(mp.valor),
+              venc: mp.data_vencimento,
+            }
+          }
+        }
+      }
+      return null
+    }).filter((x: any): x is NonNullable<typeof x> => x !== null)
+  }, [row, concs, parcelas, medicoes, mutuos])
 
   const historicoDaLinha = useMemo(() => {
     if (!row?.conciliacao_id) return []
@@ -251,80 +290,37 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
 
   const handleVincularSelecionados = async () => {
     if (selecao.size === 0) return
-    if (!row.conciliacao_id && !row.raw?.id) {
+    if (!row.raw?.id) {
       alert('Movimento sem ID — não é possível vincular')
       return
     }
-    // Filtrar apenas parcelas (medição/mutuo_parcela exigem fluxo diferente — TODO)
-    const parcelasSelecao: { parcela_id: string; valor_aplicado: number }[] = []
-    const outrosSelecao: string[] = []
-    for (const [id, valor] of selecao.entries()) {
+    // Converte selecao em VinculoPayload polim\u00f3rfico
+    const vinculos = Array.from(selecao.entries()).map(([id, valor]) => {
       const c = poolCandidatos.find(x => x.id === id)
-      if (!c) continue
-      if (c.tipo === 'parcela') {
-        parcelasSelecao.push({ parcela_id: c.id, valor_aplicado: valor })
-      } else {
-        outrosSelecao.push(c.descricao)
-      }
-    }
-    if (outrosSelecao.length > 0) {
-      alert(`Vinculação de medições/mútuos ainda não implementada. Itens ignorados: ${outrosSelecao.join(', ')}`)
-    }
-    if (parcelasSelecao.length === 0) return
+      if (!c) return null
+      const origem: 'parcela' | 'medicao' | 'mutuo_parcela' =
+        c.tipo === 'parcela' ? 'parcela' :
+        c.tipo === 'medicao' ? 'medicao' : 'mutuo_parcela'
+      const origem_id = c.tipo === 'parcela' ? c.id :
+        c.tipo === 'medicao' ? c.id.replace(/^med-/, '') :
+        c.id.replace(/^mutparc-/, '')
+      return { origem, origem_id, valor_aplicado: valor }
+    }).filter((v): v is NonNullable<typeof v> => v !== null)
+
     if (row.conciliacao_id) {
-      // Atualiza concilicação existente adicionando as parcelas
       await updateConc.mutateAsync({
         conciliacaoId: row.conciliacao_id,
-        parcelas: parcelasSelecao,
+        vinculos,
       })
     } else {
-      // Criar conciliação nova via endpoint custom (sem hook dedicado ainda)
-      await createConciliacaoNova(row.raw.id, parcelasSelecao, absValor)
+      await createConc.mutateAsync({
+        movimentacaoId: row.raw.id,
+        vinculos,
+        dataPgto: row.data,
+      })
     }
     setSelecao(new Map())
     onRefresh()
-  }
-
-  async function createConciliacaoNova(
-    movId: string,
-    parcs: { parcela_id: string; valor_aplicado: number }[],
-    valorMov: number,
-  ) {
-    const totalAplicado = parcs.reduce((s, p) => s + p.valor_aplicado, 0)
-    const diferenca = valorMov - totalAplicado
-    // Pegar company_id da mov
-    const companyId = row.raw?.company_id
-    const { data: conc, error } = await supabase.from('conciliacoes').insert({
-      company_id: companyId,
-      movimentacao_id: movId,
-      match_type: 'manual_ui',
-      confidence: 100,
-      diferenca,
-      status: 'confirmado',
-    }).select('id').single()
-    if (error) { alert('Erro ao criar conciliação: ' + error.message); return }
-    if (!conc) return
-    await supabase.from('conciliacao_parcelas').insert(
-      parcs.map(p => ({ conciliacao_id: conc.id, ...p }))
-    )
-    // Marcar movimentação como conciliada + atualizar parcelas
-    await supabase.from('movimentacoes_bancarias').update({
-      conciliado: true,
-      conciliado_em: new Date().toISOString(),
-      parcela_id: parcs[0]?.parcela_id ?? null,
-    }).eq('id', movId)
-    for (const p of parcs) {
-      const parc = parcelas.find(x => x.id === p.parcela_id)
-      if (!parc) continue
-      const novoPago = Number(parc.valor_pago || 0) + p.valor_aplicado
-      const total = Number(parc.valor)
-      const novoStatus = novoPago >= total - 0.01 ? 'paga' : 'parcialmente_paga'
-      await supabase.from('parcelas').update({
-        status: novoStatus,
-        valor_pago: novoPago,
-        data_pagamento_real: row.data,
-      }).eq('id', p.parcela_id)
-    }
   }
 
   const handleConfirm = async () => {
@@ -400,26 +396,30 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
             )}
           </div>
 
-          {/* Parcelas já vinculadas */}
-          {parcelasVinculadas.length > 0 && (
+          {/* Itens já vinculados (parcela/medição/mútuo) */}
+          {vinculosDoMov.length > 0 && (
             <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
               <div className="flex items-center gap-2 mb-2">
                 <LinkIcon className="h-3.5 w-3.5 text-emerald-600" />
                 <span className="text-[10px] font-bold uppercase text-emerald-700">
-                  {parcelasVinculadas.length} Parcela{parcelasVinculadas.length > 1 ? 's' : ''} Vinculada{parcelasVinculadas.length > 1 ? 's' : ''}
+                  {vinculosDoMov.length} Item{vinculosDoMov.length > 1 ? 's' : ''} Vinculado{vinculosDoMov.length > 1 ? 's' : ''}
                 </span>
               </div>
               <div className="space-y-1.5">
-                {parcelasVinculadas.map(({ link, parc }: any) => (
-                  <div key={link.parcela_id} className="flex justify-between text-[11px]">
+                {vinculosDoMov.map((v: any, i: number) => (
+                  <div key={i} className="flex justify-between text-[11px]">
                     <div className="min-w-0 flex-1">
-                      <p className="font-medium truncate">{parc.pedido_item ?? parc.descricao ?? 'Parcela'}</p>
+                      <div className="flex items-center gap-1">
+                        <p className="font-medium truncate">{v.descricao}</p>
+                        {v.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
+                        {v.tipo === 'mutuo_parcela' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
+                      </div>
                       <p className="text-muted-foreground text-[10px]">
-                        {(parc as any).fornecedor_nome ? `${(parc as any).fornecedor_nome} · ` : ''}
-                        Venc {fmtDateBr(parc.data_vencimento)} · Valor {formatCurrency(Number(parc.valor))}
+                        {v.fornecedor ? `${v.fornecedor} · ` : ''}
+                        Venc {fmtDateBr(v.venc)} · Valor {formatCurrency(v.valor)}
                       </p>
                     </div>
-                    <span className="font-mono font-semibold ml-2">{formatCurrency(Number(link.valor_aplicado))}</span>
+                    <span className="font-mono font-semibold ml-2">{formatCurrency(Number(v.link.valor_aplicado))}</span>
                   </div>
                 ))}
               </div>
