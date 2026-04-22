@@ -87,9 +87,23 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   useEffect(() => {
     if (row) {
       setSearch('')
-      setSelecao(new Map())
+      // Pr\u00e9-popular sele\u00e7\u00e3o com os itens j\u00e1 vinculados (se houver)
+      const pre = new Map<string, number>()
+      if (row.conciliacao_id) {
+        const conc = concs.find((c: any) => c.id === row.conciliacao_id)
+        if (conc) {
+          const links = (conc as any).conciliacao_parcelas ?? []
+          for (const l of links) {
+            const cid = l.parcela_id ? l.parcela_id
+              : l.medicao_id ? `med-${l.medicao_id}`
+              : l.mutuo_parcela_id ? `mutparc-${l.mutuo_parcela_id}` : null
+            if (cid) pre.set(cid, Number(l.valor_aplicado))
+          }
+        }
+      }
+      setSelecao(pre)
     }
-  }, [row?.id])
+  }, [row?.id, concs])
 
   useEffect(() => {
     if (!row) return
@@ -173,30 +187,36 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     if (!row) return []
     const q = norm(search)
     const absValor = Math.abs(Number(row.valor))
+    const selecionadosSet = new Set(selecao.keys())
 
     let arr = poolCandidatos
     if (q) {
       arr = arr.filter(c => {
+        if (selecionadosSet.has(c.id)) return true
         const hay = norm(`${c.descricao} ${c.fornecedor ?? ''} ${c.valor} ${c.saldo}`)
         return hay.includes(q)
       })
     } else {
-      // Default: candidatos próximos do valor (saldo entre 30%-300% do valor do mov)
-      arr = arr.filter(c => c.saldo >= absValor * 0.3 && c.saldo <= absValor * 3)
+      // Default: candidatos próximos do valor (saldo entre 30%-300%) + sempre inclui selecionados
+      arr = arr.filter(c => {
+        if (selecionadosSet.has(c.id)) return true
+        return c.saldo >= absValor * 0.3 && c.saldo <= absValor * 3
+      })
     }
 
-    // Ordenar: match exato de valor primeiro, depois data próxima
+    // Ordenar: selecionados primeiro, depois match exato, depois data próxima
     const dataMov = new Date(row.data).getTime()
     return arr.map(c => {
       const diffValor = Math.abs(c.saldo - absValor)
       const diffDias = Math.abs((new Date(c.data).getTime() - dataMov) / 86400000)
       const scoreExato = Math.abs(c.valor - absValor) <= absValor * 0.02 ? 0 : 1000
-      return { c, score: scoreExato + diffValor + diffDias * 5 }
+      const scoreSelecionado = selecionadosSet.has(c.id) ? -10000 : 0
+      return { c, score: scoreSelecionado + scoreExato + diffValor + diffDias * 5 }
     })
     .sort((a, b) => a.score - b.score)
     .slice(0, 40)
     .map(x => x.c)
-  }, [poolCandidatos, search, row])
+  }, [poolCandidatos, search, row, selecao])
 
   // Itens já vinculados ao movimento (via conciliacao_parcelas polimórfico)
   const vinculosDoMov = useMemo(() => {
@@ -496,16 +516,19 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                   const sel = selecao.has(c.id)
                   const val = selecao.get(c.id) ?? 0
                   const matchExato = Math.abs(c.valor - absValor) <= absValor * 0.02
+                  const isSugerido = sel && row.situacao === 'sugerido'
                   return (
                     <div key={c.id}
                       className={`flex items-center gap-2 border-b p-2 last:border-0 transition-colors ${
+                        isSugerido ? 'bg-blue-500/10 ring-1 ring-blue-500/30' :
                         sel ? 'bg-primary/5' : 'hover:bg-muted/50'
                       }`}>
                       <input type="checkbox" checked={sel} onChange={() => toggleCandidato(c)}
                         className="h-3.5 w-3.5 rounded accent-primary shrink-0" />
                       <div className="min-w-0 flex-1 cursor-pointer" onClick={() => toggleCandidato(c)}>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 flex-wrap">
                           <p className="text-xs font-medium truncate">{c.descricao}</p>
+                          {isSugerido && <span className="text-[9px] bg-blue-500/20 text-blue-700 px-1.5 py-0.5 rounded font-bold">SUGERIDO</span>}
                           {matchExato && <span className="text-[9px] text-emerald-600 font-bold">MATCH</span>}
                           {c.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
                           {c.tipo === 'mutuo_recebimento' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}

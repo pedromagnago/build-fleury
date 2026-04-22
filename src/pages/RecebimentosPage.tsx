@@ -33,13 +33,14 @@ function fmtDateBr(d: string | null | undefined): string {
 
 interface RecebimentoItem {
   id: string
-  origem: 'medicao' | 'adiantamento'
+  origem: 'medicao' | 'adiantamento' | 'captacao'
   descricao: string
   parceiro: string | null
   valor: number
   data_prevista: string
   data_efetiva: string | null
   status: 'previsto' | 'recebido' | 'vencido' | 'parcial'
+  sem_valor?: boolean
   raw: any
 }
 
@@ -52,7 +53,7 @@ export default function RecebimentosPage() {
   const [showNovo, setShowNovo] = useState(false)
   const [viewingVinculos, setViewingVinculos] = useState<RecebimentoItem | null>(null)
 
-  // Consolidar: medições + adiantamentos a receber (sem movs bancárias)
+  // Consolidar: medições + captações (Capital de Giro) + adiantamentos a receber
   const todosRecebimentos: RecebimentoItem[] = useMemo(() => {
     const result: RecebimentoItem[] = []
     const today = new Date().toISOString().split('T')[0]!
@@ -73,22 +74,24 @@ export default function RecebimentosPage() {
         data_prevista: m.data_prevista,
         data_efetiva: m.data_liberacao,
         status: recebido ? 'recebido' : atrasado ? 'vencido' : 'previsto',
+        sem_valor: valor <= 0.01,
         raw: m,
       })
     }
 
-    // 2) Adiantamentos a receber (mútuos invertidos — projeto adiantou p/ sócio/fornecedor)
+    // 2) Mútuos (Capital de Giro: captações + Adiantamento a Receber)
     for (const mut of mutuos) {
-      if (mut.categoria !== 'Adiantamento a Receber') continue
+      if (mut.categoria === 'STUB_Dedupe') continue
+      const isAdiantamento = mut.categoria === 'Adiantamento a Receber'
       result.push({
         id: `mut-${mut.id}`,
-        origem: 'adiantamento',
+        origem: isAdiantamento ? 'adiantamento' : 'captacao',
         descricao: mut.nome,
         parceiro: (mut as any).fornecedor?.nome ?? '—',
         valor: Number(mut.valor_captado) || 0,
         data_prevista: mut.data_captacao,
-        data_efetiva: null,
-        status: mut.status === 'quitado' ? 'recebido' : 'previsto',
+        data_efetiva: mut.status === 'quitado' ? mut.data_captacao : null,
+        status: mut.status === 'quitado' ? 'recebido' : isAdiantamento ? 'previsto' : 'recebido',
         raw: mut,
       })
     }
@@ -295,6 +298,7 @@ function RecebimentoRow({ item, onShowVinculos }: { item: RecebimentoItem; onSho
   const origemCfg = {
     medicao: { label: 'Medição', cls: 'bg-purple-500/10 text-purple-600' },
     adiantamento: { label: 'Adiantamento', cls: 'bg-violet-500/10 text-violet-600' },
+    captacao: { label: 'Capital Giro', cls: 'bg-indigo-500/10 text-indigo-600' },
   }[item.origem]
 
   const linkTo = item.origem === 'medicao' ? '/cronograma' : '/mutuos'
@@ -317,8 +321,12 @@ function RecebimentoRow({ item, onShowVinculos }: { item: RecebimentoItem; onSho
       </td>
       <td className="px-3 py-2 tabular-nums">{fmtDateBr(item.data_prevista)}</td>
       <td className="px-3 py-2 tabular-nums">{fmtDateBr(item.data_efetiva)}</td>
-      <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums text-emerald-600">
-        {formatCurrency(item.valor)}
+      <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
+        {item.sem_valor ? (
+          <span className="text-muted-foreground text-[11px] italic">sem valor</span>
+        ) : (
+          <span className="text-emerald-600">{formatCurrency(item.valor)}</span>
+        )}
       </td>
       <td className="px-3 py-2 text-center">
         <div className="inline-flex items-center gap-2">
