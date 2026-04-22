@@ -15,15 +15,14 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import {
   TrendingUp, Plus, Search, Calendar, AlertTriangle,
   CheckCircle2, Clock, DollarSign, ArrowDownCircle,
-  FileText, Landmark, Banknote, ExternalLink,
+  FileText, Landmark, ExternalLink,
 } from 'lucide-react'
-import { useMedicoes, useMovimentacoes } from '@/hooks/useOperacional'
+import { useMedicoes } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
-import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { formatCurrency } from '@/lib/utils'
-import { NovoLancamentoDialog } from '@/components/conciliacao/NovoLancamentoDialog'
+import { NovoAdiantamentoDialog } from '@/components/financeiro/NovoAdiantamentoDialog'
 
-type Tab = 'geral' | 'medicoes' | 'adiantamentos' | 'entradas'
+type Tab = 'geral' | 'medicoes' | 'adiantamentos'
 
 function fmtDateBr(d: string | null | undefined): string {
   if (!d) return '—'
@@ -33,34 +32,25 @@ function fmtDateBr(d: string | null | undefined): string {
 
 interface RecebimentoItem {
   id: string
-  origem: 'medicao' | 'adiantamento' | 'entrada_bancaria' | 'manual'
+  origem: 'medicao' | 'adiantamento'
   descricao: string
   parceiro: string | null
   valor: number
   data_prevista: string
   data_efetiva: string | null
   status: 'previsto' | 'recebido' | 'vencido' | 'parcial'
-  conta: string | null
   raw: any
 }
 
 export default function RecebimentosPage() {
   const { data: medicoes = [] } = useMedicoes()
   const { data: mutuos = [] } = useMutuos()
-  const { data: movs = [] } = useMovimentacoes()
-  const { data: contas = [] } = useContasBancarias()
 
   const [tab, setTab] = useState<Tab>('geral')
   const [search, setSearch] = useState('')
   const [showNovo, setShowNovo] = useState(false)
 
-  const contaById = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const c of contas) m.set(c.id, c.nome)
-    return m
-  }, [contas])
-
-  // Consolidar todas as fontes de entrada
+  // Consolidar: medições + adiantamentos a receber (sem movs bancárias)
   const todosRecebimentos: RecebimentoItem[] = useMemo(() => {
     const result: RecebimentoItem[] = []
     const today = new Date().toISOString().split('T')[0]!
@@ -81,12 +71,11 @@ export default function RecebimentosPage() {
         data_prevista: m.data_prevista,
         data_efetiva: m.data_liberacao,
         status: recebido ? 'recebido' : atrasado ? 'vencido' : 'previsto',
-        conta: null,
         raw: m,
       })
     }
 
-    // 2) Adiantamentos a receber (mútuos invertidos)
+    // 2) Adiantamentos a receber (mútuos invertidos — projeto adiantou p/ sócio/fornecedor)
     for (const mut of mutuos) {
       if (mut.categoria !== 'Adiantamento a Receber') continue
       result.push({
@@ -98,40 +87,18 @@ export default function RecebimentosPage() {
         data_prevista: mut.data_captacao,
         data_efetiva: null,
         status: mut.status === 'quitado' ? 'recebido' : 'previsto',
-        conta: null,
         raw: mut,
-      })
-    }
-
-    // 3) Entradas bancárias (movs tipo='entrada', excluindo captações de mútuo já listadas)
-    for (const mov of (movs as any[])) {
-      if (mov.tipo !== 'entrada') continue
-      // Categoria de captação já aparece na aba adiantamentos/mutuos
-      const cat = String(mov.categoria || '').toUpperCase()
-      if (cat.includes('EMPRESTIMOS') || cat.includes('EMPRÉSTIMOS')) continue
-      result.push({
-        id: `mov-${mov.id}`,
-        origem: mov.origem === 'manual' ? 'manual' : 'entrada_bancaria',
-        descricao: mov.descricao || '—',
-        parceiro: null,
-        valor: Number(mov.valor),
-        data_prevista: mov.data,
-        data_efetiva: mov.data,
-        status: 'recebido',
-        conta: contaById.get(mov.conta_id) ?? null,
-        raw: mov,
       })
     }
 
     result.sort((a, b) => a.data_prevista.localeCompare(b.data_prevista))
     return result
-  }, [medicoes, mutuos, movs, contaById])
+  }, [medicoes, mutuos])
 
   const filtrados = useMemo(() => {
     let arr = todosRecebimentos
     if (tab === 'medicoes') arr = arr.filter(r => r.origem === 'medicao')
     else if (tab === 'adiantamentos') arr = arr.filter(r => r.origem === 'adiantamento')
-    else if (tab === 'entradas') arr = arr.filter(r => r.origem === 'entrada_bancaria' || r.origem === 'manual')
     const q = search.toLowerCase().trim()
     if (q) {
       arr = arr.filter(r =>
@@ -170,14 +137,12 @@ export default function RecebimentosPage() {
     geral: todosRecebimentos.length,
     medicoes: todosRecebimentos.filter(r => r.origem === 'medicao').length,
     adiantamentos: todosRecebimentos.filter(r => r.origem === 'adiantamento').length,
-    entradas: todosRecebimentos.filter(r => r.origem === 'entrada_bancaria' || r.origem === 'manual').length,
   }), [todosRecebimentos])
 
   const TABS: Array<{ key: Tab; label: string; icon: typeof Clock }> = [
     { key: 'geral', label: 'Todas', icon: DollarSign },
     { key: 'medicoes', label: 'Medições', icon: FileText },
     { key: 'adiantamentos', label: 'Adiantamentos', icon: Landmark },
-    { key: 'entradas', label: 'Entradas Bancárias', icon: Banknote },
   ]
 
   return (
@@ -222,7 +187,7 @@ export default function RecebimentosPage() {
         </div>
         <button onClick={() => setShowNovo(true)}
           className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">
-          <Plus className="h-4 w-4" />Novo Recebimento
+          <Plus className="h-4 w-4" />Novo Adiantamento
         </button>
       </div>
 
@@ -245,7 +210,6 @@ export default function RecebimentosPage() {
                   <th className="px-3 py-2 text-left font-bold">Origem</th>
                   <th className="px-3 py-2 text-left font-bold">Descrição</th>
                   <th className="px-3 py-2 text-left font-bold">Parceiro</th>
-                  <th className="px-3 py-2 text-left font-bold">Conta</th>
                   <th className="px-3 py-2 text-left font-bold">Data Prev.</th>
                   <th className="px-3 py-2 text-left font-bold">Data Real</th>
                   <th className="px-3 py-2 text-right font-bold">Valor</th>
@@ -257,7 +221,7 @@ export default function RecebimentosPage() {
               </tbody>
               <tfoot className="bg-muted/30 font-bold">
                 <tr>
-                  <td colSpan={7} className="px-3 py-2 text-right">TOTAL FILTRADO</td>
+                  <td colSpan={6} className="px-3 py-2 text-right">TOTAL FILTRADO</td>
                   <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-600">
                     {formatCurrency(filtrados.reduce((s, r) => s + r.valor, 0))}
                   </td>
@@ -283,9 +247,9 @@ export default function RecebimentosPage() {
         </Link>
       </div>
 
-      {/* Novo lançamento */}
+      {/* Novo adiantamento */}
       {showNovo && (
-        <NovoLancamentoDialog onClose={() => setShowNovo(false)} />
+        <NovoAdiantamentoDialog onClose={() => setShowNovo(false)} />
       )}
     </div>
   )
@@ -316,13 +280,9 @@ function RecebimentoRow({ item }: { item: RecebimentoItem }) {
   const origemCfg = {
     medicao: { label: 'Medição', cls: 'bg-purple-500/10 text-purple-600' },
     adiantamento: { label: 'Adiantamento', cls: 'bg-violet-500/10 text-violet-600' },
-    entrada_bancaria: { label: 'Entrada', cls: 'bg-emerald-500/10 text-emerald-600' },
-    manual: { label: 'Manual', cls: 'bg-slate-500/10 text-slate-600' },
   }[item.origem]
 
-  const linkTo = item.origem === 'medicao' ? '/cronograma' :
-    item.origem === 'adiantamento' ? '/mutuos' :
-    '/conciliacao'
+  const linkTo = item.origem === 'medicao' ? '/cronograma' : '/mutuos'
 
   return (
     <tr className="hover:bg-muted/30">
@@ -340,7 +300,6 @@ function RecebimentoRow({ item }: { item: RecebimentoItem }) {
       <td className="px-3 py-2 text-muted-foreground max-w-[140px] truncate" title={item.parceiro ?? ''}>
         {item.parceiro ?? '—'}
       </td>
-      <td className="px-3 py-2 text-muted-foreground text-[11px]">{item.conta ?? '—'}</td>
       <td className="px-3 py-2 tabular-nums">{fmtDateBr(item.data_prevista)}</td>
       <td className="px-3 py-2 tabular-nums">{fmtDateBr(item.data_efetiva)}</td>
       <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums text-emerald-600">

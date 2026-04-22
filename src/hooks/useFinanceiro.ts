@@ -26,6 +26,7 @@ export interface Parcela {
   pedido_item?: string
   item_compra_id?: string | null
   observacoes?: string | null
+  fornecedor_nome?: string | null
 }
 
 export interface ContaBancaria {
@@ -58,7 +59,7 @@ export function useParcelas() {
       while (hasMore) {
         const { data, error } = await supabase
           .from('parcelas')
-          .select('*, pedidos(item_compra_id, itens_compra(descricao, deleted_at)), despesas_indiretas(descricao, categoria, deleted_at)')
+          .select('*, pedidos(item_compra_id, fornecedor_id, fornecedores(nome), itens_compra(descricao, deleted_at)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
           .eq('company_id', companyId)
           .is('deleted_at', null)
           .order('data_vencimento', { ascending: true })
@@ -90,11 +91,14 @@ export function useParcelas() {
         .map((p: Record<string, unknown>) => {
         const pedido = p.pedidos as Record<string, unknown> | null
         const item = pedido?.itens_compra as Record<string, string> | null
-        const despesa = p.despesas_indiretas as Record<string, string> | null
-        return { 
-          ...p, 
-          pedido_item: item?.descricao ?? despesa?.descricao ?? null,
-          item_compra_id: (pedido?.item_compra_id as string) ?? null
+        const despesa = p.despesas_indiretas as Record<string, unknown> | null
+        const fornPed = pedido?.fornecedores as Record<string, string> | null
+        const fornDesp = despesa?.fornecedores as Record<string, string> | null
+        return {
+          ...p,
+          pedido_item: item?.descricao ?? (despesa?.descricao as string) ?? null,
+          item_compra_id: (pedido?.item_compra_id as string) ?? null,
+          fornecedor_nome: fornPed?.nome ?? fornDesp?.nome ?? null,
         }
       }) as Parcela[]
     },
