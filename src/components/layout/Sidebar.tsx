@@ -42,6 +42,7 @@ const sections = [
     label: 'Financeiro',
     items: [
       { to: '/pagamentos', icon: CreditCard, label: 'Pagamentos' },
+      { to: '/recebimentos', icon: TrendingUp, label: 'Recebimentos' },
       { to: '/despesas-indiretas', icon: Building2, label: 'Custos Indiretos' },
       { to: '/mutuos', icon: Landmark, label: 'Capital de Giro' },
       { to: '/conciliacao', icon: ArrowLeftRight, label: 'Conciliação' },

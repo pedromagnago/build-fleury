@@ -22,6 +22,7 @@ import ComprasPage from '@/pages/ComprasPage'
 import DespesasIndiretasPage from '@/pages/DespesasIndiretasPage'
 import ImportacaoPage from '@/pages/ImportacaoPage'
 import PagamentosPage from '@/pages/PagamentosPage'
+import RecebimentosPage from '@/pages/RecebimentosPage'
 import DocumentosPage from '@/pages/DocumentosPage'
 import AuditoriaPage from '@/pages/AuditoriaPage'
 import PainelControlePage from '@/pages/PainelControlePage'
@@ -88,6 +89,7 @@ export default function App() {
                 <Route path="/compras" element={<RoleGate route="/compras"><ComprasPage /></RoleGate>} />
                 <Route path="/despesas-indiretas" element={<RoleGate route="/despesas-indiretas"><DespesasIndiretasPage /></RoleGate>} />
                 <Route path="/pagamentos" element={<RoleGate route="/pagamentos"><PagamentosPage /></RoleGate>} />
+                <Route path="/recebimentos" element={<RoleGate route="/recebimentos"><RecebimentosPage /></RoleGate>} />
                 <Route path="/mutuos" element={<RoleGate route="/mutuos"><MutuosPage /></RoleGate>} />
                 <Route path="/documentos" element={<RoleGate route="/documentos"><DocumentosPage /></RoleGate>} />
                 <Route path="/auditoria" element={<RoleGate route="/auditoria"><AuditoriaPage /></RoleGate>} />

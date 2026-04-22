@@ -11,6 +11,7 @@ export interface Fornecedor {
   contato: string | null
   cond_pagamento_padrao: string | null
   observacoes: string | null
+  tipo: 'fornecedor' | 'cliente' | 'ambos'
   created_at: string
 }
 

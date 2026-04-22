@@ -81,9 +81,9 @@ export default function Compras() {
     { key: 'matriz',           label: 'Matriz',                 icon: Boxes },
     { key: 'conferencia',      label: 'Conferência',            icon: BarChart3 },
     { key: 'conf_cronograma',  label: 'Conf. Cronograma',       icon: CalendarClock, badge: atRiskCount || undefined },
-    { key: 'fornecedores',     label: 'Fornecedores',           icon: Users },
+    { key: 'fornecedores',     label: 'Parceiros',              icon: Users },
     { key: 'curva_abc',        label: 'Curva ABC',              icon: BarChart3 },
-    { key: 'por_fornecedor',   label: 'Por Fornecedor',         icon: Users },
+    { key: 'por_fornecedor',   label: 'Por Parceiro',           icon: Users },
   ]
 
   return (
@@ -1445,8 +1445,9 @@ function FornecedoresTab({ search }: { search: string }) {
   const { data: fornecedores = [], isLoading } = useFornecedores()
   const createFornecedor = useCreateFornecedor()
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ nome: '', cnpj: '', contato: '', cond_pagamento_padrao: '' })
-  
+  const [form, setForm] = useState<{ nome: string; cnpj: string; contato: string; cond_pagamento_padrao: string; tipo: 'fornecedor' | 'cliente' | 'ambos' }>({ nome: '', cnpj: '', contato: '', cond_pagamento_padrao: '', tipo: 'fornecedor' })
+  const [tipoFiltro, setTipoFiltro] = useState<'todos' | 'fornecedor' | 'cliente' | 'ambos'>('todos')
+
   const selection = useSelection()
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1454,21 +1455,39 @@ function FornecedoresTab({ search }: { search: string }) {
     await createFornecedor.mutateAsync({
       nome: form.nome, cnpj: form.cnpj || null,
       contato: form.contato || null, cond_pagamento_padrao: form.cond_pagamento_padrao || null,
-    })
+      tipo: form.tipo,
+    } as any)
     setShowForm(false)
-    setForm({ nome: '', cnpj: '', contato: '', cond_pagamento_padrao: '' })
+    setForm({ nome: '', cnpj: '', contato: '', cond_pagamento_padrao: '', tipo: 'fornecedor' })
   }
 
-  const filtered = fornecedores.filter((f) =>
-    f.nome.toLowerCase().includes(search.toLowerCase()) ||
-    (f.cnpj ?? '').includes(search)
-  )
+  const filtered = fornecedores.filter((f) => {
+    if (tipoFiltro !== 'todos' && (f.tipo ?? 'fornecedor') !== tipoFiltro) return false
+    const hay = search.toLowerCase()
+    return f.nome.toLowerCase().includes(hay) || (f.cnpj ?? '').includes(search)
+  })
+
+  const tipoBadge = (t: string) => {
+    if (t === 'cliente') return { label: 'Cliente', cls: 'bg-blue-500/10 text-blue-600' }
+    if (t === 'ambos') return { label: 'Ambos', cls: 'bg-purple-500/10 text-purple-600' }
+    return { label: 'Fornecedor', cls: 'bg-slate-500/10 text-slate-600' }
+  }
 
   return (
     <>
-      <div className="mb-4 flex justify-end">
+      <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex rounded-lg border bg-card p-0.5 text-xs">
+          {(['todos', 'fornecedor', 'cliente', 'ambos'] as const).map(t => (
+            <button key={t} onClick={() => setTipoFiltro(t)}
+              className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+                tipoFiltro === t ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+              }`}>
+              {t === 'todos' ? 'Todos' : t === 'fornecedor' ? 'Fornecedores' : t === 'cliente' ? 'Clientes' : 'Ambos'}
+            </button>
+          ))}
+        </div>
         <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
-          <Plus className="h-4 w-4" /> Novo Fornecedor
+          <Plus className="h-4 w-4" /> Novo Parceiro
         </button>
       </div>
 
@@ -1477,9 +1496,17 @@ function FornecedoresTab({ search }: { search: string }) {
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="grid gap-3 md:grid-cols-2">
               <div><label className={LABEL}>Nome *</label><input type="text" value={form.nome} onChange={(e) => setForm((p) => ({ ...p, nome: e.target.value }))} required className={INPUT} /></div>
+              <div>
+                <label className={LABEL}>Tipo *</label>
+                <select value={form.tipo} onChange={(e) => setForm((p) => ({ ...p, tipo: e.target.value as any }))} className={INPUT}>
+                  <option value="fornecedor">Fornecedor</option>
+                  <option value="cliente">Cliente</option>
+                  <option value="ambos">Ambos (Fornecedor + Cliente)</option>
+                </select>
+              </div>
               <div><label className={LABEL}>CNPJ</label><input type="text" value={form.cnpj} onChange={(e) => setForm((p) => ({ ...p, cnpj: e.target.value }))} className={INPUT} /></div>
               <div><label className={LABEL}>Contato</label><input type="text" value={form.contato} onChange={(e) => setForm((p) => ({ ...p, contato: e.target.value }))} className={INPUT} /></div>
-              <div><label className={LABEL}>Cond. Pagamento</label><input type="text" value={form.cond_pagamento_padrao} onChange={(e) => setForm((p) => ({ ...p, cond_pagamento_padrao: e.target.value }))} placeholder="30/60/90" className={INPUT} /></div>
+              <div className="md:col-span-2"><label className={LABEL}>Cond. Pagamento</label><input type="text" value={form.cond_pagamento_padrao} onChange={(e) => setForm((p) => ({ ...p, cond_pagamento_padrao: e.target.value }))} placeholder="30/60/90" className={INPUT} /></div>
             </div>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setShowForm(false)} className="rounded-lg border px-4 py-2 text-sm hover:bg-accent">Cancelar</button>
@@ -1489,7 +1516,7 @@ function FornecedoresTab({ search }: { search: string }) {
         </div>
       )}
 
-      {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhum fornecedor" /> : (
+      {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhum parceiro" /> : (
         <div className="overflow-x-auto rounded-xl border">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
@@ -1500,14 +1527,17 @@ function FornecedoresTab({ search }: { search: string }) {
                     onChange={() => selection.toggleAll(filtered.map(f => f.id))}
                     className="h-3.5 w-3.5 rounded accent-primary" />
                 </th>
-                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fornecedor</th>
+                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Parceiro</th>
+                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Tipo</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">CNPJ</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Contato</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Condição</th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {filtered.map((f) => (
+              {filtered.map((f) => {
+                const tb = tipoBadge(f.tipo ?? 'fornecedor')
+                return (
                 <tr key={f.id} className="group hover:bg-muted/20">
                   <td className="px-3 py-2.5 text-center">
                     <input type="checkbox" checked={selection.isSelected(f.id)}
@@ -1515,11 +1545,15 @@ function FornecedoresTab({ search }: { search: string }) {
                       className="h-3.5 w-3.5 rounded accent-primary" />
                   </td>
                   <td className="px-3 py-2.5 font-medium">{f.nome}</td>
+                  <td className="px-3 py-2.5">
+                    <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-bold ${tb.cls}`}>{tb.label}</span>
+                  </td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{f.cnpj ?? '—'}</td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{f.contato ?? '—'}</td>
                   <td className="px-3 py-2.5 text-xs font-mono text-muted-foreground">{f.cond_pagamento_padrao ?? '—'}</td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>
