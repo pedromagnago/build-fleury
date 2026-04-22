@@ -48,7 +48,7 @@ export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, 
 
   // Encontra todos os links que apontam para este item
   const links = useMemo(() => {
-    const result: Array<{ mov: any; valorAplicado: number; conc: any }> = []
+    const result: Array<{ mov: any; valorAplicado: number; conc: any; observacao: string | null }> = []
     for (const conc of (concs as any[])) {
       const linksDaConc = (conc.conciliacao_parcelas ?? [])
       for (const l of linksDaConc) {
@@ -59,7 +59,7 @@ export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, 
         if (match) {
           const mov = (movs as any[]).find(m => m.id === conc.movimentacao_id)
           if (mov) {
-            result.push({ mov, valorAplicado: Number(l.valor_aplicado), conc })
+            result.push({ mov, valorAplicado: Number(l.valor_aplicado), conc, observacao: l.observacao ?? null })
           }
         }
       }
@@ -128,7 +128,7 @@ export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, 
             </div>
           ) : (
             <div className="space-y-2">
-              {links.map(({ mov, valorAplicado, conc }, i) => {
+              {links.map(({ mov, valorAplicado, conc, observacao }, i) => {
                 const isSaida = mov.tipo === 'saida'
                 return (
                   <div key={conc.id + i} className="rounded-lg border bg-card p-3">
@@ -158,6 +158,11 @@ export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, 
                         </p>
                       </div>
                     </div>
+                    {observacao && (
+                      <p className="mt-2 text-[11px] italic text-emerald-700 bg-emerald-500/5 rounded px-2 py-1">
+                        📝 {observacao}
+                      </p>
+                    )}
                     <div className="mt-2 flex items-center justify-end">
                       <Link to="/conciliacao"
                         className="text-[10px] inline-flex items-center gap-1 text-primary hover:underline">

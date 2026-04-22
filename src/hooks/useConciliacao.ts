@@ -38,7 +38,7 @@ export function useConciliacoes() {
       if (!currentCompany) return []
       const { data, error } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, valor_aplicado)')
+        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, valor_aplicado, observacao)')
         .eq('company_id', currentCompany.id)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -48,6 +48,7 @@ export function useConciliacoes() {
           medicao_id: string | null
           mutuo_parcela_id: string | null
           valor_aplicado: number
+          observacao: string | null
         }[]
       })[]
     },
@@ -446,6 +447,31 @@ export interface VinculoPayload {
   origem: VinculoOrigem
   origem_id: string
   valor_aplicado: number
+  observacao?: string | null
+}
+
+// Buscar categoria da origem (etapa/item/categoria da despesa/nome do m\u00fatuo)
+async function buscarCategoriaOrigem(origem: VinculoOrigem, origemId: string): Promise<string | null> {
+  if (origem === 'parcela') {
+    const { data } = await supabase.from('parcelas')
+      .select('pedidos(itens_compra(descricao, etapas(nome))), despesas_indiretas(categoria, descricao)')
+      .eq('id', origemId).single()
+    if (!data) return null
+    const etapa = (data as any).pedidos?.itens_compra?.etapas?.nome
+    const itemDesc = (data as any).pedidos?.itens_compra?.descricao
+    const despCat = (data as any).despesas_indiretas?.categoria
+    const despDesc = (data as any).despesas_indiretas?.descricao
+    return etapa ? `${etapa}${itemDesc ? ' - ' + itemDesc : ''}` : (despCat ?? despDesc ?? null)
+  }
+  if (origem === 'medicao') return 'Medi\u00e7\u00e3o - Contrato'
+  if (origem === 'mutuo_parcela') {
+    const { data } = await supabase.from('mutuo_parcelas')
+      .select('mutuos(nome, categoria)').eq('id', origemId).single()
+    if (!data) return null
+    const mut = (data as any).mutuos
+    return mut ? `${mut.categoria ?? 'M\u00fatuo'} - ${mut.nome}` : 'Devolu\u00e7\u00e3o M\u00fatuo'
+  }
+  return null
 }
 
 // Aplica delta (pode ser negativo ao desfazer) no valor_pago da origem e atualiza status
@@ -501,7 +527,11 @@ function inferirOrigem(link: any): { origem: VinculoOrigem; origem_id: string } 
 
 // Monta row para insert em conciliacao_parcelas baseado na origem
 function buildLinkRow(conciliacaoId: string, v: VinculoPayload) {
-  const base: any = { conciliacao_id: conciliacaoId, valor_aplicado: v.valor_aplicado }
+  const base: any = {
+    conciliacao_id: conciliacaoId,
+    valor_aplicado: v.valor_aplicado,
+    observacao: v.observacao || null,
+  }
   if (v.origem === 'parcela') base.parcela_id = v.origem_id
   else if (v.origem === 'medicao') base.medicao_id = v.origem_id
   else if (v.origem === 'mutuo_parcela') base.mutuo_parcela_id = v.origem_id
@@ -630,10 +660,14 @@ export function useUpdateConciliacao() {
         )
       }
 
-      // movimentacoes.parcela_id — só se primeiro vínculo for de parcela
+      // movimentacoes.parcela_id + categoria propagada do primeiro v\u00ednculo
       const primeiro = novosVinculos[0]
+      const categoriaOrigem = primeiro
+        ? await buscarCategoriaOrigem(primeiro.origem, primeiro.origem_id)
+        : null
       await supabase.from('movimentacoes_bancarias').update({
         parcela_id: primeiro?.origem === 'parcela' ? primeiro.origem_id : null,
+        ...(categoriaOrigem ? { categoria: categoriaOrigem } : {}),
       }).eq('id', conc.movimentacao_id)
 
       const { data: movData } = await supabase
@@ -719,10 +753,13 @@ export function useCreateConciliacao() {
       }
 
       const primeiro = vinculos[0]!
+      // Propagar categoria da origem para a mov banc\u00e1ria
+      const categoriaOrigem = await buscarCategoriaOrigem(primeiro.origem, primeiro.origem_id)
       await supabase.from('movimentacoes_bancarias').update({
         conciliado: true,
         conciliado_em: new Date().toISOString(),
         parcela_id: primeiro.origem === 'parcela' ? primeiro.origem_id : null,
+        ...(categoriaOrigem ? { categoria: categoriaOrigem } : {}),
       }).eq('id', movimentacaoId)
 
       return conc.id

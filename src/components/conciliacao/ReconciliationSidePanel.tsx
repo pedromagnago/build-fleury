@@ -81,14 +81,15 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState(false)
   const [showCriar, setShowCriar] = useState(false)
-  // Multi-seleção: Map<candidatoId, valorAplicado>
-  const [selecao, setSelecao] = useState<Map<string, number>>(new Map())
+  // Multi-seleção: Map<candidatoId, { valor, observacao }>
+  const [selecao, setSelecao] = useState<Map<string, { valor: number; observacao: string }>>(new Map())
+  const [showObsId, setShowObsId] = useState<string | null>(null)
 
   useEffect(() => {
     if (row) {
       setSearch('')
-      // Pr\u00e9-popular sele\u00e7\u00e3o com os itens j\u00e1 vinculados (se houver)
-      const pre = new Map<string, number>()
+      setShowObsId(null)
+      const pre = new Map<string, { valor: number; observacao: string }>()
       if (row.conciliacao_id) {
         const conc = concs.find((c: any) => c.id === row.conciliacao_id)
         if (conc) {
@@ -97,7 +98,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
             const cid = l.parcela_id ? l.parcela_id
               : l.medicao_id ? `med-${l.medicao_id}`
               : l.mutuo_parcela_id ? `mutparc-${l.mutuo_parcela_id}` : null
-            if (cid) pre.set(cid, Number(l.valor_aplicado))
+            if (cid) pre.set(cid, { valor: Number(l.valor_aplicado), observacao: l.observacao ?? '' })
           }
         }
       }
@@ -284,27 +285,39 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   const isSaida = row.tipo === 'saida'
   const absValor = Math.abs(Number(row.valor))
 
-  const totalSelecionado = Array.from(selecao.values()).reduce((s, v) => s + v, 0)
+  const totalSelecionado = Array.from(selecao.values()).reduce((s, v) => s + v.valor, 0)
   const difSelecao = absValor - totalSelecionado
 
   const toggleCandidato = (c: Candidato) => {
     const novo = new Map(selecao)
     if (novo.has(c.id)) {
       novo.delete(c.id)
+      if (showObsId === c.id) setShowObsId(null)
     } else {
-      // Auto-preenche com saldo restante da parcela ou com diferença do mov, o que for menor
-      const jaAplicado = Array.from(novo.values()).reduce((s, v) => s + v, 0)
+      const jaAplicado = Array.from(novo.values()).reduce((s, v) => s + v.valor, 0)
       const difMov = absValor - jaAplicado
       const valorSugerido = Math.min(c.saldo, Math.max(difMov, 0))
-      novo.set(c.id, valorSugerido > 0 ? valorSugerido : c.saldo)
+      novo.set(c.id, { valor: valorSugerido > 0 ? valorSugerido : c.saldo, observacao: '' })
     }
     setSelecao(novo)
   }
 
   const updateValor = (id: string, v: number) => {
     const novo = new Map(selecao)
-    if (v <= 0) novo.delete(id)
-    else novo.set(id, v)
+    const atual = novo.get(id)
+    if (v <= 0) {
+      novo.delete(id)
+    } else {
+      novo.set(id, { valor: v, observacao: atual?.observacao ?? '' })
+    }
+    setSelecao(novo)
+  }
+
+  const updateObservacao = (id: string, obs: string) => {
+    const novo = new Map(selecao)
+    const atual = novo.get(id)
+    if (!atual) return
+    novo.set(id, { ...atual, observacao: obs })
     setSelecao(novo)
   }
 
@@ -315,7 +328,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       return
     }
     // Converte selecao em VinculoPayload polim\u00f3rfico
-    const vinculos = Array.from(selecao.entries()).map(([id, valor]) => {
+    const vinculos = Array.from(selecao.entries()).map(([id, { valor, observacao }]) => {
       const c = poolCandidatos.find(x => x.id === id)
       if (!c) return null
       const origem: 'parcela' | 'medicao' | 'mutuo_parcela' =
@@ -324,7 +337,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       const origem_id = c.tipo === 'parcela' ? c.id :
         c.tipo === 'medicao' ? c.id.replace(/^med-/, '') :
         c.id.replace(/^mutparc-/, '')
-      return { origem, origem_id, valor_aplicado: valor }
+      return { origem, origem_id, valor_aplicado: valor, observacao: observacao || null }
     }).filter((v): v is NonNullable<typeof v> => v !== null)
 
     if (row.conciliacao_id) {
@@ -427,19 +440,26 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
               </div>
               <div className="space-y-1.5">
                 {vinculosDoMov.map((v: any, i: number) => (
-                  <div key={i} className="flex justify-between text-[11px]">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1">
-                        <p className="font-medium truncate">{v.descricao}</p>
-                        {v.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
-                        {v.tipo === 'mutuo_parcela' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
+                  <div key={i} className="text-[11px]">
+                    <div className="flex justify-between">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1">
+                          <p className="font-medium truncate">{v.descricao}</p>
+                          {v.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
+                          {v.tipo === 'mutuo_parcela' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
+                        </div>
+                        <p className="text-muted-foreground text-[10px]">
+                          {v.fornecedor ? `${v.fornecedor} · ` : ''}
+                          Venc {fmtDateBr(v.venc)} · Valor {formatCurrency(v.valor)}
+                        </p>
                       </div>
-                      <p className="text-muted-foreground text-[10px]">
-                        {v.fornecedor ? `${v.fornecedor} · ` : ''}
-                        Venc {fmtDateBr(v.venc)} · Valor {formatCurrency(v.valor)}
-                      </p>
+                      <span className="font-mono font-semibold ml-2">{formatCurrency(Number(v.link.valor_aplicado))}</span>
                     </div>
-                    <span className="font-mono font-semibold ml-2">{formatCurrency(Number(v.link.valor_aplicado))}</span>
+                    {v.link.observacao && (
+                      <p className="mt-1 text-[10px] italic text-emerald-700 bg-emerald-500/5 rounded px-1.5 py-0.5">
+                        📝 {v.link.observacao}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -513,37 +533,57 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
             ) : (
               <div className="max-h-64 overflow-auto space-y-1 rounded-md border">
                 {candidatosFiltrados.map(c => {
-                  const sel = selecao.has(c.id)
-                  const val = selecao.get(c.id) ?? 0
+                  const selObj = selecao.get(c.id)
+                  const sel = !!selObj
+                  const val = selObj?.valor ?? 0
+                  const obs = selObj?.observacao ?? ''
                   const matchExato = Math.abs(c.valor - absValor) <= absValor * 0.02
                   const isSugerido = sel && row.situacao === 'sugerido'
                   return (
                     <div key={c.id}
-                      className={`flex items-center gap-2 border-b p-2 last:border-0 transition-colors ${
+                      className={`border-b last:border-0 transition-colors ${
                         isSugerido ? 'bg-blue-500/10 ring-1 ring-blue-500/30' :
                         sel ? 'bg-primary/5' : 'hover:bg-muted/50'
                       }`}>
-                      <input type="checkbox" checked={sel} onChange={() => toggleCandidato(c)}
-                        className="h-3.5 w-3.5 rounded accent-primary shrink-0" />
-                      <div className="min-w-0 flex-1 cursor-pointer" onClick={() => toggleCandidato(c)}>
-                        <div className="flex items-center gap-1 flex-wrap">
-                          <p className="text-xs font-medium truncate">{c.descricao}</p>
-                          {isSugerido && <span className="text-[9px] bg-blue-500/20 text-blue-700 px-1.5 py-0.5 rounded font-bold">SUGERIDO</span>}
-                          {matchExato && <span className="text-[9px] text-emerald-600 font-bold">MATCH</span>}
-                          {c.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
-                          {c.tipo === 'mutuo_recebimento' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
+                      <div className="flex items-center gap-2 p-2">
+                        <input type="checkbox" checked={sel} onChange={() => toggleCandidato(c)}
+                          className="h-3.5 w-3.5 rounded accent-primary shrink-0" />
+                        <div className="min-w-0 flex-1 cursor-pointer" onClick={() => toggleCandidato(c)}>
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <p className="text-xs font-medium truncate">{c.descricao}</p>
+                            {isSugerido && <span className="text-[9px] bg-blue-500/20 text-blue-700 px-1.5 py-0.5 rounded font-bold">SUGERIDO</span>}
+                            {matchExato && <span className="text-[9px] text-emerald-600 font-bold">MATCH</span>}
+                            {c.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
+                            {c.tipo === 'mutuo_recebimento' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
+                          </div>
+                          <p className="text-[10px] text-muted-foreground truncate">
+                            {c.fornecedor ? `${c.fornecedor} · ` : ''}
+                            Venc {fmtDateBr(c.data)} · saldo {formatCurrency(c.saldo)}
+                            {c.valor_pago > 0 && ` · pago ${formatCurrency(c.valor_pago)}/${formatCurrency(c.valor)}`}
+                          </p>
                         </div>
-                        <p className="text-[10px] text-muted-foreground truncate">
-                          {c.fornecedor ? `${c.fornecedor} · ` : ''}
-                          Venc {fmtDateBr(c.data)} · saldo {formatCurrency(c.saldo)}
-                          {c.valor_pago > 0 && ` · pago ${formatCurrency(c.valor_pago)}/${formatCurrency(c.valor)}`}
-                        </p>
+                        {sel && (
+                          <>
+                            <button type="button"
+                              onClick={(e) => { e.stopPropagation(); setShowObsId(showObsId === c.id ? null : c.id) }}
+                              title={obs ? `Observa\u00e7\u00e3o: ${obs}` : 'Adicionar observa\u00e7\u00e3o'}
+                              className={`rounded p-1 text-xs ${obs ? 'bg-amber-500/20 text-amber-700' : 'text-muted-foreground hover:bg-muted'}`}>
+                              📝
+                            </button>
+                            <input type="number" step="0.01" value={val}
+                              onChange={(e) => updateValor(c.id, Number(e.target.value) || 0)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-24 rounded border bg-background px-1.5 py-0.5 text-xs text-right font-mono" />
+                          </>
+                        )}
                       </div>
-                      {sel && (
-                        <input type="number" step="0.01" value={val}
-                          onChange={(e) => updateValor(c.id, Number(e.target.value) || 0)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="w-24 rounded border bg-background px-1.5 py-0.5 text-xs text-right font-mono" />
+                      {sel && showObsId === c.id && (
+                        <div className="px-2 pb-2">
+                          <textarea value={obs} onChange={(e) => updateObservacao(c.id, e.target.value)}
+                            placeholder="Memória do consumo (ex: lote específico, semana, motivo do split)..."
+                            rows={2}
+                            className="w-full rounded border bg-background px-2 py-1 text-[11px]" />
+                        </div>
                       )}
                     </div>
                   )
