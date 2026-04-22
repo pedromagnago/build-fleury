@@ -406,3 +406,382 @@ export function useRejectConciliacao() {
     onError: (err: Error) => toast.error(err.message),
   })
 }
+
+// ─── Undo Confirmed Reconciliation ──────────────────────────
+
+async function computeParcelaStatus(
+  parcelaId: string,
+  novoValorPago: number,
+): Promise<{ status: string; data_pagamento_real: string | null }> {
+  const { data: p } = await supabase
+    .from('parcelas')
+    .select('valor, data_vencimento, data_pagamento_real')
+    .eq('id', parcelaId)
+    .single()
+  if (!p) return { status: 'a_vencer', data_pagamento_real: null }
+
+  const total = Number(p.valor)
+  const today = new Date().toISOString().split('T')[0]!
+
+  if (novoValorPago <= 0.005) {
+    const vencida = p.data_vencimento < today
+    return { status: vencida ? 'vencida' : 'a_vencer', data_pagamento_real: null }
+  }
+  if (novoValorPago < total - 0.005) {
+    return { status: 'parcialmente_paga', data_pagamento_real: p.data_pagamento_real }
+  }
+  return { status: 'paga', data_pagamento_real: p.data_pagamento_real ?? today }
+}
+
+export function useUndoConciliacao() {
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
+
+  return useMutation({
+    mutationFn: async (conciliacaoId: string) => {
+      if (!currentCompany) throw new Error('No company')
+
+      const { data: conc, error: concErr } = await supabase
+        .from('conciliacoes')
+        .select('*, conciliacao_parcelas(parcela_id, valor_aplicado)')
+        .eq('id', conciliacaoId)
+        .single()
+      if (concErr) throw concErr
+      if (!conc) throw new Error('Conciliação não encontrada')
+
+      const snapshot = { ...conc }
+
+      await supabase.from('movimentacoes_bancarias').update({
+        conciliado: false,
+        conciliado_em: null,
+        parcela_id: null,
+      }).eq('id', conc.movimentacao_id)
+
+      for (const link of (conc.conciliacao_parcelas ?? [])) {
+        const { data: parcela } = await supabase
+          .from('parcelas')
+          .select('valor, valor_pago')
+          .eq('id', link.parcela_id)
+          .single()
+        if (!parcela) continue
+
+        const novoPago = Math.max(0, (Number(parcela.valor_pago) || 0) - Number(link.valor_aplicado))
+        const { status, data_pagamento_real } = await computeParcelaStatus(link.parcela_id, novoPago)
+
+        await supabase.from('parcelas').update({
+          valor_pago: novoPago,
+          status,
+          data_pagamento_real,
+        }).eq('id', link.parcela_id)
+      }
+
+      await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conciliacaoId)
+      await supabase.from('conciliacoes').delete().eq('id', conciliacaoId)
+
+      await supabase.from('audit_logs').insert({
+        company_id: currentCompany.id,
+        tabela: 'conciliacoes',
+        registro_id: conciliacaoId,
+        acao: 'UNDO',
+        agente: 'usuario',
+        dados_antes: snapshot,
+        dados_depois: { type: 'undo_conciliacao', motivo: 'Desfeito pelo usuário' },
+      })
+
+      return snapshot
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      toast.success('Conciliação desfeita')
+    },
+    onError: (err: Error) => toast.error('Erro ao desfazer: ' + err.message),
+  })
+}
+
+// ─── Edit Confirmed Reconciliation ──────────────────────────
+
+export interface UpdateConciliacaoPayload {
+  conciliacaoId: string
+  parcelas: { parcela_id: string; valor_aplicado: number }[]
+}
+
+export function useUpdateConciliacao() {
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
+
+  return useMutation({
+    mutationFn: async ({ conciliacaoId, parcelas: novasParcelas }: UpdateConciliacaoPayload) => {
+      if (!currentCompany) throw new Error('No company')
+
+      const { data: conc, error: concErr } = await supabase
+        .from('conciliacoes')
+        .select('*, conciliacao_parcelas(parcela_id, valor_aplicado)')
+        .eq('id', conciliacaoId)
+        .single()
+      if (concErr) throw concErr
+      if (!conc) throw new Error('Conciliação não encontrada')
+
+      const snapshot = { ...conc }
+      const linksAntigos: { parcela_id: string; valor_aplicado: number }[] = conc.conciliacao_parcelas ?? []
+
+      const antigoMap = new Map(linksAntigos.map(l => [l.parcela_id, Number(l.valor_aplicado)]))
+      const novoMap = new Map(novasParcelas.map(l => [l.parcela_id, Number(l.valor_aplicado)]))
+
+      const afetadas = new Set([...antigoMap.keys(), ...novoMap.keys()])
+
+      for (const parcelaId of afetadas) {
+        const delta = (novoMap.get(parcelaId) ?? 0) - (antigoMap.get(parcelaId) ?? 0)
+        if (Math.abs(delta) < 0.005) continue
+
+        const { data: parcela } = await supabase
+          .from('parcelas')
+          .select('valor_pago')
+          .eq('id', parcelaId)
+          .single()
+        if (!parcela) continue
+
+        const novoPago = Math.max(0, (Number(parcela.valor_pago) || 0) + delta)
+        const { status, data_pagamento_real } = await computeParcelaStatus(parcelaId, novoPago)
+
+        await supabase.from('parcelas').update({
+          valor_pago: novoPago,
+          status,
+          data_pagamento_real,
+        }).eq('id', parcelaId)
+      }
+
+      await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conciliacaoId)
+      if (novasParcelas.length > 0) {
+        await supabase.from('conciliacao_parcelas').insert(
+          novasParcelas.map(p => ({ conciliacao_id: conciliacaoId, ...p }))
+        )
+      }
+
+      const primeiraParcela = novasParcelas[0]?.parcela_id ?? null
+      await supabase.from('movimentacoes_bancarias').update({
+        parcela_id: primeiraParcela,
+      }).eq('id', conc.movimentacao_id)
+
+      const { data: movData } = await supabase
+        .from('movimentacoes_bancarias')
+        .select('valor')
+        .eq('id', conc.movimentacao_id)
+        .single()
+      const totalAplicado = novasParcelas.reduce((s, p) => s + Number(p.valor_aplicado), 0)
+      const diferenca = movData ? Number(movData.valor) - totalAplicado : 0
+
+      await supabase.from('conciliacoes').update({
+        diferenca,
+        match_type: 'manual_edit',
+      }).eq('id', conciliacaoId)
+
+      await supabase.from('audit_logs').insert({
+        company_id: currentCompany.id,
+        tabela: 'conciliacoes',
+        registro_id: conciliacaoId,
+        acao: 'UPDATE',
+        agente: 'usuario',
+        dados_antes: snapshot,
+        dados_depois: { type: 'edit_conciliacao', novas_parcelas: novasParcelas, diferenca },
+      })
+
+      return conciliacaoId
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      toast.success('Conciliação atualizada')
+    },
+    onError: (err: Error) => toast.error('Erro ao atualizar: ' + err.message),
+  })
+}
+
+// ─── Lançamento Manual (sem OFX) ────────────────────────────
+
+export interface LancamentoManualPayload {
+  conta_id: string
+  data: string
+  valor: number
+  tipo: 'entrada' | 'saida'
+  descricao: string
+  parcela_id?: string | null
+  categoria?: string | null
+  observacao?: string | null
+  auto_conciliar?: boolean
+}
+
+export function useCreateMovimentoManual() {
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
+
+  return useMutation({
+    mutationFn: async (payload: LancamentoManualPayload) => {
+      if (!currentCompany) throw new Error('No company')
+
+      const fitid = `manual_${payload.conta_id}_${payload.data}_${Date.now()}`
+      const row = {
+        company_id: currentCompany.id,
+        conta_id: payload.conta_id,
+        data: payload.data,
+        descricao: payload.descricao,
+        valor: Math.abs(payload.valor),
+        tipo: payload.tipo,
+        fitid,
+        memo_raw: payload.descricao,
+        saldo_acumulado: null,
+        origem: 'manual',
+        conciliado: payload.auto_conciliar ?? !!payload.parcela_id,
+        conciliado_em: (payload.auto_conciliar || payload.parcela_id) ? new Date().toISOString() : null,
+        parcela_id: payload.parcela_id ?? null,
+        categoria: payload.categoria ?? null,
+        observacao: payload.observacao ?? null,
+      }
+
+      const { data: mov, error } = await supabase
+        .from('movimentacoes_bancarias')
+        .insert(row)
+        .select('*')
+        .single()
+      if (error) throw error
+
+      if (payload.parcela_id) {
+        const { data: parcela } = await supabase
+          .from('parcelas')
+          .select('valor, valor_pago')
+          .eq('id', payload.parcela_id)
+          .single()
+        if (parcela) {
+          const novoPago = (Number(parcela.valor_pago) || 0) + Math.abs(payload.valor)
+          const total = Number(parcela.valor)
+          const novoStatus = novoPago >= total - 0.005 ? 'paga' : 'parcialmente_paga'
+          await supabase.from('parcelas').update({
+            status: novoStatus,
+            valor_pago: novoPago,
+            data_pagamento_real: payload.data,
+          }).eq('id', payload.parcela_id)
+        }
+
+        const { data: conc } = await supabase.from('conciliacoes').insert({
+          company_id: currentCompany.id,
+          movimentacao_id: mov.id,
+          match_type: 'manual_lancamento',
+          confidence: 100,
+          diferenca: 0,
+          status: 'confirmado',
+        }).select('id').single()
+
+        if (conc) {
+          await supabase.from('conciliacao_parcelas').insert({
+            conciliacao_id: conc.id,
+            parcela_id: payload.parcela_id,
+            valor_aplicado: Math.abs(payload.valor),
+          })
+        }
+      }
+
+      await supabase.from('audit_logs').insert({
+        company_id: currentCompany.id,
+        tabela: 'movimentacoes_bancarias',
+        registro_id: mov.id,
+        acao: 'INSERT_MANUAL',
+        agente: 'usuario',
+        dados_depois: { type: 'lancamento_manual', ...row },
+      })
+
+      return mov
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      toast.success('Lançamento manual criado')
+    },
+    onError: (err: Error) => toast.error('Erro ao criar lançamento: ' + err.message),
+  })
+}
+
+export function useDeleteMovimento() {
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
+
+  return useMutation({
+    mutationFn: async (movId: string) => {
+      if (!currentCompany) throw new Error('No company')
+
+      const { data: mov } = await supabase
+        .from('movimentacoes_bancarias')
+        .select('*')
+        .eq('id', movId)
+        .single()
+      if (!mov) throw new Error('Movimento não encontrado')
+
+      const { data: concs } = await supabase
+        .from('conciliacoes')
+        .select('*, conciliacao_parcelas(parcela_id, valor_aplicado)')
+        .eq('movimentacao_id', movId)
+
+      for (const conc of (concs ?? []) as any[]) {
+        for (const link of (conc.conciliacao_parcelas ?? [])) {
+          const { data: p } = await supabase
+            .from('parcelas')
+            .select('valor_pago')
+            .eq('id', link.parcela_id)
+            .single()
+          if (!p) continue
+          const novoPago = Math.max(0, (Number(p.valor_pago) || 0) - Number(link.valor_aplicado))
+          const { status, data_pagamento_real } = await computeParcelaStatus(link.parcela_id, novoPago)
+          await supabase.from('parcelas').update({
+            valor_pago: novoPago, status, data_pagamento_real,
+          }).eq('id', link.parcela_id)
+        }
+        await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conc.id)
+        await supabase.from('conciliacoes').delete().eq('id', conc.id)
+      }
+
+      await supabase.from('movimentacoes_bancarias').delete().eq('id', movId)
+
+      await supabase.from('audit_logs').insert({
+        company_id: currentCompany.id,
+        tabela: 'movimentacoes_bancarias',
+        registro_id: movId,
+        acao: 'DELETE',
+        agente: 'usuario',
+        dados_antes: mov,
+      })
+
+      return mov
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      toast.success('Movimento excluído')
+    },
+    onError: (err: Error) => toast.error('Erro ao excluir: ' + err.message),
+  })
+}
+
+// ─── Undo History (Audit Trail) ─────────────────────────────
+
+export function useConciliacaoHistory() {
+  const { currentCompany } = useProject()
+  return useQuery({
+    queryKey: ['conciliacao_history', currentCompany?.id],
+    queryFn: async () => {
+      if (!currentCompany) return []
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .select('*')
+        .eq('company_id', currentCompany.id)
+        .eq('tabela', 'conciliacoes')
+        .order('created_at', { ascending: false })
+        .limit(200)
+      if (error) throw error
+      return data ?? []
+    },
+    enabled: !!currentCompany,
+  })
+}

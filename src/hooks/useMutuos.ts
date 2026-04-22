@@ -47,7 +47,7 @@ export function useMutuos() {
 
       // Fetch mutuos and parcelas separately to avoid PostgREST embed issues
       const [mutuosRes, parcelasRes] = await Promise.all([
-        supabase.from('mutuos').select('*, fornecedor:fornecedores(id, nome)').eq('company_id', companyId).order('created_at', { ascending: false }),
+        supabase.from('mutuos').select('*, fornecedor:fornecedores(id, nome)').eq('company_id', companyId).neq('categoria', 'STUB_Dedupe').order('created_at', { ascending: false }),
         supabase.from('mutuo_parcelas').select('*').eq('company_id', companyId).order('numero_parcela'),
       ])
       if (mutuosRes.error) throw mutuosRes.error
@@ -258,7 +258,7 @@ export function useMutuosSummary() {
     queryFn: async () => {
       if (!companyId) return null
       const [mutuosRes, parcelasRes] = await Promise.all([
-        supabase.from('mutuos').select('id, valor_captado, status').eq('company_id', companyId),
+        supabase.from('mutuos').select('id, valor_captado, status').eq('company_id', companyId).neq('categoria', 'STUB_Dedupe'),
         supabase.from('mutuo_parcelas').select('valor, valor_pago, status').eq('company_id', companyId),
       ])
       if (mutuosRes.error) throw mutuosRes.error

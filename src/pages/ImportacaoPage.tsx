@@ -31,18 +31,68 @@ function normalizeHeader(h: string): string {
     .replace(/\s+/g, '_')
 }
 
+/**
+ * Parse a number from a sheet cell that may include currency symbols, thousand
+ * separators (pt-BR or US), or decimal separators of either style.
+ * Examples that all return 570:
+ *   "R$ 570.00" · "570,00" · "R$ 1.234,56" → 1234.56 · "1,234.56" → 1234.56
+ */
+function parseNumberCell(v: unknown): number {
+  if (v == null || v === '') return 0
+  if (typeof v === 'number') return isFinite(v) ? v : 0
+  let s = String(v).trim()
+  if (!s) return 0
+  s = s.replace(/[R$\s\u00a0]/gi, '')
+  const lastComma = s.lastIndexOf(',')
+  const lastDot = s.lastIndexOf('.')
+  if (lastComma >= 0 && lastDot >= 0) {
+    if (lastComma > lastDot) s = s.replace(/\./g, '').replace(',', '.')
+    else s = s.replace(/,/g, '')
+  } else if (lastComma >= 0) {
+    s = s.replace(',', '.')
+  } else if (lastDot >= 0) {
+    const parts = s.split('.')
+    if (parts.length > 2) s = s.replace(/\./g, '')
+  }
+  const n = parseFloat(s)
+  return isNaN(n) ? 0 : n
+}
+
 function parseSheetToRows(worksheet: XLSX.WorkSheet): { headers: string[]; rows: ParsedRow[] } {
-  const jsonData = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: '' })
-  if (jsonData.length === 0) return { headers: [], rows: [] }
-  const rawHeaders = Object.keys(jsonData[0]!)
+  // Read as array-of-arrays to detect the real header row when the sheet has
+  // descriptive lines on top (ex.: SFP template has 3 descriptive rows before
+  // the ETAPA/ITEM/... header).
+  const arr = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: '', raw: false })
+  if (arr.length === 0) return { headers: [], rows: [] }
+
+  const HEADER_KEYWORDS = [
+    'etapa', 'item', 'fornecedor', 'descricao', 'descrição', 'valor', 'quantidade',
+    'casas', 'codigo', 'código', 'data', 'cond', 'pagamento', 'vencimento',
+  ]
+
+  let headerIdx = 0
+  for (let i = 0; i < Math.min(arr.length, 20); i++) {
+    const row = (arr[i] ?? []) as unknown[]
+    const cells = row.map(c => (c == null ? '' : String(c).trim())).filter(Boolean)
+    if (cells.length < 2) continue
+    const lowered = cells.join(' ').toLowerCase()
+    if (HEADER_KEYWORDS.some(k => lowered.includes(k))) { headerIdx = i; break }
+    if (cells.length >= 3) { headerIdx = i; break }
+  }
+
+  const rawHeaders = ((arr[headerIdx] ?? []) as unknown[]).map(h => String(h ?? '').trim())
   const headers = rawHeaders.map(normalizeHeader)
-  const rows: ParsedRow[] = jsonData.map((item) => {
-    const row: ParsedRow = {}
-    rawHeaders.forEach((rawH, idx) => {
-      row[headers[idx]!] = item[rawH] != null ? String(item[rawH]).trim() : ''
+  const rows: ParsedRow[] = []
+  for (let i = headerIdx + 1; i < arr.length; i++) {
+    const row = (arr[i] ?? []) as unknown[]
+    const obj: ParsedRow = {}
+    rawHeaders.forEach((_, idx) => {
+      const key = headers[idx]!
+      const val = row[idx]
+      obj[key] = val != null ? String(val).trim() : ''
     })
-    return row
-  })
+    if (Object.values(obj).some(v => v !== '')) rows.push(obj)
+  }
   return { headers, rows }
 }
 
@@ -64,7 +114,7 @@ function parseCSV(text: string): { headers: string[]; rows: ParsedRow[] } {
   return { headers, rows }
 }
 
-function processFile(file: File, onDone: (p: ImportPreview) => void) {
+function processFile(file: File, onDone: (p: ImportPreview) => void, preferredSheetKeyword?: string) {
   const ext = file.name.split('.').pop()?.toLowerCase()
   if (ext === 'csv' || ext === 'txt') {
     const reader = new FileReader()
@@ -79,9 +129,17 @@ function processFile(file: File, onDone: (p: ImportPreview) => void) {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer)
         const wb = XLSX.read(data, { type: 'array' })
-        const sheet = wb.SheetNames[0]
+        let sheet = wb.SheetNames[0]
+        if (preferredSheetKeyword) {
+          const kw = preferredSheetKeyword.toLowerCase()
+          const match = wb.SheetNames.find(n => n.toLowerCase().includes(kw))
+          if (match) sheet = match
+        }
         if (!sheet) { toast.error('Planilha vazia'); return }
         const { headers, rows } = parseSheetToRows(wb.Sheets[sheet]!)
+        if (sheet !== wb.SheetNames[0]) {
+          toast.info(`Aba "${sheet}" selecionada automaticamente`)
+        }
         onDone({ headers, rows, fileName: file.name })
       } catch { toast.error('Erro ao ler arquivo Excel') }
     }
@@ -146,7 +204,7 @@ function formatError(err: unknown): string {
 // ═══════════════════════════════════════════════════════════════
 // Main page
 // ═══════════════════════════════════════════════════════════════
-type Tab = 'wbs' | 'dados' | 'pedidos' | 'medicoes' | 'distribuicao' | 'logs' | 'pagamentos'
+type Tab = 'wbs' | 'dados' | 'pedidos' | 'indiretos' | 'medicoes' | 'distribuicao' | 'logs' | 'pagamentos'
 
 export default function ImportacaoPage() {
   const { restartTour } = useTour('importacao', pageTours.importacao)
@@ -157,6 +215,7 @@ export default function ImportacaoPage() {
     { key: 'wbs', label: 'WBS Completa (Excel)', icon: FileSpreadsheet },
     { key: 'dados', label: 'Dados Base', icon: FileSpreadsheet },
     { key: 'pedidos', label: 'Pedidos', icon: ShoppingCart },
+    { key: 'indiretos', label: 'Custos Indiretos', icon: BarChart3 },
     { key: 'medicoes', label: 'Medições', icon: Calendar },
     { key: 'distribuicao', label: 'Distribuição Cronograma', icon: BarChart3 },
     { key: 'pagamentos', label: 'Pagamentos Realizados', icon: CheckCircle2 as typeof Upload },
@@ -185,6 +244,7 @@ export default function ImportacaoPage() {
       {tab === 'wbs' && <WBSTab />}
       {tab === 'dados' && <DadosBaseTab />}
       {tab === 'pedidos' && <PedidosTab />}
+      {tab === 'indiretos' && <CustosIndiretosTab />}
       {tab === 'medicoes' && <MedicoesTab />}
       {tab === 'distribuicao' && <DistribuicaoTab />}
       {tab === 'pagamentos' && <PagamentosRealizadosTab />}
@@ -394,6 +454,7 @@ function normalizePedidoRows(raw: ParsedRow[], headers: string[]): ParsedRow[] {
   return raw.map(row => {
     const etapaNome = findPedCol(row, ['ETAPA', 'etapa'])
     const itemDesc = findPedCol(row, ['ITEM', 'item', 'descricao'])
+    const itemCodigo = findPedCol(row, ['Código', 'codigo', 'item_codigo', 'item_cod'])
     const fornecedor = findPedCol(row, ['FORNECEDOR', 'fornecedor_nome'])
     const condPag = findPedCol(row, ['COND PAGTO', 'COND. PAGTO', 'cond_pagamento', 'Cond Pagamento'])
     const casas = findPedCol(row, ['QUANTIDADE DE CASAS', 'casas_lote', 'casas'])
@@ -402,7 +463,7 @@ function normalizePedidoRows(raw: ParsedRow[], headers: string[]): ParsedRow[] {
     const qtdEntrega = findPedCol(row, ['quant._2', 'QUANT._2'])
     const dataEntrega = findPedCol(row, ['DATA DA ENTREGA', 'data_da_entrega', 'data_entrega_prevista', 'DATA ENTREGA'])
     return {
-      'item_codigo': '',
+      'item_codigo': itemCodigo ?? '',
       '_item_descricao': itemDesc,
       '_etapa_nome': etapaNome,
       'numero_pedido': '',
@@ -410,8 +471,8 @@ function normalizePedidoRows(raw: ParsedRow[], headers: string[]): ParsedRow[] {
       'fornecedor_nome': fornecedor,
       'cond_pagamento': condPag,
       'data_entrega_prevista': parsePedDate(dataEntrega),
-      'valor_unitario_real': valorUnit ? String(parseFloat(String(valorUnit).replace(',', '.')) || 0) : '',
-      'valor_total_override': valorTotal ? String(parseFloat(String(valorTotal).replace(',', '.')) || 0) : '',
+      'valor_unitario_real': valorUnit ? String(parseNumberCell(valorUnit)) : '',
+      'valor_total_override': valorTotal ? String(parseNumberCell(valorTotal)) : '',
       '_qtd_entrega': qtdEntrega,
     }
   })
@@ -460,10 +521,10 @@ function PedidosTab() {
         }
         if (item) itemCodigo = item.codigo
       }
-      const casas = parseInt(row['casas_lote'] ?? '0') || 0
-      const sheetUnitario = row['valor_unitario_real'] ? parseFloat(String(row['valor_unitario_real']).replace(',', '.')) : 0
+      const casas = parseNumberCell(row['casas_lote'])
+      const sheetUnitario = parseNumberCell(row['valor_unitario_real'])
       const unitario = sheetUnitario > 0 ? sheetUnitario : (item?.custo_unitario_orcado ?? 0)
-      const overrideTotal = row['valor_total_override'] ? parseFloat(String(row['valor_total_override']).replace(',', '.')) : 0
+      const overrideTotal = parseNumberCell(row['valor_total_override'])
       let valorTotal: number
       if (overrideTotal > 0) { valorTotal = overrideTotal } else { const qtdPorCasa = item?.qtd_por_casa ?? 1; valorTotal = casas * qtdPorCasa * unitario }
       const cond = row['cond_pagamento'] ?? ''
@@ -504,10 +565,10 @@ function PedidosTab() {
           if (etapaObj?.data_inicio_plan) dataEntrega = etapaObj.data_inicio_plan
           else { const d30 = new Date(); d30.setDate(d30.getDate() + 30); dataEntrega = d30.toISOString().split('T')[0] }
         }
-        const casas = parseFloat(row['casas_lote'] ?? '0') || 0
+        const casas = parseNumberCell(row['casas_lote'])
         const unitario = row.unitarioAplicado
         const qtdPorCasa = item.qtd_por_casa ?? 1
-        const qtdLote = row['_qtd_entrega'] ? parseFloat(row['_qtd_entrega']) : casas * qtdPorCasa
+        const qtdLote = row['_qtd_entrega'] ? parseNumberCell(row['_qtd_entrega']) : casas * qtdPorCasa
         const valorTotal = row.valorTotal
         const { data: pedido, error: pedErr } = await supabase.from('pedidos').insert({
           company_id: currentCompany.id, item_compra_id: item.id,
@@ -556,7 +617,7 @@ function PedidosTab() {
           <Download className="h-3.5 w-3.5 text-primary" />Baixar template
         </button>
       </div>
-      <DropZone onFile={(f) => processFile(f, handleFile)} />
+      <DropZone onFile={(f) => processFile(f, handleFile, 'pedido')} />
       {preview && (
         <div className="mb-5 rounded-xl border bg-card">
           <div className="flex items-center justify-between border-b p-4">
@@ -624,6 +685,226 @@ function PedidosTab() {
         </div>
       )}
     </>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Tab: Custos Indiretos
+// ═══════════════════════════════════════════════════════════════
+const INDIRETOS_HEADERS = ['descricao', 'categoria', 'fornecedor_nome', 'cond_pagamento', 'data_inicio', 'valor_orcado']
+
+function normalizeIndiretosRows(raw: ParsedRow[]): ParsedRow[] {
+  return raw.map(row => {
+    const descricao = findPedCol(row, ['Descrição', 'descricao', 'descriçao', 'DESCRIÇÃO'])
+    const categoria = findPedCol(row, ['Categoria', 'categoria', 'CATEGORIA']) || 'Indireto'
+    const fornecedor = findPedCol(row, ['Fornecedor', 'fornecedor', 'fornecedor_nome', 'FORNECEDOR'])
+    const condPag = findPedCol(row, ['Cond. Pagamento', 'cond_pagamento', 'Cond Pagamento', 'COND PAGTO', 'Condição de Pagamento'])
+    const dataInicio = findPedCol(row, ['Data Início', 'data_inicio', 'Data Inicio', 'Data de Início', 'DATA INÍCIO'])
+    const valorOrcado = findPedCol(row, ['Valor Orçado', 'valor_orcado', 'Valor Orcado', 'VALOR ORÇADO', 'valor'])
+    return {
+      'descricao': descricao,
+      'categoria': categoria,
+      'fornecedor_nome': fornecedor,
+      'cond_pagamento': condPag,
+      'data_inicio': parsePedDate(dataInicio),
+      'valor_orcado': valorOrcado ? String(parseNumberCell(valorOrcado)) : '',
+    }
+  })
+}
+
+function CustosIndiretosTab() {
+  const { currentCompany } = useProject()
+  const qc = useQueryClient()
+  const [preview, setPreview] = useState<ImportPreview | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [result, setResult] = useState<{ success: number; parcelas: number; total: number; errors: string[] } | null>(null)
+
+  const handleFile = useCallback((p: ImportPreview) => {
+    const normalized = normalizeIndiretosRows(p.rows)
+      .filter(r => r['descricao'] && !/^total/i.test(r['descricao']!) && parseNumberCell(r['valor_orcado']) > 0)
+    setPreview({ ...p, rows: normalized })
+    setResult(null)
+  }, [])
+
+  const enrichedRows = useMemo(() => {
+    if (!preview) return []
+    return preview.rows.map(row => ({
+      ...row,
+      valorOrcado: parseNumberCell(row['valor_orcado']),
+      parcelasPrevistas: parsearCondicao(row['cond_pagamento'] ?? '').length,
+    }))
+  }, [preview])
+
+  const totalOrcado = useMemo(
+    () => enrichedRows.reduce((s, r) => s + r.valorOrcado, 0),
+    [enrichedRows]
+  )
+
+  const doImport = async () => {
+    if (!preview || !currentCompany) return
+    setImporting(true); setProgress(0)
+    const errors: string[] = []
+    let successDespesas = 0, totalParcelas = 0
+    for (let i = 0; i < enrichedRows.length; i++) {
+      setProgress(Math.round(((i + 1) / enrichedRows.length) * 100))
+      const row = enrichedRows[i]!
+      try {
+        let fornecedorId: string | null = null
+        if (row['fornecedor_nome']) {
+          const { data: forn } = await supabase.from('fornecedores').select('id')
+            .eq('company_id', currentCompany.id).ilike('nome', row['fornecedor_nome']).limit(1).single()
+          if (forn) fornecedorId = forn.id
+          else {
+            const { data: newForn } = await supabase.from('fornecedores').insert({
+              company_id: currentCompany.id, nome: row['fornecedor_nome']!,
+            }).select('id').single()
+            fornecedorId = newForn?.id ?? null
+          }
+        }
+        const dataInicio = row['data_inicio'] || new Date().toISOString().split('T')[0]!
+        const { data: despesa, error: despErr } = await supabase.from('despesas_indiretas').insert({
+          company_id: currentCompany.id,
+          categoria: row['categoria'] || 'Indireto',
+          descricao: row['descricao']!,
+          valor_orcado: row.valorOrcado,
+          valor_consumido: 0,
+          data_inicio: dataInicio,
+          data_fim: null,
+          fornecedor_id: fornecedorId,
+          ativo: true,
+          recorrente: false,
+          frequencia: null,
+        }).select('id').single()
+        if (despErr) throw despErr
+        if (!despesa) throw new Error('Despesa não criada')
+
+        if (row.valorOrcado > 0) {
+          const parcelas = gerarParcelas({
+            pedidoId: despesa.id,
+            companyId: currentCompany.id,
+            valorTotal: row.valorOrcado,
+            condPagamento: row['cond_pagamento'] || 'à vista',
+            dataEntrega: localDate(dataInicio),
+          })
+          if (parcelas.length > 0) {
+            const adapted = parcelas.map(p => ({ ...p, pedido_id: null, despesa_indireta_id: despesa.id }))
+            const { error: parcErr } = await supabase.from('parcelas').insert(adapted)
+            if (parcErr) console.warn('Erro ao gerar parcelas:', parcErr.message)
+            else totalParcelas += parcelas.length
+          }
+        }
+        successDespesas++
+      } catch (err) { errors.push(`Linha ${i + 2} (${row['descricao']}): ${formatError(err)}`) }
+    }
+    await supabase.from('audit_logs').insert({
+      company_id: currentCompany.id, tabela: 'despesas_indiretas', acao: 'INSERT', agente: 'sistema',
+      dados_depois: { type: 'import_custos_indiretos', success: successDespesas, total: enrichedRows.length, errors },
+    })
+    setResult({ success: successDespesas, parcelas: totalParcelas, total: totalOrcado, errors }); setImporting(false)
+    if (successDespesas > 0) {
+      toast.success(`Importados ${successDespesas} custos indiretos, ${totalParcelas} parcelas geradas`)
+      qc.invalidateQueries({ queryKey: ['despesas_indiretas'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['fornecedores'] })
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-xl border bg-muted/30 p-4 text-xs text-muted-foreground">
+        Aceita a aba <strong>06_Custos_Indiretos</strong> do arquivo completo (auto-detecta).
+        <br/>Colunas esperadas: <code>Descrição</code>, <code>Categoria</code>, <code>Fornecedor</code>, <code>Cond. Pagamento</code>, <code>Data Início</code>, <code>Valor Orçado</code>.
+        <button onClick={() => downloadTemplate('custos_indiretos', INDIRETOS_HEADERS,
+          ['Aluguel container', 'Indireto', 'Fornecedor ABC', '30/60/90', '2026-03-28', '3000'])}
+          className="ml-2 inline-flex items-center gap-1 text-primary hover:underline">
+          <Download className="h-3 w-3" />Template
+        </button>
+      </div>
+
+      <DropZone onFile={(f) => processFile(f, handleFile, 'indireto')} />
+
+      {preview && (
+        <div className="rounded-xl border bg-card">
+          <div className="flex items-center justify-between border-b p-4">
+            <div>
+              <h3 className="font-semibold">Preview — {enrichedRows.length} custos indiretos</h3>
+              <p className="text-xs text-muted-foreground">
+                Total orçado: <strong className="text-foreground">{formatCurrency(totalOrcado)}</strong>
+              </p>
+            </div>
+            <button onClick={() => { setPreview(null); setResult(null) }}
+              className="rounded-lg border px-3 py-1.5 text-xs hover:bg-muted">
+              <X className="inline h-3 w-3 mr-1" />Descartar
+            </button>
+          </div>
+          <div className="max-h-96 overflow-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-muted">
+                <tr>
+                  <th className="px-3 py-2 text-left">Descrição</th>
+                  <th className="px-3 py-2 text-left">Categoria</th>
+                  <th className="px-3 py-2 text-left">Fornecedor</th>
+                  <th className="px-3 py-2 text-left">Cond.</th>
+                  <th className="px-3 py-2 text-left">Data Início</th>
+                  <th className="px-3 py-2 text-right">Valor Orçado</th>
+                  <th className="px-3 py-2 text-center">Parcelas</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {enrichedRows.map((row, i) => (
+                  <tr key={i} className="hover:bg-muted/30">
+                    <td className="px-3 py-1.5 max-w-[250px] truncate" title={row['descricao']}>{row['descricao']}</td>
+                    <td className="px-3 py-1.5 text-muted-foreground">{row['categoria']}</td>
+                    <td className="px-3 py-1.5 text-muted-foreground max-w-[140px] truncate" title={row['fornecedor_nome']}>{row['fornecedor_nome'] || '—'}</td>
+                    <td className="px-3 py-1.5 tabular-nums">{row['cond_pagamento'] || 'à vista'}</td>
+                    <td className="px-3 py-1.5 tabular-nums">{row['data_inicio']}</td>
+                    <td className="px-3 py-1.5 text-right font-mono font-semibold tabular-nums">{formatCurrency(row.valorOrcado)}</td>
+                    <td className="px-3 py-1.5 text-center"><span className="rounded-full bg-blue-500/10 text-blue-600 px-2 py-0.5 text-[10px] font-bold">{row.parcelasPrevistas}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot className="sticky bottom-0 bg-muted font-bold">
+                <tr>
+                  <td colSpan={5} className="px-3 py-2 text-right">TOTAL</td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums">{formatCurrency(totalOrcado)}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div className="flex items-center gap-3 border-t p-4">
+            <button onClick={doImport} disabled={importing}
+              className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
+              {importing ? <>Processando {progress}%</> : <><CheckCircle2 className="h-4 w-4" />Importar {enrichedRows.length} custos indiretos</>}
+            </button>
+            {importing && (
+              <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                <div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {result && (
+        <div className="rounded-xl border bg-card p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+            <h3 className="font-semibold">
+              {result.success} custos indiretos importados · {result.parcelas} parcelas geradas
+            </h3>
+          </div>
+          <p className="text-xs text-muted-foreground">Total orçado: <strong>{formatCurrency(result.total)}</strong></p>
+          {result.errors.length > 0 && (
+            <div className="mt-3 max-h-48 overflow-auto rounded-lg bg-red-500/5 p-2 text-xs">
+              <p className="font-bold text-red-600 mb-1">{result.errors.length} erros:</p>
+              {result.errors.map((e, i) => <p key={i} className="text-red-500">· {e}</p>)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1823,6 +2104,83 @@ function PagamentosRealizadosTab() {
     const actionable = bdResult.rows.filter(r => r.importPath !== 'skip')
     const total = actionable.length
 
+    // Pré-carregar parcelas pendentes para match com fornecedor+valor+data
+    const { data: parcelasCandidatas } = await supabase
+      .from('parcelas')
+      .select('id, valor, data_vencimento, valor_pago, pedido_id, despesa_indireta_id, status, pedidos(fornecedor_id, fornecedores(nome)), despesas_indiretas(descricao, fornecedor_id, fornecedores(nome))')
+      .eq('company_id', currentCompany.id)
+      .is('deleted_at', null)
+      .neq('status', 'paga')
+    type Candidato = { id: string; valor: number; data_vencimento: string; valor_pago: number; pedido_id: string | null; despesa_indireta_id: string | null; fornNome: string }
+    const parcelasPool: Candidato[] = ((parcelasCandidatas ?? []) as any[]).map(p => ({
+      id: p.id, valor: Number(p.valor), data_vencimento: p.data_vencimento,
+      valor_pago: Number(p.valor_pago || 0),
+      pedido_id: p.pedido_id, despesa_indireta_id: p.despesa_indireta_id,
+      fornNome: (p.pedidos?.fornecedores?.nome ?? p.despesas_indiretas?.fornecedores?.nome ?? '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim(),
+    }))
+
+    function normalizarNome(s: string): string {
+      return (s ?? '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\b(LTDA|ME|EPP|S\.A\.?|SA|CIA\.?|LTDA\.?|SOLUCOES|INDUSTRIAIS|PARTICIPACOES|ADMINISTRATIVO|LOGISTICO|CENTRO|BRASIL|GESTAO)\b/g, '')
+        .replace(/\b\d{9,14}\b/g, '')
+        .replace(/[^A-Z\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    }
+    function sharedPrefixLen(a: string, b: string): number {
+      let i = 0
+      while (i < a.length && i < b.length && a[i] === b[i]) i++
+      return i
+    }
+    function fornCompatvel(forn1: string, forn2: string): boolean {
+      const a = normalizarNome(forn1), b = normalizarNome(forn2)
+      if (!a || !b) return false
+      if (a === b) return true
+      const tokensA = a.split(/\s+/).filter(t => t.length >= 3)
+      const tokensB = b.split(/\s+/).filter(t => t.length >= 3)
+      if (tokensA.length === 0 || tokensB.length === 0) return false
+      for (const ta of tokensA) {
+        for (const tb of tokensB) {
+          if (ta === tb) return true
+          const prefix = sharedPrefixLen(ta, tb)
+          const minLen = Math.min(ta.length, tb.length)
+          if (prefix >= 5 && Math.abs(ta.length - tb.length) <= 2 && prefix >= minLen - 2) return true
+          if (prefix >= 4 && (ta.length <= 5 || tb.length <= 5) && Math.abs(ta.length - tb.length) <= 1) return true
+          if (prefix >= 3 && ta.length <= 5 && tb.length <= 5 && Math.abs(ta.length - tb.length) <= 1) return true
+        }
+      }
+      return false
+    }
+    /**
+     * Match de pagamento com parcela existente.
+     * Ordem de prioridade:
+     *   1. Match EXATO: valor igual ao da parcela (±2%) + data próxima
+     *   2. Match PARCIAL: valor ≤ saldo restante da parcela (valor - valor_pago) — suporta
+     *      múltiplos pagamentos parciais contra a mesma parcela
+     */
+    function findMatchParcela(forn: string, valor: number, dataPgto: string): { cand: Candidato; exato: boolean } | null {
+      const tolValor = Math.max(valor * 0.02, 1)
+      const dataPgtoDt = new Date(dataPgto)
+      const matches: { cand: Candidato; exato: boolean; score: number }[] = []
+      for (const p of parcelasPool) {
+        if (!fornCompatvel(forn, p.fornNome)) continue
+        const diffDias = Math.abs((new Date(p.data_vencimento).getTime() - dataPgtoDt.getTime()) / 86400000)
+        if (diffDias > 90) continue
+        const saldo = p.valor - p.valor_pago
+        const exato = Math.abs(p.valor - valor) <= tolValor
+        const parcial = saldo + 0.01 >= valor && saldo > 0.01
+        if (!exato && !parcial) continue
+        const score = (exato ? 0 : 1000) + diffDias + Math.abs(saldo - valor) * 0.001
+        matches.push({ cand: p, exato, score })
+      }
+      if (matches.length === 0) return null
+      matches.sort((a, b) => a.score - b.score)
+      const best = matches[0]!
+      return { cand: best.cand, exato: best.exato }
+    }
+    let pedidosBaixados = 0
+    let pedidosBaixadosParcial = 0
+
     let processed = 0
     for (const row of actionable) {
       processed++
@@ -1878,7 +2236,32 @@ function PagamentosRealizadosTab() {
 
         let parcelaIdParaConciliar = null
 
-        // 2A. DESPESA (Saida)
+        // 2A-pre: Tentar match com parcela existente antes de criar despesa nova
+        if (row.importPath === 'despesa' && isSaida) {
+          const match = findMatchParcela(row.fornecedor, absValor, dataPgto)
+          if (match) {
+            const { cand: candidato, exato } = match
+            const novoPago = candidato.valor_pago + absValor
+            const total = candidato.valor
+            const novoStatus = novoPago >= total - 0.01 ? 'paga' : 'parcialmente_paga'
+            await supabase.from('parcelas').update({
+              status: novoStatus, valor_pago: novoPago, data_pagamento_real: dataPgto,
+            }).eq('id', candidato.id)
+            parcelaIdParaConciliar = candidato.id
+            candidato.valor_pago = novoPago
+            if (novoStatus === 'paga') {
+              const idx = parcelasPool.findIndex(p => p.id === candidato.id)
+              if (idx >= 0) parcelasPool.splice(idx, 1)
+              pedidosBaixados++
+            } else {
+              pedidosBaixadosParcial++
+            }
+            // Pula o fluxo de criar despesa nova — esta linha foi casada
+            row.importPath = 'skip'
+          }
+        }
+
+        // 2A. DESPESA (Saida) — fallback se não achou match
         if (row.importPath === 'despesa') {
            // Tentar achar a Etapa
            let etapaId = null
@@ -2044,6 +2427,8 @@ function PagamentosRealizadosTab() {
       dados_depois: {
         type: 'import_bd_realizado_v3_history',
         despesas_criadas: despesasCriadas,
+        pedidos_baixados: pedidosBaixados,
+        pedidos_baixados_parcial: pedidosBaixadosParcial,
         pedidos_flex: pedidosFlex,
         parcelas_atreladas: parcelasAtreladas,
         creditos: creditosRegistrados,
@@ -2060,8 +2445,8 @@ function PagamentosRealizadosTab() {
       toast.warning(`Importação com ${errors.length} avisos/erros. Verifique nos Logs de Importação.`)
       console.warn('Erros BD Realizado:', errors)
     }
-    const totalProcessado = despesasCriadas + pedidosFlex + parcelasAtreladas + creditosRegistrados + mutuosCriados
-    toast.success(`✅ ${totalProcessado} ações: ${despesasCriadas} Desp.Ind. · ${pedidosFlex} Itens Flex · ${parcelasAtreladas} Pagamentos Atrelados a Pedidos · ${mutuosCriados} Mútuos`)
+    const totalProcessado = despesasCriadas + pedidosBaixados + pedidosBaixadosParcial + pedidosFlex + parcelasAtreladas + creditosRegistrados + mutuosCriados
+    toast.success(`✅ ${totalProcessado} ações: ${pedidosBaixados} parcelas quitadas · ${pedidosBaixadosParcial} parciais · ${despesasCriadas} Desp.Ind. · ${mutuosCriados} Mútuos`)
     setIsProcessing(false)
     setProgress(0)
     setBdResult(null)

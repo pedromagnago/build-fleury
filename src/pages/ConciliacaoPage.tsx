@@ -13,7 +13,7 @@ import {
   ArrowRight, RefreshCw,
   ShieldCheck, ShieldAlert, Clock, Zap, CheckCheck,
   TrendingUp, TrendingDown, Banknote, CalendarCheck,
-  FileWarning, Activity,
+  FileWarning, Activity, Scale, ListOrdered,
 } from 'lucide-react'
 import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { useMovimentacoes } from '@/hooks/useOperacional'
@@ -23,8 +23,11 @@ import {
   useConciliacoes, parseStatement, readFileAsText,
   type ParseResult, type ReconciliationResult,
 } from '@/hooks/useConciliacao'
-import { ConciliacaoWorkspace } from '@/components/conciliacao/ConciliacaoWorkspace'
 import { ExtratosManager } from '@/components/conciliacao/ExtratosManager'
+import { SaldoComposicao } from '@/components/conciliacao/SaldoComposicao'
+import { ExtratoContaView } from '@/components/conciliacao/ExtratoContaView'
+
+type TabKey = 'extrato' | 'saldo'
 
 // ─── Formatters ──────────────────────────────────────────────
 
@@ -329,6 +332,7 @@ export default function ConciliacaoPage() {
   const [step, setStep] = useState<'upload' | 'preview' | 'conciliacao'>('upload')
   const [showUploadPanel, setShowUploadPanel] = useState(false)
   const [batchProcessing, setBatchProcessing] = useState(false)
+  const [activeTab, setActiveTab] = useState<TabKey>('extrato')
 
   const isProcessing = importExtrato.isPending || runConciliacao.isPending || confirmConc.isPending || batchProcessing
 
@@ -414,7 +418,28 @@ export default function ConciliacaoPage() {
         isProcessing={isProcessing}
       />
 
-      {/* Upload Panel — toggleable */}
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b overflow-x-auto">
+        {[
+          { key: 'extrato' as TabKey, label: 'Extrato da Conta', icon: ListOrdered },
+          { key: 'saldo' as TabKey, label: 'Composição do Saldo', icon: Scale },
+        ].map(t => (
+          <button key={t.key} onClick={() => setActiveTab(t.key)}
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-colors ${
+              activeTab === t.key
+                ? 'border-primary text-foreground'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/40'
+            }`}>
+            <t.icon className="h-3.5 w-3.5" />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab: Saldo */}
+      {activeTab === 'saldo' && <SaldoComposicao />}
+
+      {/* Upload Panel — visible across tabs when toggled */}
       {(showUploadPanel || step === 'upload' && health.totalMovs === 0) && (
         <div className="rounded-xl border bg-card p-5 space-y-4">
           <div className="flex items-center gap-4">
@@ -513,21 +538,12 @@ export default function ConciliacaoPage() {
         </div>
       )}
 
-      {/* Novo Workspace Integrado de 3 Colunas */}
-      {step !== 'preview' && (
-         <div id="suggestions-section" className="space-y-4">
-           {/* Batch Actions no Topo do Workspace */}
-           <BatchBar highConfCount={highConfCount} onBatchConfirm={doBatchConfirm} disabled={isProcessing} />
-
-           <ConciliacaoWorkspace 
-             parcelas={parcelas}
-             movimentacoes={movimentacoes}
-             reconcResult={reconcResult}
-             savedConcs={savedConcs}
-             onQuickConciliar={doQuickConciliar}
-             isProcessing={isProcessing}
-           />
-         </div>
+      {/* Tab: Extrato (default) — painel lateral contextual integrado */}
+      {activeTab === 'extrato' && step !== 'preview' && (
+        <>
+          <BatchBar highConfCount={highConfCount} onBatchConfirm={doBatchConfirm} disabled={isProcessing} />
+          <ExtratoContaView />
+        </>
       )}
 
     </div>

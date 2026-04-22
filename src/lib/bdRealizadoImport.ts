@@ -96,10 +96,35 @@ export function parseDate(v: any): string {
   return s.slice(0, 10)
 }
 
+/**
+ * Parser robusto para valores monetários em qualquer formato:
+ *   "R$ 200,000.00"   → 200000
+ *   "R$ 1.234,56"     → 1234.56
+ *   "(R$ 1,320.00)"   → -1320     (parênteses = sinal negativo contábil)
+ *   "-R$ 500.00"      → -500
+ */
 function parseNumber(v: any): number {
-  if (typeof v === 'number') return v
-  const s = String(v || '0').replace(/[^\d.,-]/g, '').replace(',', '.')
-  return parseFloat(s) || 0
+  if (v == null || v === '') return 0
+  if (typeof v === 'number') return isFinite(v) ? v : 0
+  let s = String(v).trim()
+  if (!s) return 0
+  const isNegative = /^\(.+\)$/.test(s) || s.startsWith('-')
+  s = s.replace(/[R$\s\u00a0()]/gi, '').replace(/^-/, '')
+  if (!s) return 0
+  const lastComma = s.lastIndexOf(',')
+  const lastDot = s.lastIndexOf('.')
+  if (lastComma >= 0 && lastDot >= 0) {
+    if (lastComma > lastDot) s = s.replace(/\./g, '').replace(',', '.')
+    else s = s.replace(/,/g, '')
+  } else if (lastComma >= 0) {
+    s = s.replace(',', '.')
+  } else if (lastDot >= 0) {
+    const parts = s.split('.')
+    if (parts.length > 2) s = s.replace(/\./g, '')
+  }
+  const n = parseFloat(s)
+  if (isNaN(n)) return 0
+  return isNegative ? -Math.abs(n) : n
 }
 
 // ─── Category Sets ──────────────────────────────────────────
@@ -132,13 +157,47 @@ function findColumn(headers: string[], ...candidates: string[]): string | null {
 
 // ─── Main Parse ─────────────────────────────────────────────
 
+/**
+ * Detecta a aba correta e a linha de header real (pulando descrições no topo).
+ * Retorna um array de objetos com headers normalizados + dados.
+ */
+function extractRows(workbook: XLSX.WorkBook): Record<string, any>[] {
+  // Preferir abas com nomes tipo "BD", "Realiz", "Pagamentos"
+  const preferred = workbook.SheetNames.find(n => {
+    const ln = n.toLowerCase()
+    return ln.includes('bd_realiz') || ln.includes('bd realiz') || ln.includes('realizado')
+  })
+  const sheetName = preferred ?? workbook.SheetNames[0] ?? 'BD REALIZADO'
+  const ws = workbook.Sheets[sheetName]!
+  const arr = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '', raw: false })
+  if (arr.length === 0) return []
+
+  const KEYWORDS = ['data', 'fornecedor', 'valor', 'categoria', 'tipo', 'conta', 'pagto', 'emissao', 'emissão']
+  let headerIdx = 0
+  for (let i = 0; i < Math.min(arr.length, 20); i++) {
+    const cells = (arr[i] ?? []).map(c => (c == null ? '' : String(c).trim())).filter(Boolean)
+    if (cells.length < 3) continue
+    const lowered = cells.join(' ').toLowerCase()
+    const hits = KEYWORDS.filter(k => lowered.includes(k)).length
+    if (hits >= 3) { headerIdx = i; break }
+  }
+
+  const rawHeaders = ((arr[headerIdx] ?? []) as unknown[]).map(h => String(h ?? '').trim())
+  const rows: Record<string, any>[] = []
+  for (let i = headerIdx + 1; i < arr.length; i++) {
+    const row = (arr[i] ?? []) as unknown[]
+    const obj: Record<string, any> = {}
+    rawHeaders.forEach((h, idx) => { obj[h || `__col${idx}`] = row[idx] ?? '' })
+    if (Object.values(obj).some(v => v != null && String(v).trim() !== '')) rows.push(obj)
+  }
+  return rows
+}
+
 export function parseBdRealizado(
   workbook: XLSX.WorkBook,
   mutuos: DbMutuo[],
 ): BdRealizadoResult {
-  const sheetName = workbook.SheetNames[0] ?? 'BD REALIZADO'
-  const ws = workbook.Sheets[sheetName]!
-  const raw = XLSX.utils.sheet_to_json<Record<string, any>>(ws, { defval: '' })
+  const raw = extractRows(workbook)
 
   if (raw.length === 0) {
     return { rows: [], stats: { total: 0, despesas: 0, creditos: 0, mutuos: 0, skipped: 0, valorSaidas: 0, valorEntradas: 0 } }
