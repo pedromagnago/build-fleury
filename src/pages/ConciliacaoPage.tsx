@@ -318,7 +318,6 @@ function BatchBar({ highConfCount, onBatchConfirm, disabled }: {
 
 export default function ConciliacaoPage() {
   const { data: contas = [] } = useContasBancarias()
-  const { data: parcelas = [] } = useParcelas()
   const { data: movimentacoes = [] } = useMovimentacoes()
   const importExtrato = useImportExtrato()
   const runConciliacao = useRunConciliacao()

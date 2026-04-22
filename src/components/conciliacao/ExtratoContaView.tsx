@@ -45,7 +45,7 @@ interface ExtratoRow {
 function fmtDateBr(d: string): string {
   if (!d) return '—'
   const [y, m, day] = d.split('-')
-  return `${day}/${m}/${y.slice(2)}`
+  return `${day}/${m}/${(y ?? '').slice(2)}`
 }
 
 function situacaoBadge(s: Situacao) {

@@ -9,7 +9,7 @@ import { useState, useMemo, useEffect } from 'react'
 import {
   X, CheckCircle2, XCircle, Pencil, RotateCcw, Trash2,
   Search, Link as LinkIcon, History, AlertTriangle,
-  ArrowDownCircle, ArrowUpCircle, Plus, Sparkles,
+  ArrowDownCircle, ArrowUpCircle, Sparkles,
 } from 'lucide-react'
 import {
   useConfirmConciliacao, useRejectConciliacao, useUndoConciliacao,
@@ -29,7 +29,7 @@ interface Props {
 function fmtDateBr(d: string | null | undefined): string {
   if (!d) return '—'
   const [y, m, day] = d.split('-')
-  return `${day}/${m}/${y.slice(2)}`
+  return `${day}/${m}/${(y ?? '').slice(2)}`
 }
 
 function fmtDateTime(d: string | null | undefined): string {

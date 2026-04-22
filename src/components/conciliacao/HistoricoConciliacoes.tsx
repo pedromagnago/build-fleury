@@ -7,7 +7,7 @@
 import { useState, useMemo } from 'react'
 import {
   CheckCircle2, Clock, XCircle, Pencil, RotateCcw, History,
-  Search, Filter, FileWarning, ChevronDown, ChevronRight,
+  Search, FileWarning, ChevronDown, ChevronRight,
 } from 'lucide-react'
 import {
   useConciliacoes, useUndoConciliacao, useConciliacaoHistory,

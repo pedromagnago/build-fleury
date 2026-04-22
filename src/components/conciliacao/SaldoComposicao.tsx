@@ -58,10 +58,6 @@ function useComposicaoSaldos(periodDays: number = 90): ComposicaoPorConta[] {
     cutoffDate.setDate(cutoffDate.getDate() - periodDays)
     const cutoff = cutoffDate.toISOString().split('T')[0]!
 
-    const confirmedMovIds = new Set(
-      concs.filter((c: any) => c.status === 'confirmado').map((c: any) => c.movimentacao_id)
-    )
-
     return contas.map(conta => {
       const contaMovs = (movs as any[]).filter((m: any) => m.conta_id === conta.id)
       const inPeriod = contaMovs.filter((m: any) => m.data >= cutoff)

@@ -727,10 +727,25 @@ function CustosIndiretosTab() {
     setResult(null)
   }, [])
 
-  const enrichedRows = useMemo(() => {
+  interface EnrichedIndireto {
+    descricao?: string
+    categoria?: string
+    fornecedor_nome?: string
+    cond_pagamento?: string
+    data_inicio?: string
+    valor_orcado?: string
+    valorOrcado: number
+    parcelasPrevistas: number
+  }
+  const enrichedRows = useMemo<EnrichedIndireto[]>(() => {
     if (!preview) return []
     return preview.rows.map(row => ({
-      ...row,
+      descricao: row['descricao'],
+      categoria: row['categoria'],
+      fornecedor_nome: row['fornecedor_nome'],
+      cond_pagamento: row['cond_pagamento'],
+      data_inicio: row['data_inicio'],
+      valor_orcado: row['valor_orcado'],
       valorOrcado: parseNumberCell(row['valor_orcado']),
       parcelasPrevistas: parsearCondicao(row['cond_pagamento'] ?? '').length,
     }))
@@ -2240,7 +2255,7 @@ function PagamentosRealizadosTab() {
         if (row.importPath === 'despesa' && isSaida) {
           const match = findMatchParcela(row.fornecedor, absValor, dataPgto)
           if (match) {
-            const { cand: candidato, exato } = match
+            const { cand: candidato } = match
             const novoPago = candidato.valor_pago + absValor
             const total = candidato.valor
             const novoStatus = novoPago >= total - 0.01 ? 'paga' : 'parcialmente_paga'
