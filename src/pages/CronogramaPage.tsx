@@ -50,7 +50,7 @@ const TAB_CONFIG: { key: TabMode; label: string; icon: typeof List }[] = [
   { key: 'wbs', label: 'WBS', icon: List },
   { key: 'custos', label: 'Custos', icon: Calculator },
   { key: 'medicoes', label: 'Medições', icon: ClipboardCheck },
-  { key: 'simulador', label: 'Simulador', icon: FlaskConical },
+  { key: 'simulador', label: 'Fluxo de Caixa', icon: FlaskConical },
   { key: 'gantt', label: 'Gantt', icon: GanttChartSquare },
   { key: 'kanban', label: 'Kanban', icon: Columns3 },
 ]

@@ -133,16 +133,33 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     })
 
     // ═══════════════════════════════════════════════════════════
-    // 2. ENTRADAS — Mútuos (valor captado)
+    // 2. ENTRADAS/SAÍDAS — Mútuos (valor captado)
+    // Captações genuínas (empréstimo recebido) = ENTRADA
+    // "Adiantamento Feito" / saída conciliada como mútuo = SAÍDA
     // ═══════════════════════════════════════════════════════════
+    const isAdiantamentoFeito = (m: any) => {
+      const cat = String(m.categoria ?? '').toLowerCase()
+      return cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
+    }
+
     mutuos.forEach(m => {
       if (!m.data_captacao) return
       if (viewMode === 'realizado' && m.status === 'ativo' && m.data_captacao > today) return
 
-      let date = m.data_captacao
-
+      const date = m.data_captacao
       const val = Number(m.valor_captado)
-      if (val > 0) {
+      if (!(val > 0)) return
+
+      if (isAdiantamentoFeito(m)) {
+        // Saída: dinheiro emprestado pelo projeto a terceiros (já saiu na data de captação)
+        all.push({
+          id: `mutadi-${m.id}`,
+          date,
+          type: 'firme',
+          valor: val,
+          meta: { cat: m.tipo || 'Mútuo', etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Adiantamento feito: ${m.nome}`, orig: val }
+        })
+      } else {
         all.push({
           id: `mutcap-${m.id}`,
           date,
@@ -158,13 +175,16 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // ═══════════════════════════════════════════════════════════
     parcelas.forEach(p => {
       if (!p.data_vencimento) return
-      if (viewMode === 'realizado' && p.status !== 'paga') return
+      // Considera paga também quando valor_pago cobre o valor (status pode estar dessincronizado em parcelas antigas)
+      const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
+      if (viewMode === 'realizado' && !isPaga) return
 
-      const isPaga = p.status === 'paga'
-      const calcVal = isPaga ? Number(p.valor_pago || 0) : Number(p.valor) - Number(p.valor_pago || 0)
+      const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
       if (calcVal <= 0) return
 
-      let date = isPaga && p.data_pagamento_real ? p.data_pagamento_real : p.data_vencimento
+      // Paga: usa data_pagamento_real; se null (legado), cai em data_vencimento. Nunca empurra paga para hoje.
+      // Não paga: empurra vencida para hoje só na projeção.
+      let date = isPaga ? (p.data_pagamento_real || p.data_vencimento) : p.data_vencimento
       if (!isPaga && date < today && viewMode !== 'realizado') date = today
 
       const ped = pedidos.find(pd => pd.id === p.pedido_id)
@@ -214,24 +234,27 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     })
 
     // ═══════════════════════════════════════════════════════════
-    // 4. SAÍDAS FIRMES — Parcelas de mútuos
+    // 4. SAÍDAS/ENTRADAS FIRMES — Parcelas de mútuos
+    // Captação: parcelas = devolução ao banco (SAÍDA)
+    // Adiantamento Feito/Recebido: parcelas = devolução ao projeto (ENTRADA)
     // ═══════════════════════════════════════════════════════════
     mutuos.forEach(m => {
+      const parcelaEhEntrada = isAdiantamentoFeito(m)
       ;(m.parcelas || []).forEach((p: any) => {
         if (!p.data_vencimento) return
-        if (viewMode === 'realizado' && p.status !== 'paga') return
+        const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
+        if (viewMode === 'realizado' && !isPaga) return
 
-        const isPaga = p.status === 'paga'
-        const calcVal = isPaga ? Number(p.valor_pago || 0) : Number(p.valor) - Number(p.valor_pago || 0)
+        const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
         if (calcVal <= 0) return
 
-        let date = isPaga && p.data_pagamento_real ? p.data_pagamento_real : p.data_vencimento
+        let date = isPaga ? (p.data_pagamento_real || p.data_vencimento) : p.data_vencimento
         if (!isPaga && date < today && viewMode !== 'realizado') date = today
 
         all.push({
           id: `mutpar-${p.id}`,
           date,
-          type: 'firme',
+          type: parcelaEhEntrada ? 'entrada' : 'firme',
           valor: calcVal,
           meta: { cat: m.tipo, etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Mútuo Parc ${p.numero_parcela} — ${m.nome}`, orig: calcVal }
         })

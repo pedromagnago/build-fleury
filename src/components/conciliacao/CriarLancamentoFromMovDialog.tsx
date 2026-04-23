@@ -116,14 +116,18 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
         }
       }
       else if (tipo === 'adiantamento') {
-        // Cria mútuo invertido (Adiantamento a Receber)
+        // isSaida=true  → Adiantamento Feito: dinheiro sai do projeto, volta depois (sinal SAÍDA no fluxo)
+        // isSaida=false → Captação/Adiantamento Recebido: dinheiro entra no projeto (sinal ENTRADA no fluxo)
+        const categoriaMutuo = isSaida ? 'Adiantamento Feito' : 'Adiantamento Recebido'
+        const observacao = isSaida ? `Adiantamento feito: ${nome}` : `Adiantamento recebido: ${nome}`
+
         const { data: mut, error: err } = await supabase.from('mutuos').insert({
           company_id: currentCompany.id,
           nome,
           tipo: 'OUTRO',
           valor_captado: absValor,
           data_captacao: mov.data,
-          categoria: 'Adiantamento a Receber',
+          categoria: categoriaMutuo,
           status: 'ativo',
           fornecedor_id: fornecedorId || null,
           observacoes: `Criado a partir de movimento bancário ${mov.id}`,
@@ -131,8 +135,6 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
         if (err) throw err
         if (!mut) throw new Error('Falha ao criar adiantamento')
 
-        // Marca movimento como conciliado (mesmo sem parcela em parcelas-tabela, pois é mútuo)
-        // Cria conciliação SEM links (ou com link para o mútuo via observação)
         await supabase.from('conciliacoes').insert({
           company_id: currentCompany.id,
           movimentacao_id: movId,
@@ -144,7 +146,7 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
         await supabase.from('movimentacoes_bancarias').update({
           conciliado: true,
           conciliado_em: new Date().toISOString(),
-          observacao: `Adiantamento a receber: ${nome}`,
+          observacao,
         }).eq('id', movId)
       }
       else if (tipo === 'transferencia') {

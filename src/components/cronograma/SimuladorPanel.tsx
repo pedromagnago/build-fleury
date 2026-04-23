@@ -211,11 +211,34 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         // Parcelas: par-{uuid}
         if (evId.startsWith('par-')) {
           const parId = evId.replace('par-', '')
+          const { data: parc } = await supabase.from('parcelas').select('status').eq('id', parId).single()
+          const isPaga = parc?.status === 'paga' || parc?.status === 'parcialmente_paga'
           const updates: Record<string, any> = {}
-          if (ov.newDate) updates.data_vencimento = ov.newDate
+          if (ov.newDate) {
+            // Para parcelas pagas, ajusta data_pagamento_real (usada pelo fluxo para realizadas).
+            // Para não pagas, ajusta data_vencimento.
+            if (isPaga) updates.data_pagamento_real = ov.newDate
+            else updates.data_vencimento = ov.newDate
+          }
           if (ov.newValue !== undefined) updates.valor = ov.newValue
           if (Object.keys(updates).length > 0) {
             await supabase.from('parcelas').update(updates).eq('id', parId)
+            applied++
+          }
+        }
+        // Parcela de mútuo: mutpar-{uuid}
+        if (evId.startsWith('mutpar-')) {
+          const mpId = evId.replace('mutpar-', '')
+          const { data: mp } = await supabase.from('mutuo_parcelas').select('status').eq('id', mpId).single()
+          const isPaga = mp?.status === 'paga' || mp?.status === 'parcialmente_paga'
+          const updates: Record<string, any> = {}
+          if (ov.newDate) {
+            if (isPaga) updates.data_pagamento_real = ov.newDate
+            else updates.data_vencimento = ov.newDate
+          }
+          if (ov.newValue !== undefined) updates.valor = ov.newValue
+          if (Object.keys(updates).length > 0) {
+            await supabase.from('mutuo_parcelas').update(updates).eq('id', mpId)
             applied++
           }
         }
@@ -255,6 +278,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
       }
       setOverrides({})
       qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
       qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
       qc.invalidateQueries({ queryKey: ['medicoes'] })
       toast.success(`${applied} alterações aplicadas ao projeto`)
@@ -424,7 +448,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
                   const canDelete = id.startsWith('par-') || id.startsWith('mutpar-')
                   if (!canDelete) return null
                   const handleDelete = async () => {
-                    if (!window.confirm('Certeza que deseja excluir este item? Esta ação apagará do banco de dados e recarregará o simulador.')) return
+                    if (!window.confirm('Certeza que deseja excluir este item? Esta ação apagará do banco de dados e recarregará o fluxo de caixa.')) return
                     try {
                       if (id.startsWith('par-')) await supabase.from('parcelas').delete().eq('id', id.replace('par-', ''))
                       if (id.startsWith('mutpar-')) await supabase.from('mutuo_parcelas').delete().eq('id', id.replace('mutpar-', ''))

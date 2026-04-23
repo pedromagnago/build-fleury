@@ -65,6 +65,18 @@ function parseParcelasText(text: string) {
 
 const inputCls = 'w-full rounded-lg border bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30'
 
+// Direção do mútuo: 'entrada' = projeto recebeu; 'saida' = projeto emprestou
+export function mutuoDirecao(m: { categoria?: string | null; tipo?: string | null }): 'entrada' | 'saida' {
+  const cat = String(m.categoria ?? '').toLowerCase()
+  if (cat.includes('adiantamento a receber') || cat.includes('adiantamento feito') || cat.includes('emprestimo concedido') || cat.includes('empréstimo concedido')) {
+    return 'saida'
+  }
+  return 'entrada'
+}
+
+const CATEGORIAS_ENTRADA = ['Capital de Giro', 'Mútuo Captação', 'Empréstimo Tomado', 'Financiamento', 'Cartão', 'Adiantamento Recebido']
+const CATEGORIAS_SAIDA   = ['Adiantamento Feito', 'Empréstimo Concedido', 'Adiantamento a Receber']
+
 // ─── Mutuo Form Modal (create + edit) ───────────────────────
 
 function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose: () => void; initialData?: Mutuo | null }) {
@@ -73,7 +85,8 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
   const isEditing = !!initialData
 
   const [form, setForm] = useState({
-    nome: '', tipo: 'MÚTUO' as Mutuo['tipo'], categoria: 'Mútuo',
+    direcao: 'entrada' as 'entrada' | 'saida',
+    nome: '', tipo: 'MÚTUO' as Mutuo['tipo'], categoria: 'Capital de Giro',
     instituicao: '', fornecedor_id: '', valor_captado: '', data_captacao: '',
     taxa_juros_mensal: '', observacoes: '', status: 'ativo' as Mutuo['status'],
   })
@@ -83,9 +96,10 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
   useEffect(() => {
     if (open && initialData) {
       setForm({
+        direcao: mutuoDirecao(initialData),
         nome: initialData.nome,
         tipo: initialData.tipo,
-        categoria: initialData.categoria ?? 'Mútuo',
+        categoria: initialData.categoria ?? 'Capital de Giro',
         instituicao: initialData.instituicao ?? '',
         fornecedor_id: initialData.fornecedor_id ?? '',
         valor_captado: String(initialData.valor_captado),
@@ -96,7 +110,8 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
       })
     } else if (open) {
       setForm({
-        nome: '', tipo: 'MÚTUO', categoria: 'Mútuo', instituicao: '', fornecedor_id: '',
+        direcao: 'entrada',
+        nome: '', tipo: 'MÚTUO', categoria: 'Capital de Giro', instituicao: '', fornecedor_id: '',
         valor_captado: '', data_captacao: '', taxa_juros_mensal: '', observacoes: '', status: 'ativo',
       })
       setParcelasText('')
@@ -132,15 +147,40 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div className="mx-4 w-full max-w-2xl rounded-xl border bg-card shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="border-b px-6 py-4">
-          <h2 className="text-lg font-semibold">{isEditing ? 'Editar Mútuo' : 'Novo Mútuo / Empréstimo'}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{isEditing ? 'Altere os dados do mútuo' : 'Cadastre a captação e as parcelas de devolução'}</p>
+          <h2 className="text-lg font-semibold">{isEditing ? 'Editar Operação' : 'Nova Operação Financeira'}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{isEditing ? 'Altere os dados da operação' : 'Captação, empréstimo, adiantamento ou financiamento'}</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5 p-6">
+          {/* Seletor de direção */}
+          <div>
+            <label className="mb-2 block text-xs font-medium text-muted-foreground">Direção do dinheiro *</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button"
+                onClick={() => setForm(f => ({ ...f, direcao: 'entrada', categoria: CATEGORIAS_ENTRADA.includes(f.categoria) ? f.categoria : 'Capital de Giro' }))}
+                className={`rounded-lg border p-3 text-left transition-colors ${form.direcao === 'entrada' ? 'border-emerald-500 bg-emerald-500/5 ring-1 ring-emerald-500/30' : 'hover:bg-muted/50'}`}>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <ArrowUpRight className="h-4 w-4 text-emerald-500" />
+                  Entrada (Captação)
+                </div>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Projeto recebeu dinheiro — capital de giro, empréstimo, financiamento, adiantamento de cliente</p>
+              </button>
+              <button type="button"
+                onClick={() => setForm(f => ({ ...f, direcao: 'saida', categoria: CATEGORIAS_SAIDA.includes(f.categoria) ? f.categoria : 'Adiantamento Feito' }))}
+                className={`rounded-lg border p-3 text-left transition-colors ${form.direcao === 'saida' ? 'border-red-500 bg-red-500/5 ring-1 ring-red-500/30' : 'hover:bg-muted/50'}`}>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <ArrowDownRight className="h-4 w-4 text-red-500" />
+                  Saída (Adiantamento/Empréstimo Feito)
+                </div>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">Projeto emprestou/adiantou para terceiro — volta via parcelas de devolução</p>
+              </button>
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Nome *</label>
-              <input type="text" required value={form.nome} onChange={e => setForm({ ...form, nome: e.target.value })} className={inputCls} placeholder="Ex: MÚTUO, Empréstimo Bradesco" />
+              <input type="text" required value={form.nome} onChange={e => setForm({ ...form, nome: e.target.value })} className={inputCls} placeholder={form.direcao === 'entrada' ? 'Ex: Capital de Giro Bradesco' : 'Ex: Adiantamento Fornecedor X'} />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Tipo *</label>
@@ -154,12 +194,9 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Categoria</label>
-              <input type="text" list="mutuo-cat-list" value={form.categoria} onChange={e => setForm({ ...form, categoria: e.target.value })} className={inputCls} placeholder="Ex: Mútuo, Capital de Giro" />
+              <input type="text" list="mutuo-cat-list" value={form.categoria} onChange={e => setForm({ ...form, categoria: e.target.value })} className={inputCls} placeholder="Ex: Capital de Giro, Adiantamento Feito" />
               <datalist id="mutuo-cat-list">
-                <option value="Mútuo" />
-                <option value="Capital de Giro" />
-                <option value="Financiamento" />
-                <option value="Cartão" />
+                {(form.direcao === 'entrada' ? CATEGORIAS_ENTRADA : CATEGORIAS_SAIDA).map(c => <option key={c} value={c} />)}
               </datalist>
             </div>
             <div>
@@ -185,11 +222,11 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
               <input type="text" value={form.instituicao} onChange={e => setForm({ ...form, instituicao: e.target.value })} className={inputCls} placeholder="Banco, pessoa, etc." />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Valor Captado (R$) *</label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">{form.direcao === 'entrada' ? 'Valor Captado' : 'Valor Emprestado'} (R$) *</label>
               <input type="text" required value={form.valor_captado} onChange={e => setForm({ ...form, valor_captado: e.target.value })} className={inputCls} placeholder="704.000,00" />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Data Captação *</label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">{form.direcao === 'entrada' ? 'Data Captação' : 'Data Empréstimo'} *</label>
               <input type="date" required value={form.data_captacao} onChange={e => setForm({ ...form, data_captacao: e.target.value })} className={inputCls} />
             </div>
           </div>
@@ -207,11 +244,18 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
 
           {!isEditing && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Parcelas de Devolução (data;valor — uma por linha)</label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                {form.direcao === 'entrada' ? 'Parcelas de Devolução ao credor' : 'Parcelas de Devolução esperada (recebimento)'} — data;valor, uma por linha
+              </label>
               <textarea value={parcelasText} onChange={e => setParcelasText(e.target.value)} rows={6} className={`${inputCls} font-mono text-xs`} placeholder={`08/04/2026;9000,00\n08/04/2026;14716,35\n17/04/2026;32008,00`} />
               {parcelasText && (
                 <p className="mt-1 text-xs text-muted-foreground">{parseParcelasText(parcelasText).length} parcela(s) reconhecida(s) — Total: {formatCurrency(parseParcelasText(parcelasText).reduce((s, p) => s + p.valor, 0))}</p>
               )}
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {form.direcao === 'entrada'
+                  ? 'Parcelas que o projeto vai pagar de volta (saída no fluxo).'
+                  : 'Parcelas que o terceiro devolverá ao projeto (entrada no fluxo).'}
+              </p>
             </div>
           )}
 
@@ -403,6 +447,8 @@ function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; 
   const totalPendente = totalDevolucao - totalPago
   const custoJuros = totalDevolucao - Number(mutuo.valor_captado)
   const nextNumero = parcelas.length > 0 ? Math.max(...parcelas.map(p => p.numero_parcela)) + 1 : 1
+  const direcao = mutuoDirecao(mutuo)
+  const ehSaida = direcao === 'saida'
 
   const mutuoStatusBadge = mutuo.status === 'ativo'
     ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
@@ -417,14 +463,14 @@ function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; 
       <div className="flex items-center justify-between border-b px-5 py-4">
         <div className="flex items-center gap-3">
           <Checkbox checked={selected} onChange={onToggleSelect} />
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10">
-            <Landmark className="h-5 w-5 text-amber-500" />
+          <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${ehSaida ? 'bg-red-500/10' : 'bg-emerald-500/10'}`}>
+            {ehSaida ? <ArrowDownRight className="h-5 w-5 text-red-500" /> : <ArrowUpRight className="h-5 w-5 text-emerald-500" />}
           </div>
           <div>
             <h3 className="font-semibold">{mutuo.nome}</h3>
             <p className="text-xs text-muted-foreground">
-              {mutuo.tipo} {mutuo.fornecedor ? `• Fornecedor: ${mutuo.fornecedor.nome}` : mutuo.instituicao ? `• Instituição: ${mutuo.instituicao}` : ''} • Captado em {formatDate(mutuo.data_captacao)}
-              {mutuo.categoria && <span className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">{mutuo.categoria}</span>}
+              {mutuo.tipo} {mutuo.fornecedor ? `• Fornecedor: ${mutuo.fornecedor.nome}` : mutuo.instituicao ? `• Instituição: ${mutuo.instituicao}` : ''} • {ehSaida ? 'Emprestado' : 'Captado'} em {formatDate(mutuo.data_captacao)}
+              {mutuo.categoria && <span className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${ehSaida ? 'bg-red-500/10 text-red-600' : 'bg-emerald-500/10 text-emerald-700'}`}>{mutuo.categoria}</span>}
             </p>
           </div>
         </div>
@@ -442,10 +488,21 @@ function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; 
 
       {/* KPI Row */}
       <div className="grid grid-cols-2 divide-x md:grid-cols-4">
-        <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Captado" value={formatCurrency(Number(mutuo.valor_captado))} valueColor="text-emerald-600 dark:text-emerald-400" />
-        <KpiCell icon={ArrowDownRight} iconColor="text-red-500" label="Devolução Total" value={formatCurrency(totalDevolucao)} valueColor="text-red-600 dark:text-red-400" />
-        <KpiCell icon={TrendingDown} iconColor="text-amber-500" label="Custo Juros" value={formatCurrency(custoJuros)} valueColor="text-amber-600 dark:text-amber-400" />
-        <KpiCell icon={DollarSign} iconColor="text-blue-500" label="Pendente" value={formatCurrency(totalPendente)} valueColor="text-blue-600 dark:text-blue-400" />
+        {ehSaida ? (
+          <>
+            <KpiCell icon={ArrowDownRight} iconColor="text-red-500" label="Emprestado" value={formatCurrency(Number(mutuo.valor_captado))} valueColor="text-red-600 dark:text-red-400" />
+            <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Retorno Esperado" value={formatCurrency(totalDevolucao)} valueColor="text-emerald-600 dark:text-emerald-400" />
+            <KpiCell icon={CheckCircle2} iconColor="text-blue-500" label="Já Recebido" value={formatCurrency(totalPago)} valueColor="text-blue-600 dark:text-blue-400" />
+            <KpiCell icon={DollarSign} iconColor="text-amber-500" label="A Receber" value={formatCurrency(totalPendente)} valueColor="text-amber-600 dark:text-amber-400" />
+          </>
+        ) : (
+          <>
+            <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Captado" value={formatCurrency(Number(mutuo.valor_captado))} valueColor="text-emerald-600 dark:text-emerald-400" />
+            <KpiCell icon={ArrowDownRight} iconColor="text-red-500" label="Devolução Total" value={formatCurrency(totalDevolucao)} valueColor="text-red-600 dark:text-red-400" />
+            <KpiCell icon={TrendingDown} iconColor="text-amber-500" label="Custo Juros" value={formatCurrency(custoJuros)} valueColor="text-amber-600 dark:text-amber-400" />
+            <KpiCell icon={DollarSign} iconColor="text-blue-500" label="Pendente" value={formatCurrency(totalPendente)} valueColor="text-blue-600 dark:text-blue-400" />
+          </>
+        )}
       </div>
 
       {/* Progress bar */}
@@ -564,13 +621,25 @@ export default function MutuosPage() {
 
   const hasSelection = selectedIds.size > 0
 
-  const totalCaptado = (mutuos ?? []).reduce((s, m) => s + Number(m.valor_captado), 0)
-  const totalDevolucao = (mutuos ?? []).reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor), 0), 0)
-  const totalJuros = totalDevolucao - totalCaptado
+  const [filtroDirecao, setFiltroDirecao] = useState<'todos' | 'entrada' | 'saida'>('todos')
+
+  const mutuosEntrada = (mutuos ?? []).filter(m => mutuoDirecao(m) === 'entrada')
+  const mutuosSaida   = (mutuos ?? []).filter(m => mutuoDirecao(m) === 'saida')
+
+  const totalCaptado   = mutuosEntrada.reduce((s, m) => s + Number(m.valor_captado), 0)
+  const totalDevCaptacao = mutuosEntrada.reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor), 0), 0)
+  const totalJuros     = totalDevCaptacao - totalCaptado
+
+  const totalEmprestado  = mutuosSaida.reduce((s, m) => s + Number(m.valor_captado), 0)
+  const totalRetornoEsp  = mutuosSaida.reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor), 0), 0)
+  const totalRetornoRec  = mutuosSaida.reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor_pago || 0), 0), 0)
+
+  const mutuosFiltrados = filtroDirecao === 'todos' ? (mutuos ?? [])
+    : filtroDirecao === 'entrada' ? mutuosEntrada : mutuosSaida
 
   return (
     <div className="space-y-6 relative">
-      <PageHeader title="Capital de Giro" description="Gerencie mútuos, empréstimos e financiamentos do projeto" icon={Landmark} onHelp={restartTour}>
+      <PageHeader title="Capital & Mútuos" description="Capital de giro, empréstimos, financiamentos e adiantamentos do projeto" icon={Landmark} onHelp={restartTour}>
         <div className="flex items-center gap-2">
           {mutuos && mutuos.length > 0 && (
              <button onClick={() => setSelectedIds(selectedIds.size === mutuos.length ? new Set() : new Set(mutuos.map(m => m.id)))} className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
@@ -615,11 +684,34 @@ export default function MutuosPage() {
         </div>
       )}
 
-      {/* Summary cards */}
-      <div id="tour-mutuos-summary" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <SummaryCard icon={ArrowUpRight} iconColor="text-emerald-500" label="Total Captado" value={formatCurrency(totalCaptado)} valueColor="text-emerald-600 dark:text-emerald-400" bg="bg-emerald-50/50 dark:bg-emerald-500/5" />
-        <SummaryCard icon={ArrowDownRight} iconColor="text-red-500" label="Total Devolução" value={formatCurrency(totalDevolucao)} valueColor="text-red-600 dark:text-red-400" bg="bg-red-50/50 dark:bg-red-500/5" />
-        <SummaryCard icon={TrendingDown} iconColor="text-amber-500" label="Custo Financeiro (Juros)" value={formatCurrency(totalJuros)} valueColor="text-amber-600 dark:text-amber-400" bg="bg-amber-50/50 dark:bg-amber-500/5" />
+      {/* Summary cards: duas linhas (entrada / saída) */}
+      <div id="tour-mutuos-summary" className="space-y-3">
+        <div>
+          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">↗ Captações — entradas no projeto</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <SummaryCard icon={ArrowUpRight} iconColor="text-emerald-500" label="Total Captado" value={formatCurrency(totalCaptado)} valueColor="text-emerald-600 dark:text-emerald-400" bg="bg-emerald-50/50 dark:bg-emerald-500/5" />
+            <SummaryCard icon={ArrowDownRight} iconColor="text-red-500" label="Devolução Planejada" value={formatCurrency(totalDevCaptacao)} valueColor="text-red-600 dark:text-red-400" bg="bg-red-50/50 dark:bg-red-500/5" />
+            <SummaryCard icon={TrendingDown} iconColor="text-amber-500" label="Custo Financeiro (Juros)" value={formatCurrency(totalJuros)} valueColor="text-amber-600 dark:text-amber-400" bg="bg-amber-50/50 dark:bg-amber-500/5" />
+          </div>
+        </div>
+        <div>
+          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-red-600 dark:text-red-400">↘ Adiantamentos feitos — saídas do projeto</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <SummaryCard icon={ArrowDownRight} iconColor="text-red-500" label="Total Emprestado" value={formatCurrency(totalEmprestado)} valueColor="text-red-600 dark:text-red-400" bg="bg-red-50/50 dark:bg-red-500/5" />
+            <SummaryCard icon={ArrowUpRight} iconColor="text-emerald-500" label="Retorno Esperado" value={formatCurrency(totalRetornoEsp)} valueColor="text-emerald-600 dark:text-emerald-400" bg="bg-emerald-50/50 dark:bg-emerald-500/5" />
+            <SummaryCard icon={CheckCircle2} iconColor="text-blue-500" label="Já Recebido" value={formatCurrency(totalRetornoRec)} valueColor="text-blue-600 dark:text-blue-400" bg="bg-blue-50/50 dark:bg-blue-500/5" />
+          </div>
+        </div>
+      </div>
+
+      {/* Filtro de direção */}
+      <div className="flex items-center gap-1 rounded-lg bg-muted/40 p-1 w-fit text-xs font-medium">
+        {(['todos', 'entrada', 'saida'] as const).map(d => (
+          <button key={d} onClick={() => setFiltroDirecao(d)}
+            className={`rounded px-3 py-1.5 transition-colors ${filtroDirecao === d ? 'bg-background shadow text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+            {d === 'todos' ? `Todos (${(mutuos ?? []).length})` : d === 'entrada' ? `Captações (${mutuosEntrada.length})` : `Adiantamentos feitos (${mutuosSaida.length})`}
+          </button>
+        ))}
       </div>
 
       {/* Mutuos list */}
@@ -628,17 +720,21 @@ export default function MutuosPage() {
       ) : !mutuos?.length ? (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed py-16 text-center">
           <Landmark className="mb-3 h-12 w-12 text-muted-foreground/30" />
-          <h3 className="text-lg font-medium">Nenhum mútuo cadastrado</h3>
+          <h3 className="text-lg font-medium">Nenhuma operação cadastrada</h3>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            Cadastre seus empréstimos e mútuos para que as entradas e saídas apareçam no fluxo de caixa projetado.
+            Cadastre captações (entradas) e adiantamentos feitos (saídas) para refletirem no fluxo de caixa.
           </p>
           <button onClick={openCreate} className="mt-4 flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-4 w-4" /> Cadastrar Primeiro Mútuo
+            <Plus className="h-4 w-4" /> Cadastrar Primeira Operação
           </button>
+        </div>
+      ) : mutuosFiltrados.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed py-12 text-center text-sm text-muted-foreground">
+          Nenhuma operação neste filtro.
         </div>
       ) : (
         <div className="space-y-4">
-          {mutuos.map(m => (
+          {mutuosFiltrados.map(m => (
              <MutuoCard key={m.id} mutuo={m} onEdit={openEdit} selected={selectedIds.has(m.id)} onToggleSelect={() => toggleSelectMutuo(m.id)} />
           ))}
         </div>

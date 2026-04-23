@@ -48,7 +48,7 @@ export const TOUR_ORDER = [
   { id: 'avanco', label: 'Avanço Físico', path: '/avanco', phase: 'Acompanhamento', emoji: '📊' },
   { id: 'medicoes', label: 'Medições', path: '/medicoes', phase: 'Acompanhamento', emoji: '📊' },
   { id: 'conciliacao', label: 'Conciliação', path: '/conciliacao', phase: 'Acompanhamento', emoji: '📊' },
-  { id: 'simulador', label: 'Simulador', path: '/simulador', phase: 'Visão Estratégica', emoji: '🔮' },
+  { id: 'simulador', label: 'Fluxo de Caixa', path: '/simulador', phase: 'Visão Estratégica', emoji: '🔮' },
   { id: 'relatorios', label: 'Relatórios', path: '/relatorios', phase: 'Visão Estratégica', emoji: '🔮' },
 ] as const
 

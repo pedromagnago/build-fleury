@@ -38,7 +38,7 @@ export function useConciliacoes() {
       if (!currentCompany) return []
       const { data, error } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, valor_aplicado, observacao)')
+        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, mutuo_id, valor_aplicado, observacao)')
         .eq('company_id', currentCompany.id)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -47,6 +47,7 @@ export function useConciliacoes() {
           parcela_id: string | null
           medicao_id: string | null
           mutuo_parcela_id: string | null
+          mutuo_id: string | null
           valor_aplicado: number
           observacao: string | null
         }[]
@@ -72,20 +73,26 @@ export function useImportExtrato() {
       const errors: string[] = []
 
       // Batch insert with deduplication via ON CONFLICT
+      // FITID composto com valor em centavos: alguns bancos (ex: Itaú) reusam FITID
+      // entre a transação principal e a tarifa associada — sem sufixo, o upsert descarta a tarifa.
       const BATCH_SIZE = 50
-      const rows = transactions.map((txn, idx) => ({
-        company_id: currentCompany.id,
-        conta_id: contaId,
-        data: txn.date,
-        descricao: txn.memoClean,
-        valor: Math.abs(txn.amount),
-        tipo: txn.type === 'credit' ? 'entrada' : 'saida',
-        fitid: txn.fitid || `gen_${txn.date}_${idx}_${Math.abs(txn.amount)}`,
-        memo_raw: txn.memoRaw,
-        saldo_acumulado: txn.balance,
-        origem: txn.source,
-        conciliado: false,
-      }))
+      const rows = transactions.map((txn, idx) => {
+        const base = txn.fitid || `gen_${txn.date}_${idx}`
+        const centavos = Math.abs(Math.round(txn.amount * 100))
+        return {
+          company_id: currentCompany.id,
+          conta_id: contaId,
+          data: txn.date,
+          descricao: txn.memoClean,
+          valor: Math.abs(txn.amount),
+          tipo: txn.type === 'credit' ? 'entrada' : 'saida',
+          fitid: `${base}_${centavos}`,
+          memo_raw: txn.memoRaw,
+          saldo_acumulado: txn.balance,
+          origem: txn.source,
+          conciliado: false,
+        }
+      })
 
       for (let i = 0; i < rows.length; i += BATCH_SIZE) {
         const batch = rows.slice(i, i + BATCH_SIZE)
@@ -354,7 +361,6 @@ export function useConfirmConciliacao() {
 
   return useMutation({
     mutationFn: async (conciliacaoId: string) => {
-      // 1. Buscar conciliação e seus vínculos
       const { data: conc, error: concErr } = await supabase
         .from('conciliacoes')
         .select('*, conciliacao_parcelas(parcela_id, valor_aplicado)')
@@ -362,29 +368,37 @@ export function useConfirmConciliacao() {
         .single()
       if (concErr) throw concErr
 
-      // 2. Marcar conciliação como confirmada
+      const { data: mov } = await supabase
+        .from('movimentacoes_bancarias')
+        .select('data, conta_id, descricao, memo_raw')
+        .eq('id', conc.movimentacao_id)
+        .single()
+      const dataPgto = (mov?.data as string) || new Date().toISOString().split('T')[0]!
+      const contaId = (mov as any)?.conta_id || null
+      const formaInferida = inferirFormaPagamento((mov as any)?.descricao, (mov as any)?.memo_raw)
+
       await supabase.from('conciliacoes').update({ status: 'confirmado' }).eq('id', conciliacaoId)
 
-      // 3. Marcar movimentação como conciliada
       await supabase.from('movimentacoes_bancarias').update({
         conciliado: true,
         conciliado_em: new Date().toISOString(),
         parcela_id: conc.conciliacao_parcelas?.[0]?.parcela_id ?? null,
       }).eq('id', conc.movimentacao_id)
 
-      // 4. Atualizar parcelas para paga
       for (const link of (conc.conciliacao_parcelas ?? [])) {
-        const { data: parcela } = await supabase.from('parcelas').select('valor, valor_pago').eq('id', link.parcela_id).single()
+        const { data: parcela } = await supabase.from('parcelas').select('valor, valor_pago, data_pagamento_real, forma_pagamento, conta_bancaria_id').eq('id', link.parcela_id).single()
         if (!parcela) continue
 
         const novoPago = (Number(parcela.valor_pago) || 0) + link.valor_aplicado
         const totalValor = Number(parcela.valor)
-        const novoStatus = novoPago >= totalValor ? 'paga' : 'parcialmente_paga'
+        const novoStatus = novoPago >= totalValor - 0.005 ? 'paga' : 'parcialmente_paga'
 
         await supabase.from('parcelas').update({
           status: novoStatus,
           valor_pago: novoPago,
-          data_pagamento_real: new Date().toISOString().split('T')[0],
+          data_pagamento_real: novoStatus === 'paga' ? dataPgto : (parcela.data_pagamento_real ?? dataPgto),
+          forma_pagamento: parcela.forma_pagamento ?? formaInferida,
+          conta_bancaria_id: parcela.conta_bancaria_id ?? contaId,
         }).eq('id', link.parcela_id)
       }
 
@@ -415,11 +429,26 @@ export function useRejectConciliacao() {
   })
 }
 
+// Infere forma de pagamento a partir do memo da movimentação bancária
+function inferirFormaPagamento(descricao?: string | null, memoRaw?: string | null): string | null {
+  const texto = `${descricao ?? ''} ${memoRaw ?? ''}`.toUpperCase()
+  if (/\bPIX\b/.test(texto)) return 'PIX'
+  if (/\bTED\b/.test(texto)) return 'Transferência'
+  if (/\bDOC\b/.test(texto)) return 'Transferência'
+  if (/\bTEV\b|\bTRANSFER/.test(texto)) return 'Transferência'
+  if (/\bBOLETO\b|\bCOB\b/.test(texto)) return 'Boleto'
+  if (/\bCHEQUE\b/.test(texto)) return 'Cheque'
+  if (/\bCART[AÃ]O\b/.test(texto)) return 'Cartão'
+  if (/\bDINHEIRO\b|\bSAQUE\b/.test(texto)) return 'Dinheiro'
+  return null
+}
+
 // ─── Undo Confirmed Reconciliation ──────────────────────────
 
 async function computeParcelaStatus(
   parcelaId: string,
   novoValorPago: number,
+  dataPgto?: string,
 ): Promise<{ status: string; data_pagamento_real: string | null }> {
   const { data: p } = await supabase
     .from('parcelas')
@@ -430,19 +459,20 @@ async function computeParcelaStatus(
 
   const total = Number(p.valor)
   const today = new Date().toISOString().split('T')[0]!
+  const dataEfetiva = dataPgto || p.data_pagamento_real || today
 
   if (novoValorPago <= 0.005) {
     const vencida = p.data_vencimento < today
     return { status: vencida ? 'vencida' : 'a_vencer', data_pagamento_real: null }
   }
   if (novoValorPago < total - 0.005) {
-    return { status: 'parcialmente_paga', data_pagamento_real: p.data_pagamento_real }
+    return { status: 'parcialmente_paga', data_pagamento_real: p.data_pagamento_real ?? dataEfetiva }
   }
-  return { status: 'paga', data_pagamento_real: p.data_pagamento_real ?? today }
+  return { status: 'paga', data_pagamento_real: dataEfetiva }
 }
 
-// ─── Helpers para v\u00ednculos polim\u00f3rficos (N:N com 3 tipos de origem) ─────
-export type VinculoOrigem = 'parcela' | 'medicao' | 'mutuo_parcela'
+// ─── Helpers para v\u00ednculos polim\u00f3rficos (N:N com 4 tipos de origem) ─────
+export type VinculoOrigem = 'parcela' | 'medicao' | 'mutuo_parcela' | 'mutuo'
 export interface VinculoPayload {
   origem: VinculoOrigem
   origem_id: string
@@ -471,6 +501,11 @@ async function buscarCategoriaOrigem(origem: VinculoOrigem, origemId: string): P
     const mut = (data as any).mutuos
     return mut ? `${mut.categoria ?? 'M\u00fatuo'} - ${mut.nome}` : 'Devolu\u00e7\u00e3o M\u00fatuo'
   }
+  if (origem === 'mutuo') {
+    const { data } = await supabase.from('mutuos').select('nome, categoria').eq('id', origemId).single()
+    if (!data) return null
+    return `${(data as any).categoria ?? 'M\u00fatuo'} - ${(data as any).nome}`
+  }
   return null
 }
 
@@ -487,7 +522,7 @@ async function aplicarDeltaOrigem(
     const { data: p } = await supabase.from('parcelas').select('valor_pago').eq('id', origemId).single()
     if (!p) return
     const novoPago = Math.max(0, (Number(p.valor_pago) || 0) + delta)
-    const { status, data_pagamento_real } = await computeParcelaStatus(origemId, novoPago)
+    const { status, data_pagamento_real } = await computeParcelaStatus(origemId, novoPago, dataPgto)
     await supabase.from('parcelas').update({ valor_pago: novoPago, status, data_pagamento_real }).eq('id', origemId)
   }
   else if (origem === 'mutuo_parcela') {
@@ -515,6 +550,17 @@ async function aplicarDeltaOrigem(
       data_liberacao: novoLiberado > 0 ? dataPgto : null,
     }).eq('id', origemId)
   }
+  else if (origem === 'mutuo') {
+    // Captação de mútuo: aplica delta no valor_captado "efetivamente recebido" via data_captacao.
+    // Semântica: quando delta > 0 confirma recebimento (atualiza data_captacao + status ativo);
+    // delta < 0 reverte (nada muda no valor_captado, apenas limpa observação de conciliação).
+    if (delta > 0) {
+      await supabase.from('mutuos').update({
+        data_captacao: dataPgto,
+        status: 'ativo',
+      }).eq('id', origemId)
+    }
+  }
 }
 
 // Infere tipo de origem de um link de conciliacao_parcelas
@@ -522,6 +568,7 @@ function inferirOrigem(link: any): { origem: VinculoOrigem; origem_id: string } 
   if (link.parcela_id) return { origem: 'parcela', origem_id: link.parcela_id }
   if (link.medicao_id) return { origem: 'medicao', origem_id: link.medicao_id }
   if (link.mutuo_parcela_id) return { origem: 'mutuo_parcela', origem_id: link.mutuo_parcela_id }
+  if (link.mutuo_id) return { origem: 'mutuo', origem_id: link.mutuo_id }
   return null
 }
 
@@ -535,6 +582,7 @@ function buildLinkRow(conciliacaoId: string, v: VinculoPayload) {
   if (v.origem === 'parcela') base.parcela_id = v.origem_id
   else if (v.origem === 'medicao') base.medicao_id = v.origem_id
   else if (v.origem === 'mutuo_parcela') base.mutuo_parcela_id = v.origem_id
+  else if (v.origem === 'mutuo') base.mutuo_id = v.origem_id
   return base
 }
 
@@ -548,7 +596,7 @@ export function useUndoConciliacao() {
 
       const { data: conc, error: concErr } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, valor_aplicado)')
+        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, mutuo_id, valor_aplicado)')
         .eq('id', conciliacaoId)
         .single()
       if (concErr) throw concErr
@@ -621,14 +669,19 @@ export function useUpdateConciliacao() {
 
       const { data: conc, error: concErr } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, valor_aplicado)')
+        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, mutuo_id, valor_aplicado)')
         .eq('id', conciliacaoId)
         .single()
       if (concErr) throw concErr
       if (!conc) throw new Error('Conciliação não encontrada')
 
+      const { data: movData0 } = await supabase
+        .from('movimentacoes_bancarias')
+        .select('data')
+        .eq('id', conc.movimentacao_id)
+        .single()
+      const dataPgto = (movData0?.data as string) || new Date().toISOString().split('T')[0]!
       const snapshot = { ...conc }
-      const today = new Date().toISOString().split('T')[0]!
 
       // Mapa de links antigos por chave `${origem}:${id}` → valor_aplicado
       const antigoMap = new Map<string, number>()
@@ -650,7 +703,7 @@ export function useUpdateConciliacao() {
         if (Math.abs(delta) < 0.005) continue
 
         const [origem, origem_id] = chave.split(':') as [VinculoOrigem, string]
-        await aplicarDeltaOrigem(origem, origem_id, delta, today)
+        await aplicarDeltaOrigem(origem, origem_id, delta, dataPgto)
       }
 
       await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conciliacaoId)
@@ -725,12 +778,14 @@ export function useCreateConciliacao() {
 
       const { data: mov } = await supabase
         .from('movimentacoes_bancarias')
-        .select('valor')
+        .select('valor, conta_id, descricao, memo_raw')
         .eq('id', movimentacaoId)
         .single()
       const valorMov = Number(mov?.valor ?? 0)
       const totalAplicado = vinculos.reduce((s, v) => s + Number(v.valor_aplicado), 0)
       const diferenca = valorMov - totalAplicado
+      const contaId = (mov as any)?.conta_id || null
+      const formaInferida = inferirFormaPagamento((mov as any)?.descricao, (mov as any)?.memo_raw)
 
       const { data: conc, error } = await supabase.from('conciliacoes').insert({
         company_id: currentCompany.id,
@@ -750,6 +805,15 @@ export function useCreateConciliacao() {
       // Aplica delta positivo (adiciona valor_pago na origem)
       for (const v of vinculos) {
         await aplicarDeltaOrigem(v.origem, v.origem_id, v.valor_aplicado, dataPgto)
+        // Rastreabilidade: grava conta+forma na parcela quando ainda não tem
+        if (v.origem === 'parcela') {
+          const { data: p } = await supabase.from('parcelas')
+            .select('forma_pagamento, conta_bancaria_id').eq('id', v.origem_id).single()
+          await supabase.from('parcelas').update({
+            forma_pagamento: p?.forma_pagamento ?? formaInferida,
+            conta_bancaria_id: p?.conta_bancaria_id ?? contaId,
+          }).eq('id', v.origem_id)
+        }
       }
 
       const primeiro = vinculos[0]!

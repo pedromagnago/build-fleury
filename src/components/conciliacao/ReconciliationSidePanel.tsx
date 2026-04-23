@@ -33,10 +33,10 @@ interface Props {
   onRefresh: () => void
 }
 
-// Candidato unificado para o matcher (parcela, medição ou mútuo_parcela)
+// Candidato unificado para o matcher (parcela, medição, parcela de mútuo, ou mútuo inteiro)
 interface Candidato {
   id: string
-  tipo: 'parcela' | 'medicao' | 'mutuo_recebimento'
+  tipo: 'parcela' | 'medicao' | 'mutuo_recebimento' | 'mutuo_captacao'
   descricao: string
   fornecedor: string | null
   valor: number
@@ -95,7 +95,8 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
           for (const l of links) {
             const cid = l.parcela_id ? l.parcela_id
               : l.medicao_id ? `med-${l.medicao_id}`
-              : l.mutuo_parcela_id ? `mutparc-${l.mutuo_parcela_id}` : null
+              : l.mutuo_parcela_id ? `mutparc-${l.mutuo_parcela_id}`
+              : l.mutuo_id ? `mut-${l.mutuo_id}` : null
             if (cid) pre.set(cid, { valor: Number(l.valor_aplicado), observacao: l.observacao ?? '' })
           }
         }
@@ -137,7 +138,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
         })
       }
     } else {
-      // Entrada: medições + adiantamentos + parcelas de mútuo (devolução)
+      // Entrada: medições + adiantamentos + parcelas de mútuo (devolução) + captações de mútuo
       for (const m of medicoes) {
         if (m.status === 'paga') continue
         const valor = Number(m.valor_planejado) || 0
@@ -155,27 +156,78 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
           raw: m,
         })
       }
+      // Soma de valor já vinculado a cada mutuo (conciliações confirmadas)
+      // para permitir conciliação parcial de depósitos que formam o total da captação.
+      const mutuoValorAplicado = new Map<string, number>()
+      for (const conc of (concs as any[])) {
+        for (const link of (conc.conciliacao_parcelas ?? [])) {
+          if (link.mutuo_id) {
+            const atual = mutuoValorAplicado.get(link.mutuo_id) ?? 0
+            mutuoValorAplicado.set(link.mutuo_id, atual + Number(link.valor_aplicado))
+          }
+        }
+      }
+
       for (const mut of (mutuos as any[])) {
-        // Parcelas de devolução (fornecedor devolvendo ao projeto)
-        if (mut.categoria === 'Adiantamento a Receber') {
+        const cat = String(mut.categoria ?? '').toLowerCase()
+        const isAdiantamentoFeito = cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
+
+        if (isAdiantamentoFeito) {
+          // Adiantamento feito: entrada é a devolução (parcela ou direto no mutuo)
           const parcs = (mut.parcelas ?? []) as any[]
-          for (const mp of parcs) {
-            if (mp.status === 'paga') continue
-            const valor = Number(mp.valor) || 0
-            const pago = Number(mp.valor_pago || 0)
-            const saldo = valor - pago
+          if (parcs.length > 0) {
+            for (const mp of parcs) {
+              if (mp.status === 'paga') continue
+              const valor = Number(mp.valor) || 0
+              const pago = Number(mp.valor_pago || 0)
+              const saldo = valor - pago
+              if (saldo < 0.01) continue
+              result.push({
+                id: `mutparc-${mp.id}`,
+                tipo: 'mutuo_recebimento',
+                descricao: `Devolução ${mut.nome} · P${mp.numero_parcela}`,
+                fornecedor: mut.fornecedor?.nome ?? null,
+                valor, valor_pago: pago, saldo,
+                data: mp.data_vencimento,
+                status: mp.status,
+                raw: mp,
+              })
+            }
+          } else {
+            // Sem parcelas planejadas: permitir devolução livre sobre o mutuo
+            const valor = Number(mut.valor_captado) || 0
+            const jaAplicado = mutuoValorAplicado.get(mut.id) ?? 0
+            const saldo = valor - jaAplicado
             if (saldo < 0.01) continue
             result.push({
-              id: `mutparc-${mp.id}`,
-              tipo: 'mutuo_recebimento',
-              descricao: `Devolução ${mut.nome} · P${mp.numero_parcela}`,
-              fornecedor: mut.fornecedor?.nome ?? null,
-              valor, valor_pago: pago, saldo,
-              data: mp.data_vencimento,
-              status: mp.status,
-              raw: mp,
+              id: `mut-${mut.id}`,
+              tipo: 'mutuo_captacao',
+              descricao: `Devolução adiantamento: ${mut.nome}`,
+              fornecedor: mut.fornecedor?.nome ?? mut.instituicao ?? null,
+              valor, valor_pago: jaAplicado, saldo,
+              data: mut.data_captacao,
+              status: mut.status ?? 'ativo',
+              raw: mut,
             })
           }
+        } else {
+          // Captação genuína (entrada de dinheiro no projeto):
+          // permite conciliar múltiplos depósitos parciais somando o valor_captado
+          const valor = Number(mut.valor_captado) || 0
+          if (valor <= 0) continue
+          const jaAplicado = mutuoValorAplicado.get(mut.id) ?? 0
+          const saldo = valor - jaAplicado
+          if (saldo < 0.01) continue
+          result.push({
+            id: `mut-${mut.id}`,
+            tipo: 'mutuo_captacao',
+            descricao: `Captação: ${mut.nome}`,
+            fornecedor: mut.fornecedor?.nome ?? mut.instituicao ?? null,
+            valor, valor_pago: jaAplicado, saldo,
+            data: mut.data_captacao,
+            status: mut.status ?? 'ativo',
+            raw: mut,
+          })
         }
       }
     }
@@ -196,10 +248,11 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
         return hay.includes(q)
       })
     } else {
-      // Default: candidatos próximos do valor (saldo entre 30%-300%) + sempre inclui selecionados
+      // Default: mostra candidatos com saldo >= 30% do valor, sem limite superior.
+      // (Mútuos e medições com saldo muito maior que o depósito devem aparecer para conciliação parcial.)
       arr = arr.filter(c => {
         if (selecionadosSet.has(c.id)) return true
-        return c.saldo >= absValor * 0.3 && c.saldo <= absValor * 3
+        return c.saldo >= absValor * 0.3
       })
     }
 
@@ -227,13 +280,17 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       if (link.parcela_id) {
         const parc = parcelas.find(p => p.id === link.parcela_id)
         if (!parc) return null
+        const ehDespesa = !!parc.despesa_indireta_id
+        const ehPedido = !!parc.pedido_id
         return {
           tipo: 'parcela' as const,
+          subtipo: ehDespesa ? ('despesa' as const) : ehPedido ? ('pedido' as const) : ('avulsa' as const),
           link,
           descricao: (parc as any).pedido_item ?? parc.descricao ?? 'Parcela',
           fornecedor: (parc as any).fornecedor_nome ?? null,
           valor: Number(parc.valor),
           venc: parc.data_vencimento,
+          parcelaRef: `P${parc.numero_parcela}`,
         }
       }
       if (link.medicao_id) {
@@ -261,6 +318,19 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
               valor: Number(mp.valor),
               venc: mp.data_vencimento,
             }
+          }
+        }
+      }
+      if (link.mutuo_id) {
+        const mut = (mutuos as any[]).find((m: any) => m.id === link.mutuo_id)
+        if (mut) {
+          return {
+            tipo: 'mutuo_captacao' as const,
+            link,
+            descricao: `Captação: ${mut.nome}`,
+            fornecedor: mut.fornecedor?.nome ?? mut.instituicao ?? null,
+            valor: Number(mut.valor_captado),
+            venc: mut.data_captacao,
           }
         }
       }
@@ -328,11 +398,13 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     const vinculos = Array.from(selecao.entries()).map(([id, { valor, observacao }]) => {
       const c = poolCandidatos.find(x => x.id === id)
       if (!c) return null
-      const origem: 'parcela' | 'medicao' | 'mutuo_parcela' =
+      const origem: 'parcela' | 'medicao' | 'mutuo_parcela' | 'mutuo' =
         c.tipo === 'parcela' ? 'parcela' :
-        c.tipo === 'medicao' ? 'medicao' : 'mutuo_parcela'
+        c.tipo === 'medicao' ? 'medicao' :
+        c.tipo === 'mutuo_captacao' ? 'mutuo' : 'mutuo_parcela'
       const origem_id = c.tipo === 'parcela' ? c.id :
         c.tipo === 'medicao' ? c.id.replace(/^med-/, '') :
+        c.tipo === 'mutuo_captacao' ? c.id.replace(/^mut-/, '') :
         c.id.replace(/^mutparc-/, '')
       return { origem, origem_id, valor_aplicado: valor, observacao: observacao || null }
     }).filter((v): v is NonNullable<typeof v> => v !== null)
@@ -440,10 +512,15 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                   <div key={i} className="text-[11px]">
                     <div className="flex justify-between">
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 flex-wrap">
                           <p className="font-medium truncate">{v.descricao}</p>
+                          {v.tipo === 'parcela' && v.subtipo === 'pedido' && <span className="text-[9px] bg-blue-500/10 text-blue-600 px-1 rounded">PEDIDO</span>}
+                          {v.tipo === 'parcela' && v.subtipo === 'despesa' && <span className="text-[9px] bg-amber-500/10 text-amber-600 px-1 rounded">DESPESA</span>}
+                          {v.tipo === 'parcela' && v.subtipo === 'avulsa' && <span className="text-[9px] bg-slate-500/10 text-slate-600 px-1 rounded">AVULSA</span>}
+                          {v.parcelaRef && <span className="text-[9px] bg-muted text-muted-foreground px-1 rounded">{v.parcelaRef}</span>}
                           {v.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
                           {v.tipo === 'mutuo_parcela' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
+                          {v.tipo === 'mutuo_captacao' && <span className="text-[9px] bg-indigo-500/10 text-indigo-600 px-1 rounded">CAP</span>}
                         </div>
                         <p className="text-muted-foreground text-[10px]">
                           {v.fornecedor ? `${v.fornecedor} · ` : ''}
@@ -505,7 +582,9 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
               <div className="flex items-center gap-2">
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
                 <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                  {isSaida ? 'Vincular a pagamentos' : 'Vincular a recebimentos'}
+                  {vinculosDoMov.length > 0
+                    ? (isSaida ? 'Trocar / adicionar pagamento vinculado' : 'Trocar / adicionar recebimento vinculado')
+                    : (isSaida ? 'Vincular a pagamentos' : 'Vincular a recebimentos')}
                 </p>
               </div>
               <button onClick={() => setShowCriar(true)}
@@ -513,6 +592,11 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                 <Plus className="h-3 w-3" />Criar novo
               </button>
             </div>
+            {vinculosDoMov.length > 0 && (
+              <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[10px] text-amber-700 dark:text-amber-400">
+                ⚠️ Ao selecionar e clicar "Vincular" abaixo, o vínculo atual é <strong>substituído</strong> pelos novos escolhidos. Para apenas remover o vínculo sem trocar, use <em>Desfazer</em> acima.
+              </div>
+            )}
             <div className="relative mb-2">
               <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
               <input value={search} onChange={(e) => setSearch(e.target.value)}
@@ -552,6 +636,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                             {matchExato && <span className="text-[9px] text-emerald-600 font-bold">MATCH</span>}
                             {c.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
                             {c.tipo === 'mutuo_recebimento' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
+                          {c.tipo === 'mutuo_captacao' && <span className="text-[9px] bg-indigo-500/10 text-indigo-600 px-1 rounded">CAP</span>}
                           </div>
                           <p className="text-[10px] text-muted-foreground truncate">
                             {c.fornecedor ? `${c.fornecedor} · ` : ''}

@@ -58,7 +58,7 @@ export function Conciliacao() {
 }
 
 export function Simulador() {
-  return <PlaceholderPage title="Simulador" description="Simulação de cenários financeiros" icon={FlaskConical} phase="Fase 4" />
+  return <PlaceholderPage title="Fluxo de Caixa" description="Projeção e realizado do fluxo de caixa" icon={FlaskConical} phase="Fase 4" />
 }
 
 export function Relatorios() {
