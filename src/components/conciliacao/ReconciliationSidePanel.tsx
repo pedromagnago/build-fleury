@@ -79,6 +79,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   const createConc = useCreateConciliacao()
 
   const [search, setSearch] = useState('')
+  const [filtroTipo, setFiltroTipo] = useState<'todos' | 'parcela' | 'medicao' | 'mutuo'>('todos')
   const [editing, setEditing] = useState(false)
   const [showCriar, setShowCriar] = useState(false)
   // Multi-seleção: Map<candidatoId, { valor, observacao }>
@@ -136,6 +137,61 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
           status: p.status,
           raw: p,
         })
+      }
+
+      // Saída: parcelas de devolução de mútuo de captação (pagamento ao banco/sócio que emprestou)
+      // e também adiantamentos novos que o projeto faria (mutuo adiantamento feito sem parcelas e sem conciliação)
+      const mutuoValorAplicadoSaida = new Map<string, number>()
+      for (const conc of (concs as any[])) {
+        for (const link of (conc.conciliacao_parcelas ?? [])) {
+          if (link.mutuo_id) {
+            const atual = mutuoValorAplicadoSaida.get(link.mutuo_id) ?? 0
+            mutuoValorAplicadoSaida.set(link.mutuo_id, atual + Number(link.valor_aplicado))
+          }
+        }
+      }
+
+      for (const mut of (mutuos as any[])) {
+        const cat = String(mut.categoria ?? '').toLowerCase()
+        const ehAdiantamentoFeito = cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
+
+        if (!ehAdiantamentoFeito) {
+          // Captação genuína: as parcelas são devolução ao credor = SAÍDA
+          for (const mp of (mut.parcelas ?? []) as any[]) {
+            if (mp.status === 'paga') continue
+            const valor = Number(mp.valor) || 0
+            const pago = Number(mp.valor_pago || 0)
+            const saldo = valor - pago
+            if (saldo < 0.01) continue
+            result.push({
+              id: `mutparc-${mp.id}`,
+              tipo: 'mutuo_recebimento',
+              descricao: `Devolução ${mut.nome} · P${mp.numero_parcela}`,
+              fornecedor: mut.fornecedor?.nome ?? mut.instituicao ?? null,
+              valor, valor_pago: pago, saldo,
+              data: mp.data_vencimento,
+              status: mp.status,
+              raw: mp,
+            })
+          }
+        } else {
+          // Adiantamento feito: a saída original (projeto emprestou) é o próprio mutuo
+          // Se ainda não foi conciliado, aparecer como candidato de saída
+          const jaAplicado = mutuoValorAplicadoSaida.get(mut.id) ?? 0
+          const valor = Number(mut.valor_captado) || 0
+          const saldo = valor - jaAplicado
+          if (saldo < 0.01) continue
+          result.push({
+            id: `mut-${mut.id}`,
+            tipo: 'mutuo_captacao',
+            descricao: `Adiantamento feito: ${mut.nome}`,
+            fornecedor: mut.fornecedor?.nome ?? mut.instituicao ?? null,
+            valor, valor_pago: jaAplicado, saldo,
+            data: mut.data_captacao,
+            status: mut.status ?? 'ativo',
+            raw: mut,
+          })
+        }
       }
     } else {
       // Entrada: medições + adiantamentos + parcelas de mútuo (devolução) + captações de mútuo
@@ -241,15 +297,27 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     const selecionadosSet = new Set(selecao.keys())
 
     let arr = poolCandidatos
+
+    // Filtro por tipo (chips): parcela/medição/mútuo (captação e recebimento)
+    if (filtroTipo !== 'todos') {
+      arr = arr.filter(c => {
+        if (selecionadosSet.has(c.id)) return true
+        if (filtroTipo === 'parcela') return c.tipo === 'parcela'
+        if (filtroTipo === 'medicao') return c.tipo === 'medicao'
+        if (filtroTipo === 'mutuo')   return c.tipo === 'mutuo_captacao' || c.tipo === 'mutuo_recebimento'
+        return true
+      })
+    }
+
     if (q) {
       arr = arr.filter(c => {
         if (selecionadosSet.has(c.id)) return true
         const hay = norm(`${c.descricao} ${c.fornecedor ?? ''} ${c.valor} ${c.saldo}`)
         return hay.includes(q)
       })
-    } else {
-      // Default: mostra candidatos com saldo >= 30% do valor, sem limite superior.
-      // (Mútuos e medições com saldo muito maior que o depósito devem aparecer para conciliação parcial.)
+    } else if (filtroTipo === 'todos') {
+      // Default (sem busca, sem filtro): candidatos com saldo >= 30% do valor.
+      // Com filtro explícito por tipo, mostra todos do tipo — o usuário já quer restringir.
       arr = arr.filter(c => {
         if (selecionadosSet.has(c.id)) return true
         return c.saldo >= absValor * 0.3
@@ -268,7 +336,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     .sort((a, b) => a.score - b.score)
     .slice(0, q ? 200 : 80)  // busca: 200; sem busca: 80 (era 40 — não cabia parcelas de previsões maiores)
     .map(x => x.c)
-  }, [poolCandidatos, search, row, selecao])
+  }, [poolCandidatos, search, row, selecao, filtroTipo])
 
   // Itens já vinculados ao movimento (via conciliacao_parcelas polimórfico)
   const vinculosDoMov = useMemo(() => {
@@ -602,6 +670,23 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
               <input value={search} onChange={(e) => setSearch(e.target.value)}
                 placeholder="Buscar fornecedor, descrição ou valor..."
                 className="w-full rounded-md border bg-background pl-7 pr-2 py-1.5 text-xs" />
+            </div>
+            {/* Chips de filtro por tipo */}
+            <div className="mb-2 flex items-center gap-1 text-[10px] font-medium">
+              {([
+                { k: 'todos',    label: 'Todos',     cls: 'bg-muted text-foreground' },
+                { k: 'parcela',  label: 'Parcelas',  cls: 'bg-blue-500/10 text-blue-600' },
+                { k: 'medicao',  label: 'Medições',  cls: 'bg-purple-500/10 text-purple-600' },
+                { k: 'mutuo',    label: 'Mútuos',    cls: 'bg-indigo-500/10 text-indigo-600' },
+              ] as const).map(t => (
+                <button key={t.k}
+                  onClick={() => setFiltroTipo(t.k)}
+                  className={`rounded px-2 py-0.5 transition-colors ${
+                    filtroTipo === t.k ? `${t.cls} ring-1 ring-current/30 font-bold` : 'bg-muted/40 text-muted-foreground hover:bg-muted'
+                  }`}>
+                  {t.label}
+                </button>
+              ))}
             </div>
 
             {candidatosFiltrados.length === 0 ? (
