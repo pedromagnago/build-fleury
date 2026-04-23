@@ -1,9 +1,10 @@
-export type FinancialViewMode = 'realizado' | 'planejado' | 'pedidos'
+export type FinancialViewMode = 'realizado' | 'planejado' | 'pedidos' | 'completo'
 
 const modes: { key: FinancialViewMode; label: string; color: string; desc: string }[] = [
-  { key: 'realizado', label: 'Realizado', color: 'emerald', desc: 'Dados confirmados' },
-  { key: 'planejado', label: '+ Planejado', color: 'blue', desc: 'Inclui projeções' },
-  { key: 'pedidos', label: '+ Pedidos', color: 'amber', desc: 'Inclui saídas firmes' },
+  { key: 'realizado', label: 'Realizado', color: 'emerald', desc: 'Apenas parcelas pagas e medições confirmadas' },
+  { key: 'pedidos', label: 'Pedidos + Real', color: 'amber', desc: 'Pedidos firmes (com ou sem parcela) + realizado' },
+  { key: 'planejado', label: 'Planejado + Real', color: 'blue', desc: 'Previsto bruto (itens sem pedido) + realizado' },
+  { key: 'completo', label: 'Completo', color: 'purple', desc: 'Pedidos + Planejado + Realizado (visão total)' },
 ]
 
 interface Props {
@@ -17,12 +18,17 @@ export default function FinancialViewFilter({ value, onChange, size = 'sm' }: Pr
     <div className="flex items-center gap-0.5 rounded-lg border bg-muted/30 p-0.5">
       {modes.map(m => {
         const active = value === m.key
-        const dotColor = m.color === 'emerald' ? 'bg-emerald-500' : m.color === 'blue' ? 'bg-blue-500' : 'bg-amber-500'
+        const dotColor = m.color === 'emerald' ? 'bg-emerald-500'
+          : m.color === 'blue' ? 'bg-blue-500'
+          : m.color === 'amber' ? 'bg-amber-500'
+          : 'bg-purple-500'
         const activeRing = m.color === 'emerald'
           ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 ring-1 ring-emerald-500/20'
           : m.color === 'blue'
           ? 'bg-blue-500/10 text-blue-700 dark:text-blue-400 ring-1 ring-blue-500/20'
-          : 'bg-amber-500/10 text-amber-700 dark:text-amber-400 ring-1 ring-amber-500/20'
+          : m.color === 'amber'
+          ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400 ring-1 ring-amber-500/20'
+          : 'bg-purple-500/10 text-purple-700 dark:text-purple-400 ring-1 ring-purple-500/20'
         return (
           <button
             key={m.key}

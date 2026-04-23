@@ -72,21 +72,25 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     const today = todayISO()
     const all: CashFlowEvent[] = []
 
+    // Regra: em 'realizado' e 'planejado' mostramos apenas o que é REAL (pago/confirmado).
+    // 'pedidos' e 'completo' incluem também as previsões firmes (parcelas/medições não pagas).
+    const apenasRealizado = viewMode === 'realizado' || viewMode === 'planejado'
+
     // ═══════════════════════════════════════════════════════════
     // 1. ENTRADAS — Medições (via Distribuições)
     // ═══════════════════════════════════════════════════════════
     medicoes.forEach(m => {
       if (!m.data_prevista) return
-      // Modo realizado: só paga
-      if (viewMode === 'realizado' && m.status !== 'paga') return
+      // Realizado ou Planejado: só inclui medição paga (firme é coisa de pedido, não de planejado).
+      if (apenasRealizado && m.status !== 'paga') return
 
       let baseDate = m.data_liberacao || m.data_prevista
       if (baseDate) {
         baseDate = addDaysISO(baseDate, prazoRecebimento)
       }
       
-      // Vencida e não-paga: move para hoje
-      if (m.status !== 'paga' && baseDate < today && viewMode !== 'realizado') {
+      // Vencida e não-paga: move para hoje (apenas em visões com previsão)
+      if (m.status !== 'paga' && baseDate < today && !apenasRealizado) {
         baseDate = today
       }
 
@@ -94,7 +98,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       if (dists.length > 0) {
         dists.forEach((dist, idx) => {
           let val = Number(dist.valor_liberado_faturamento || 0)
-          if (viewMode === 'realizado') {
+          if (apenasRealizado) {
             const pct = dist.casas_planejadas > 0 ? Math.min(dist.casas_realizadas / dist.casas_planejadas, 1) : 0
             val = val * pct
           }
@@ -105,7 +109,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             evDate = addDaysISO(evDate, prazoRecebimento)
           }
 
-          if (m.status !== 'paga' && evDate < today && viewMode !== 'realizado') {
+          if (m.status !== 'paga' && evDate < today && !apenasRealizado) {
             evDate = today
           }
 
@@ -119,7 +123,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           })
         })
       } else {
-        const val = viewMode === 'realizado' ? (m.valor_liberado || 0) : m.valor_planejado
+        const val = apenasRealizado ? (m.valor_liberado || 0) : m.valor_planejado
         if (val > 0) {
           all.push({
             id: `med-${m.id}`,
@@ -144,7 +148,8 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
 
     mutuos.forEach(m => {
       if (!m.data_captacao) return
-      if (viewMode === 'realizado' && m.status === 'ativo' && m.data_captacao > today) return
+      // Em 'realizado' ou 'planejado': só mostra mútuos já efetivamente captados/emprestados (data passada).
+      if (apenasRealizado && m.data_captacao > today) return
 
       const date = m.data_captacao
       const val = Number(m.valor_captado)
@@ -177,15 +182,16 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       if (!p.data_vencimento) return
       // Considera paga também quando valor_pago cobre o valor (status pode estar dessincronizado em parcelas antigas)
       const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
-      if (viewMode === 'realizado' && !isPaga) return
+      // Em 'realizado' ou 'planejado': só parcelas pagas (parcela em aberto é previsão de pedido).
+      if (apenasRealizado && !isPaga) return
 
       const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
       if (calcVal <= 0) return
 
       // Paga: usa data_pagamento_real; se null (legado), cai em data_vencimento. Nunca empurra paga para hoje.
-      // Não paga: empurra vencida para hoje só na projeção.
+      // Não paga: empurra vencida para hoje só na projeção (não em realizado/planejado).
       let date = isPaga ? (p.data_pagamento_real || p.data_vencimento) : p.data_vencimento
-      if (!isPaga && date < today && viewMode !== 'realizado') date = today
+      if (!isPaga && date < today && !apenasRealizado) date = today
 
       const ped = pedidos.find(pd => pd.id === p.pedido_id)
       
@@ -243,13 +249,13 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       ;(m.parcelas || []).forEach((p: any) => {
         if (!p.data_vencimento) return
         const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
-        if (viewMode === 'realizado' && !isPaga) return
+        if (apenasRealizado && !isPaga) return
 
         const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
         if (calcVal <= 0) return
 
         let date = isPaga ? (p.data_pagamento_real || p.data_vencimento) : p.data_vencimento
-        if (!isPaga && date < today && viewMode !== 'realizado') date = today
+        if (!isPaga && date < today && !apenasRealizado) date = today
 
         all.push({
           id: `mutpar-${p.id}`,
@@ -262,9 +268,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     })
 
     // ═══════════════════════════════════════════════════════════
-    // 5. SAÍDAS — Pedidos sem parcela (Firmes ou Planejados)
+    // 5. SAÍDAS — Pedidos sem parcela (visões "pedidos" e "completo")
     // ═══════════════════════════════════════════════════════════
-    if (viewMode === 'pedidos' || viewMode === 'planejado') {
+    if (viewMode === 'pedidos' || viewMode === 'completo') {
       const parcelaPedidoIds = new Set(parcelas.map(p => p.pedido_id).filter(Boolean))
       pedidos
         .filter(p => p.status !== 'cancelado' && !parcelaPedidoIds.has(p.id))
@@ -308,9 +314,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     }
 
     // ═══════════════════════════════════════════════════════════
-    // 6. SAÍDAS BRUTAS — Planejado sem pedido
+    // 6. SAÍDAS BRUTAS — Previsto de itens sem pedido ("planejado" e "completo")
     // ═══════════════════════════════════════════════════════════
-    if (viewMode === 'planejado' || viewMode === 'pedidos') {
+    if (viewMode === 'planejado' || viewMode === 'completo') {
       const pedMap = new Map<string, number>()
       pedidos.forEach(p => pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + Number(p.valor_total_real || 0)))
 
