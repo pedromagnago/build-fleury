@@ -266,7 +266,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       return { c, score: scoreSelecionado + scoreExato + diffValor + diffDias * 5 }
     })
     .sort((a, b) => a.score - b.score)
-    .slice(0, 40)
+    .slice(0, q ? 200 : 80)  // busca: 200; sem busca: 80 (era 40 — não cabia parcelas de previsões maiores)
     .map(x => x.c)
   }, [poolCandidatos, search, row, selecao])
 
