@@ -108,6 +108,71 @@ export function useImportExtrato() {
       }
       skipped = transactions.length - inserted
 
+      // Auto-reconciliação de parcelas órfãs: após inserir movs, tenta casar parcelas pagas
+      // (sem conciliação) com movs recém-importadas pela combinação conta+data+valor+tipo.
+      // Isso evita linhas fantasmas "Pagamento registrado sem extrato" após o reimport.
+      let autoReconciled = 0
+      try {
+        const { data: orfas } = await supabase
+          .from('parcelas')
+          .select('id, valor_pago, conta_bancaria_id, data_pagamento_real')
+          .eq('company_id', currentCompany.id)
+          .eq('conta_bancaria_id', contaId)
+          .in('status', ['paga', 'parcialmente_paga'])
+          .not('data_pagamento_real', 'is', null)
+          .gte('data_pagamento_real', meta.startDate || '2000-01-01')
+          .lte('data_pagamento_real', meta.endDate || '2999-12-31')
+
+        for (const p of (orfas ?? [])) {
+          // Parcela já vinculada a uma conciliação? pula
+          const { data: existingLink } = await supabase
+            .from('conciliacao_parcelas')
+            .select('conciliacao_id')
+            .eq('parcela_id', p.id)
+            .limit(1)
+            .maybeSingle()
+          if (existingLink) continue
+
+          // Procura mov bancária compatível e ainda não conciliada
+          const { data: movs } = await supabase
+            .from('movimentacoes_bancarias')
+            .select('id, valor, data, conciliado')
+            .eq('company_id', currentCompany.id)
+            .eq('conta_id', contaId)
+            .eq('data', p.data_pagamento_real!)
+            .eq('tipo', 'saida')
+            .eq('conciliado', false)
+
+          const valPago = Number(p.valor_pago || 0)
+          const match = (movs ?? []).find(m => Math.abs(Number(m.valor) - valPago) < 0.005)
+          if (!match) continue
+
+          const { data: conc } = await supabase.from('conciliacoes').insert({
+            company_id: currentCompany.id,
+            movimentacao_id: match.id,
+            match_type: 'auto_orfa_reimport',
+            confidence: 100,
+            diferenca: 0,
+            status: 'confirmado',
+          }).select('id').single()
+          if (!conc) continue
+
+          await supabase.from('conciliacao_parcelas').insert({
+            conciliacao_id: conc.id,
+            parcela_id: p.id,
+            valor_aplicado: valPago,
+          })
+          await supabase.from('movimentacoes_bancarias').update({
+            conciliado: true,
+            conciliado_em: new Date().toISOString(),
+            parcela_id: p.id,
+          }).eq('id', match.id)
+          autoReconciled++
+        }
+      } catch (e) {
+        console.warn('Auto-reconcile falhou (não crítico):', (e as Error).message)
+      }
+
       // Audit log
       await supabase.from('audit_logs').insert({
         company_id: currentCompany.id,
@@ -121,15 +186,19 @@ export function useImportExtrato() {
           period: `${meta.startDate} → ${meta.endDate}`,
           inserted,
           skipped,
+          auto_reconciled: autoReconciled,
           total: transactions.length,
         },
       })
 
-      return { inserted, skipped, errors, meta }
+      return { inserted, skipped, errors, meta, autoReconciled }
     },
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
-      toast.success(`Importadas ${result.inserted} transações (${result.skipped} duplicadas ignoradas)`)
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      const reconcileMsg = result.autoReconciled > 0 ? ` · ${result.autoReconciled} reconciliadas automaticamente` : ''
+      toast.success(`Importadas ${result.inserted} transações (${result.skipped} duplicadas ignoradas)${reconcileMsg}`)
     },
     onError: (err: Error) => toast.error('Erro na importação: ' + err.message),
   })
