@@ -37,11 +37,14 @@ export function DespesaIndiretaModal({ onClose, initialData }: DespesaIndiretaMo
     return Array.from(existing).sort()
   }, [despesas])
 
+  type Modo = 'avista' | 'parcelado' | 'recorrente'
+
   const [formData, setFormData] = useState({
+    modo: 'avista' as Modo,
     categoria: '',
     descricao: '',
     valor_orcado: 0,
-    recorrente: false,
+    cond_pagamento: '30/60/90',
     frequencia: 'mensal',
     data_inicio: '',
     data_fim: '',
@@ -51,11 +54,15 @@ export function DespesaIndiretaModal({ onClose, initialData }: DespesaIndiretaMo
 
   useEffect(() => {
     if (initialData) {
+      const modo: Modo = initialData.recorrente
+        ? 'recorrente'
+        : (initialData.cond_pagamento && initialData.cond_pagamento.trim() ? 'parcelado' : 'avista')
       setFormData({
+        modo,
         categoria: initialData.categoria,
         descricao: initialData.descricao,
         valor_orcado: initialData.valor_orcado,
-        recorrente: initialData.recorrente,
+        cond_pagamento: initialData.cond_pagamento || '30/60/90',
         frequencia: initialData.frequencia || 'mensal',
         data_inicio: initialData.data_inicio || '',
         data_fim: initialData.data_fim || '',
@@ -67,20 +74,22 @@ export function DespesaIndiretaModal({ onClose, initialData }: DespesaIndiretaMo
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     // Validations
     if (!formData.categoria || !formData.descricao || formData.valor_orcado <= 0 || !formData.data_inicio) return
 
-    if (formData.recorrente && !formData.data_fim) return
+    if (formData.modo === 'recorrente' && !formData.data_fim) return
+    if (formData.modo === 'parcelado' && !formData.cond_pagamento.trim()) return
 
     const payload = {
       categoria: formData.categoria,
       descricao: formData.descricao,
       valor_orcado: Number(formData.valor_orcado),
-      recorrente: formData.recorrente,
-      frequencia: formData.recorrente ? formData.frequencia as any : null,
+      recorrente: formData.modo === 'recorrente',
+      frequencia: (formData.modo === 'recorrente' ? formData.frequencia : null) as any,
+      cond_pagamento: formData.modo === 'parcelado' ? formData.cond_pagamento.trim() : null,
       data_inicio: formData.data_inicio,
-      data_fim: formData.recorrente ? formData.data_fim : null,
+      data_fim: formData.modo === 'recorrente' ? formData.data_fim : null,
       fornecedor_id: formData.fornecedor_id || null,
       observacoes: formData.observacoes || null,
     }
@@ -177,66 +186,96 @@ export function DespesaIndiretaModal({ onClose, initialData }: DespesaIndiretaMo
               </div>
             </div>
 
-            <div className="rounded-lg border bg-muted/20 p-4">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <h4 className="text-sm font-medium">Recorrência</h4>
-                  <p className="text-xs text-muted-foreground">Defina se é um custo contínuo ou pontual</p>
-                </div>
-                <label className="relative inline-flex cursor-pointer items-center">
-                  <input
-                    type="checkbox"
-                    className="peer sr-only"
-                    checked={formData.recorrente}
-                    onChange={e => setFormData({ ...formData, recorrente: e.target.checked })}
-                  />
-                  <div className="peer h-5 w-9 rounded-full bg-input after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none dark:border-gray-600 dark:bg-gray-700"></div>
-                </label>
+            <div className="rounded-lg border bg-muted/20 p-4 space-y-4">
+              <div>
+                <h4 className="text-sm font-medium">Forma de pagamento</h4>
+                <p className="text-xs text-muted-foreground">Como essa despesa será parcelada no fluxo de caixa</p>
               </div>
 
-              <div className={`grid grid-cols-3 gap-4 ${!formData.recorrente && 'grid-cols-2 max-w-sm'}`}>
-                {formData.recorrente && (
+              {/* Seletor de 3 modos */}
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { k: 'avista',     label: 'À vista',            desc: '1 parcela única' },
+                  { k: 'parcelado',  label: 'Pontual parcelado',  desc: 'N parcelas por condição' },
+                  { k: 'recorrente', label: 'Recorrente',          desc: 'Frequência regular' },
+                ] as const).map(m => (
+                  <button key={m.k} type="button"
+                    onClick={() => setFormData({ ...formData, modo: m.k as Modo })}
+                    className={`rounded-lg border p-3 text-left transition-colors ${
+                      formData.modo === m.k ? 'border-primary bg-primary/5 ring-1 ring-primary/20' : 'hover:bg-muted/50'
+                    }`}>
+                    <p className="text-xs font-bold">{m.label}</p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">{m.desc}</p>
+                  </button>
+                ))}
+              </div>
+
+              {/* Campos conforme modo */}
+              {formData.modo === 'avista' && (
+                <div className="max-w-sm">
+                  <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Data de Vencimento</label>
+                  <input type="date" required value={formData.data_inicio}
+                    onChange={e => setFormData({ ...formData, data_inicio: e.target.value })}
+                    className={INPUT} />
+                </div>
+              )}
+
+              {formData.modo === 'parcelado' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Data Base (dia 0)</label>
+                    <input type="date" required value={formData.data_inicio}
+                      onChange={e => setFormData({ ...formData, data_inicio: e.target.value })}
+                      className={INPUT} />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Condição de Pagamento</label>
+                    <input type="text" required value={formData.cond_pagamento}
+                      onChange={e => setFormData({ ...formData, cond_pagamento: e.target.value })}
+                      className={INPUT} placeholder="30/60/90" />
+                    <p className="mt-1 text-[10px] text-muted-foreground">Dias a partir da data base, separados por "/". Ex: <code>0</code> (à vista), <code>30/60</code>, <code>30/60/90/120</code>.</p>
+                  </div>
+                </div>
+              )}
+
+              {formData.modo === 'recorrente' && (
+                <div className="grid grid-cols-3 gap-4">
                   <div>
                     <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Frequência</label>
-                    <select
-                      value={formData.frequencia}
+                    <select value={formData.frequencia}
                       onChange={e => setFormData({ ...formData, frequencia: e.target.value })}
-                      className={INPUT}
-                    >
+                      className={INPUT}>
                       <option value="semanal">Semanal</option>
                       <option value="quinzenal">Quinzenal</option>
                       <option value="mensal">Mensal</option>
                     </select>
                   </div>
-                )}
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Data {formData.recorrente ? 'Início' : 'Vencimento'}</label>
-                  <input
-                    type="date"
-                    required
-                    value={formData.data_inicio}
-                    onChange={e => setFormData({ ...formData, data_inicio: e.target.value })}
-                    className={INPUT}
-                  />
-                </div>
-                {formData.recorrente && (
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Data Início</label>
+                    <input type="date" required value={formData.data_inicio}
+                      onChange={e => setFormData({ ...formData, data_inicio: e.target.value })}
+                      className={INPUT} />
+                  </div>
                   <div>
                     <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Data Fim</label>
-                    <input
-                      type="date"
-                      required={formData.recorrente}
-                      value={formData.data_fim}
+                    <input type="date" required value={formData.data_fim}
                       onChange={e => setFormData({ ...formData, data_fim: e.target.value })}
-                      className={INPUT}
-                    />
+                      className={INPUT} />
                   </div>
-                )}
-              </div>
-              
-              {formData.recorrente && formData.data_inicio && formData.data_fim && (
-                <div className="mt-3 text-[10px] text-muted-foreground bg-primary/5 p-2 rounded text-primary-foreground/80 flex items-center gap-2">
+                </div>
+              )}
+
+              {/* Hint de resumo */}
+              {formData.modo === 'parcelado' && formData.cond_pagamento && (
+                <div className="text-[10px] text-muted-foreground bg-primary/5 p-2 rounded flex items-center gap-2">
                   <Calendar className="h-3 w-3" />
-                  As parcelas serão geradas automaticamente na periodicidade {formData.frequencia} dividindo o valor total.
+                  Será gerada {formData.cond_pagamento.split('/').length} parcela(s) dividindo R$ {Number(formData.valor_orcado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}.
+                </div>
+              )}
+              {formData.modo === 'recorrente' && formData.data_inicio && formData.data_fim && (
+                <div className="text-[10px] text-muted-foreground bg-primary/5 p-2 rounded flex items-center gap-2">
+                  <Calendar className="h-3 w-3" />
+                  Parcelas geradas automaticamente na periodicidade {formData.frequencia}, dividindo o valor total.
                 </div>
               )}
             </div>

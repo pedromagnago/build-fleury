@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
 import { toast } from 'sonner'
 import { addMonths, addWeeks, format, isBefore, isEqual } from 'date-fns'
+import { parsearCondicao } from '@/lib/parcelas'
 
 export interface DespesaIndireta {
   id: string
@@ -14,6 +15,7 @@ export interface DespesaIndireta {
   valor_saldo: number
   recorrente: boolean
   frequencia: 'mensal' | 'quinzenal' | 'semanal' | 'pontual' | null
+  cond_pagamento: string | null   // "30/60/90" para despesa pontual parcelada
   data_inicio: string | null
   data_fim: string | null
   fornecedor_id: string | null
@@ -115,12 +117,13 @@ export function useDespesasIndiretas() {
 
       if (error) throw error
 
-      // Se mudou orçado, datas, ou recorrência, apagar parcelas "planejadas" (status futura) e regerar
+      // Se mudou orçado, datas, recorrência ou condição, apagar parcelas "planejadas" (status futura) e regerar
       const mudouOrcado = oldData.valor_orcado !== updated.valor_orcado
       const mudouRecorrencia = oldData.recorrente !== updated.recorrente || oldData.frequencia !== updated.frequencia
       const mudouDatas = oldData.data_inicio !== updated.data_inicio || oldData.data_fim !== updated.data_fim
+      const mudouCond = (oldData.cond_pagamento ?? null) !== (updated.cond_pagamento ?? null)
 
-      if (mudouOrcado || mudouRecorrencia || mudouDatas) {
+      if (mudouOrcado || mudouRecorrencia || mudouDatas || mudouCond) {
         // Deletar só parcelas 'futura'. Se tem 'paga', ignora
         await supabase
           .from('parcelas')
@@ -184,7 +187,19 @@ export function useDespesasIndiretas() {
     let datasParaGerar: string[] = []
 
     if (!despesa.recorrente) {
-      datasParaGerar = [despesa.data_inicio]
+      if (despesa.cond_pagamento && despesa.cond_pagamento.trim()) {
+        // Despesa PONTUAL parcelada: gera parcelas nos dias indicados (ex: "30/60/90")
+        const dias = parsearCondicao(despesa.cond_pagamento)
+        const base = new Date(despesa.data_inicio + 'T00:00:00')
+        datasParaGerar = dias.map(d => {
+          const dt = new Date(base)
+          dt.setDate(dt.getDate() + d)
+          return format(dt, 'yyyy-MM-dd')
+        })
+      } else {
+        // Despesa pontual à vista: 1 parcela única
+        datasParaGerar = [despesa.data_inicio]
+      }
     } else {
       if (!despesa.data_fim || !despesa.frequencia) return
 
