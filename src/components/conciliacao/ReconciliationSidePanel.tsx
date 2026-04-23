@@ -83,12 +83,10 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   const [showCriar, setShowCriar] = useState(false)
   // Multi-seleção: Map<candidatoId, { valor, observacao }>
   const [selecao, setSelecao] = useState<Map<string, { valor: number; observacao: string }>>(new Map())
-  const [showObsId, setShowObsId] = useState<string | null>(null)
 
   useEffect(() => {
     if (row) {
       setSearch('')
-      setShowObsId(null)
       const pre = new Map<string, { valor: number; observacao: string }>()
       if (row.conciliacao_id) {
         const conc = concs.find((c: any) => c.id === row.conciliacao_id)
@@ -292,7 +290,6 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     const novo = new Map(selecao)
     if (novo.has(c.id)) {
       novo.delete(c.id)
-      if (showObsId === c.id) setShowObsId(null)
     } else {
       const jaAplicado = Array.from(novo.values()).reduce((s, v) => s + v.valor, 0)
       const difMov = absValor - jaAplicado
@@ -563,26 +560,18 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                           </p>
                         </div>
                         {sel && (
-                          <>
-                            <button type="button"
-                              onClick={(e) => { e.stopPropagation(); setShowObsId(showObsId === c.id ? null : c.id) }}
-                              title={obs ? `Observa\u00e7\u00e3o: ${obs}` : 'Adicionar observa\u00e7\u00e3o'}
-                              className={`rounded p-1 text-xs ${obs ? 'bg-amber-500/20 text-amber-700' : 'text-muted-foreground hover:bg-muted'}`}>
-                              📝
-                            </button>
-                            <input type="number" step="0.01" value={val}
-                              onChange={(e) => updateValor(c.id, Number(e.target.value) || 0)}
-                              onClick={(e) => e.stopPropagation()}
-                              className="w-24 rounded border bg-background px-1.5 py-0.5 text-xs text-right font-mono" />
-                          </>
+                          <input type="number" step="0.01" value={val}
+                            onChange={(e) => updateValor(c.id, Number(e.target.value) || 0)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-24 rounded border bg-background px-1.5 py-0.5 text-xs text-right font-mono" />
                         )}
                       </div>
-                      {sel && showObsId === c.id && (
+                      {sel && (
                         <div className="px-2 pb-2">
                           <textarea value={obs} onChange={(e) => updateObservacao(c.id, e.target.value)}
-                            placeholder="Memória do consumo (ex: lote específico, semana, motivo do split)..."
+                            placeholder="📝 Observa\u00e7\u00e3o (opcional): mem\u00f3ria do consumo, lote, motivo do split..."
                             rows={2}
-                            className="w-full rounded border bg-background px-2 py-1 text-[11px]" />
+                            className="w-full rounded border bg-background px-2 py-1.5 text-[11px] placeholder:text-muted-foreground/60" />
                         </div>
                       )}
                     </div>
