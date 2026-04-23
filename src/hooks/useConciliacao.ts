@@ -72,41 +72,75 @@ export function useImportExtrato() {
       let skipped = 0
       const errors: string[] = []
 
-      // Batch insert with deduplication via ON CONFLICT
-      // FITID composto com valor em centavos: alguns bancos (ex: Itaú) reusam FITID
-      // entre a transação principal e a tarifa associada — sem sufixo, o upsert descarta a tarifa.
-      const BATCH_SIZE = 50
-      const rows = transactions.map((txn, idx) => {
+      // ── Reimport idempotente por chave funcional ──
+      // Em vez de confiar apenas no FITID (formato muda, alguns bancos reusam), comparamos
+      // (conta, data, valor, tipo, descricao). Se a quantidade de movs com essa chave já
+      // existe no banco igual à do OFX, não insere nada. Se o OFX tem mais, insere só o excedente.
+      const chaveFuncional = (date: string, valor: number, tipo: 'entrada'|'saida', descricao: string) =>
+        `${date}|${Math.round(Math.abs(valor) * 100)}|${tipo}|${(descricao || '').trim().toUpperCase()}`
+
+      const ordered = [...transactions].sort((a, b) => a.date.localeCompare(b.date))
+      const startDate = ordered[0]?.date
+      const endDate   = ordered[ordered.length - 1]?.date
+
+      // Busca movs existentes no período e conta
+      const { data: existentes } = await supabase
+        .from('movimentacoes_bancarias')
+        .select('data, valor, tipo, descricao')
+        .eq('company_id', currentCompany.id)
+        .eq('conta_id', contaId)
+        .gte('data', startDate || '2000-01-01')
+        .lte('data', endDate || '2999-12-31')
+
+      const contagemExistente = new Map<string, number>()
+      for (const m of (existentes ?? [])) {
+        const k = chaveFuncional(m.data as string, Number(m.valor), m.tipo as 'entrada'|'saida', (m.descricao as string) ?? '')
+        contagemExistente.set(k, (contagemExistente.get(k) ?? 0) + 1)
+      }
+
+      // Decide quais inserir (só o excedente sobre o que já existe)
+      const contagemNova = new Map<string, number>()
+      const rows: any[] = []
+      for (let idx = 0; idx < transactions.length; idx++) {
+        const txn = transactions[idx]!
+        const tipo = txn.type === 'credit' ? 'entrada' : 'saida'
+        const k = chaveFuncional(txn.date, txn.amount, tipo, txn.memoClean)
+        const jaTem = contagemExistente.get(k) ?? 0
+        const novoAte = (contagemNova.get(k) ?? 0) + 1
+        contagemNova.set(k, novoAte)
+        if (novoAte <= jaTem) {
+          skipped++
+          continue
+        }
         const base = txn.fitid || `gen_${txn.date}_${idx}`
         const centavos = Math.abs(Math.round(txn.amount * 100))
-        return {
+        rows.push({
           company_id: currentCompany.id,
           conta_id: contaId,
           data: txn.date,
           descricao: txn.memoClean,
           valor: Math.abs(txn.amount),
-          tipo: txn.type === 'credit' ? 'entrada' : 'saida',
-          fitid: `${base}_${centavos}`,
+          tipo,
+          fitid: `${base}_${centavos}_${Date.now()}_${idx}`,
           memo_raw: txn.memoRaw,
           saldo_acumulado: txn.balance,
           origem: txn.source,
           conciliado: false,
-        }
-      })
+        })
+      }
 
+      const BATCH_SIZE = 50
       for (let i = 0; i < rows.length; i += BATCH_SIZE) {
         const batch = rows.slice(i, i + BATCH_SIZE)
         const { error, count } = await supabase
           .from('movimentacoes_bancarias')
-          .upsert(batch, { onConflict: 'conta_id,fitid', ignoreDuplicates: true, count: 'exact' })
-
+          .insert(batch, { count: 'exact' })
         if (error) {
           errors.push(`Batch ${Math.floor(i / BATCH_SIZE)}: ${error.message}`)
         } else {
           inserted += count ?? batch.length
         }
       }
-      skipped = transactions.length - inserted
 
       // Auto-reconciliação de parcelas órfãs: após inserir movs, tenta casar parcelas pagas
       // (sem conciliação) com movs recém-importadas pela combinação conta+data+valor+tipo.

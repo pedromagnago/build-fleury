@@ -78,6 +78,26 @@ export function ExtratosManager({ movimentacoes, onRefresh }: ExtratosManagerPro
   const handleDeleteBatch = async (batchIndex: number) => {
     const batch = batches[batchIndex]
     if (!batch) return
+
+    // Checa conciliações confirmadas antes de excluir — pode ser que o usuário
+    // prefira reimportar por cima (idempotente) ao invés de perder os vínculos.
+    const { data: concsVinculadas } = await supabase
+      .from('conciliacoes')
+      .select('id', { count: 'exact' })
+      .in('movimentacao_id', batch.ids)
+      .eq('status', 'confirmado')
+    const qtdConcs = (concsVinculadas ?? []).length
+
+    if (qtdConcs > 0) {
+      const ok = window.confirm(
+        `Este lote tem ${qtdConcs} conciliação(ões) confirmada(s) vinculada(s).\n\n` +
+        `Se você só quer reimportar o extrato, NÃO precisa excluir antes — o reimport já é idempotente (não duplica).\n\n` +
+        `Excluir agora vai PERDER todos esses vínculos (parcelas pagas ficarão órfãs).\n\n` +
+        `Deseja excluir mesmo assim?`
+      )
+      if (!ok) { setConfirmDelete(null); return }
+    }
+
     setDeletingBatch(batchIndex)
     try {
       // Delete in chunks of 50 to avoid timeout
@@ -101,6 +121,7 @@ export function ExtratosManager({ movimentacoes, onRefresh }: ExtratosManagerPro
 
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
       toast.success(`Lote removido: ${batch.count} movimentações excluídas`)
       setConfirmDelete(null)
       onRefresh()
