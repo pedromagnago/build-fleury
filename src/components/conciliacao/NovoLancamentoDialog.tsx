@@ -11,7 +11,10 @@ import { useState, useMemo, useEffect } from 'react'
 import { X, Save, Search, ArrowDownCircle, ArrowUpCircle, Info } from 'lucide-react'
 import { useCreateMovimentoManual } from '@/hooks/useConciliacao'
 import { useContasBancarias, useParcelas } from '@/hooks/useFinanceiro'
+import { useMutuos } from '@/hooks/useMutuos'
 import { formatCurrency } from '@/lib/utils'
+
+type VinculoSel = { tipo: 'parcela' | 'mutuo'; id: string; label: string; sublabel: string; valor: number }
 
 interface Props {
   defaultContaId?: string
@@ -21,6 +24,7 @@ interface Props {
 export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
   const { data: contas = [] } = useContasBancarias()
   const { data: parcelas = [] } = useParcelas()
+  const { data: mutuos = [] } = useMutuos()
   const createMov = useCreateMovimentoManual()
 
   const [contaId, setContaId] = useState(defaultContaId ?? contas[0]?.id ?? '')
@@ -28,7 +32,7 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
   const [data, setData] = useState(() => new Date().toISOString().split('T')[0]!)
   const [valor, setValor] = useState('')
   const [descricao, setDescricao] = useState('')
-  const [parcelaId, setParcelaId] = useState<string | null>(null)
+  const [vinculo, setVinculo] = useState<VinculoSel | null>(null)
   const [observacao, setObservacao] = useState('')
   const [search, setSearch] = useState('')
   const [autoConciliar, setAutoConciliar] = useState(true)
@@ -37,18 +41,32 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
     if (!contaId && contas.length > 0) setContaId(contas[0]!.id)
   }, [contas, contaId])
 
-  const parcelasPendentes = useMemo(() => {
+  const candidatos = useMemo<VinculoSel[]>(() => {
     const q = search.toLowerCase().trim()
-    return parcelas
-      .filter((p: any) => p.status !== 'paga')
-      .filter((p: any) => {
-        if (!q) return true
-        return (p.pedido_item ?? '').toLowerCase().includes(q)
-          || (p.descricao ?? '').toLowerCase().includes(q)
-          || String(p.valor).includes(q)
-      })
-      .slice(0, 10)
-  }, [parcelas, search])
+    const out: VinculoSel[] = []
+    // Parcelas em aberto
+    for (const p of parcelas as any[]) {
+      if (p.status === 'paga') continue
+      const label = p.pedido_item ?? p.descricao ?? 'Parcela'
+      const sublabel = `Parcela · Venc ${p.data_vencimento} · ${p.status}`
+      const hay = `${label} ${sublabel} ${p.valor}`.toLowerCase()
+      if (q && !hay.includes(q)) continue
+      out.push({ tipo: 'parcela', id: p.id, label, sublabel, valor: Number(p.valor) })
+    }
+    // Mútuos com saldo
+    for (const m of mutuos as any[]) {
+      const jaConc = Number(m.valor_conciliado_entrada || 0) + Number(m.valor_conciliado_saida || 0)
+      const saldo = Math.max(0, Number(m.valor_captado) - jaConc)
+      if (saldo < 0.01) continue
+      const cat = String(m.categoria ?? '').toLowerCase().includes('adiantamento') ? 'Adiantamento' : 'Captação'
+      const label = `${cat}: ${m.nome}`
+      const sublabel = `Mútuo · ${m.data_captacao} · saldo ${formatCurrency(saldo)}`
+      const hay = `${label} ${m.categoria} ${m.valor_captado}`.toLowerCase()
+      if (q && !hay.includes(q)) continue
+      out.push({ tipo: 'mutuo', id: m.id, label, sublabel, valor: Number(m.valor_captado) })
+    }
+    return out.slice(0, 20)
+  }, [parcelas, mutuos, search])
 
   const handleSubmit = async () => {
     const num = parseFloat(valor.replace(',', '.'))
@@ -62,7 +80,7 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
       valor: num,
       tipo,
       descricao: descricao.trim(),
-      parcela_id: parcelaId,
+      vinculo: vinculo ? { tipo: vinculo.tipo, id: vinculo.id } : null,
       observacao: observacao.trim() || null,
       auto_conciliar: autoConciliar,
     })
@@ -75,7 +93,6 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
     return () => window.removeEventListener('keydown', h)
   }, [onClose])
 
-  const parcelaVinculada = parcelaId ? parcelas.find(p => p.id === parcelaId) : null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
@@ -153,19 +170,22 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
               <>
                 <div>
                   <label className="text-[10px] font-bold uppercase text-muted-foreground">
-                    Vincular a parcela (opcional)
+                    Vincular a parcela ou mútuo (opcional)
                   </label>
-                  {parcelaVinculada ? (
+                  {vinculo ? (
                     <div className="mt-1 flex items-center justify-between rounded-md bg-emerald-500/10 p-2">
                       <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium truncate">
-                          {parcelaVinculada.pedido_item ?? parcelaVinculada.descricao ?? 'Parcela'}
-                        </p>
+                        <div className="flex items-center gap-1">
+                          <p className="text-xs font-medium truncate">{vinculo.label}</p>
+                          <span className={`text-[9px] rounded px-1 ${vinculo.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' : 'bg-blue-500/10 text-blue-600'}`}>
+                            {vinculo.tipo === 'mutuo' ? 'MUT' : 'PARC'}
+                          </span>
+                        </div>
                         <p className="text-[10px] text-muted-foreground">
-                          Venc: {parcelaVinculada.data_vencimento} · {formatCurrency(Number(parcelaVinculada.valor))}
+                          {vinculo.sublabel} · {formatCurrency(vinculo.valor)}
                         </p>
                       </div>
-                      <button onClick={() => setParcelaId(null)}
+                      <button onClick={() => setVinculo(null)}
                         className="rounded px-2 py-1 text-[10px] hover:bg-red-500/10 text-red-500">Remover</button>
                     </div>
                   ) : (
@@ -173,22 +193,27 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
                       <div className="relative mt-1">
                         <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
                         <input value={search} onChange={(e) => setSearch(e.target.value)}
-                          placeholder="Buscar parcela por descrição ou valor..."
+                          placeholder="Buscar por descrição, nome do mútuo ou valor..."
                           className="w-full rounded-md border bg-background pl-7 pr-2 py-1.5 text-xs" />
                       </div>
                       {search && (
-                        <div className="mt-1 max-h-40 overflow-auto rounded-md border bg-card">
-                          {parcelasPendentes.map((p: any) => (
-                            <button key={p.id} onClick={() => { setParcelaId(p.id); setSearch('') }}
+                        <div className="mt-1 max-h-48 overflow-auto rounded-md border bg-card">
+                          {candidatos.map(c => (
+                            <button key={`${c.tipo}-${c.id}`} onClick={() => { setVinculo(c); setSearch('') }}
                               className="w-full flex items-center justify-between p-2 hover:bg-muted text-left border-b last:border-0">
                               <div className="min-w-0 flex-1">
-                                <p className="text-xs truncate">{p.pedido_item ?? p.descricao ?? 'Parcela'}</p>
-                                <p className="text-[10px] text-muted-foreground">{p.data_vencimento} · {p.status}</p>
+                                <div className="flex items-center gap-1">
+                                  <p className="text-xs truncate">{c.label}</p>
+                                  <span className={`text-[9px] rounded px-1 ${c.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' : 'bg-blue-500/10 text-blue-600'}`}>
+                                    {c.tipo === 'mutuo' ? 'MUT' : 'PARC'}
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-muted-foreground">{c.sublabel}</p>
                               </div>
-                              <span className="text-xs font-mono font-semibold">{formatCurrency(Number(p.valor))}</span>
+                              <span className="text-xs font-mono font-semibold">{formatCurrency(c.valor)}</span>
                             </button>
                           ))}
-                          {parcelasPendentes.length === 0 && (
+                          {candidatos.length === 0 && (
                             <p className="p-2 text-center text-[11px] text-muted-foreground">Nenhuma encontrada</p>
                           )}
                         </div>
@@ -198,7 +223,7 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
                 </div>
                 <p className="flex items-start gap-1 text-[10px] text-muted-foreground">
                   <Info className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                  <span>Sem parcela vinculada, o movimento é criado como conciliado mas sem vínculo (útil para contrapartidas que se zeram).</span>
+                  <span>Sem vínculo, o movimento é criado como conciliado mas sem link (útil para contrapartidas que se zeram).</span>
                 </p>
               </>
             )}

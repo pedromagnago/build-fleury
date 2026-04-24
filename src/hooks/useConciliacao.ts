@@ -982,6 +982,8 @@ export interface LancamentoManualPayload {
   tipo: 'entrada' | 'saida'
   descricao: string
   parcela_id?: string | null
+  /** Vínculo opcional polimórfico para criar a conciliação; suporta parcela, medição, mutuo ou mutuo_parcela */
+  vinculo?: { tipo: 'parcela' | 'medicao' | 'mutuo' | 'mutuo_parcela'; id: string } | null
   categoria?: string | null
   observacao?: string | null
   auto_conciliar?: boolean
@@ -1021,23 +1023,10 @@ export function useCreateMovimentoManual() {
         .single()
       if (error) throw error
 
-      if (payload.parcela_id) {
-        const { data: parcela } = await supabase
-          .from('parcelas')
-          .select('valor, valor_pago')
-          .eq('id', payload.parcela_id)
-          .single()
-        if (parcela) {
-          const novoPago = (Number(parcela.valor_pago) || 0) + Math.abs(payload.valor)
-          const total = Number(parcela.valor)
-          const novoStatus = novoPago >= total - 0.005 ? 'paga' : 'parcialmente_paga'
-          await supabase.from('parcelas').update({
-            status: novoStatus,
-            valor_pago: novoPago,
-            data_pagamento_real: payload.data,
-          }).eq('id', payload.parcela_id)
-        }
-
+      // Vínculo polimórfico: parcela / medicao / mutuo_parcela / mutuo.
+      // Mantém compat com payload.parcela_id antigo.
+      const vinculo = payload.vinculo ?? (payload.parcela_id ? { tipo: 'parcela' as const, id: payload.parcela_id } : null)
+      if (vinculo) {
         const { data: conc } = await supabase.from('conciliacoes').insert({
           company_id: currentCompany.id,
           movimentacao_id: mov.id,
@@ -1048,11 +1037,17 @@ export function useCreateMovimentoManual() {
         }).select('id').single()
 
         if (conc) {
-          await supabase.from('conciliacao_parcelas').insert({
-            conciliacao_id: conc.id,
-            parcela_id: payload.parcela_id,
-            valor_aplicado: Math.abs(payload.valor),
-          })
+          const linkRow: any = { conciliacao_id: conc.id, valor_aplicado: Math.abs(payload.valor) }
+          if (vinculo.tipo === 'parcela')        linkRow.parcela_id        = vinculo.id
+          else if (vinculo.tipo === 'medicao')   linkRow.medicao_id        = vinculo.id
+          else if (vinculo.tipo === 'mutuo_parcela') linkRow.mutuo_parcela_id = vinculo.id
+          else if (vinculo.tipo === 'mutuo')     linkRow.mutuo_id          = vinculo.id
+          await supabase.from('conciliacao_parcelas').insert(linkRow)
+          // valor_pago/status de parcela são sincronizados pelo trigger do banco.
+          // Para parcela, ainda gravamos data_pagamento_real (sem trigger para isso).
+          if (vinculo.tipo === 'parcela') {
+            await supabase.from('parcelas').update({ data_pagamento_real: payload.data }).eq('id', vinculo.id)
+          }
         }
       }
 
