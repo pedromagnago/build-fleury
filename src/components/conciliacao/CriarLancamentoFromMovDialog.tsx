@@ -135,14 +135,25 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
         if (err) throw err
         if (!mut) throw new Error('Falha ao criar adiantamento')
 
-        await supabase.from('conciliacoes').insert({
+        const { data: concInserted } = await supabase.from('conciliacoes').insert({
           company_id: currentCompany.id,
           movimentacao_id: movId,
           match_type: 'manual_mutuo',
           confidence: 100,
           diferenca: 0,
           status: 'confirmado',
-        })
+        }).select('id').single()
+
+        // Grava o vínculo com o mutuo criado — sem isso, valor_conciliado_*
+        // do mutuo fica zero e os KPIs ("Saída Efetivada", "Recebido (Extrato)") não somam.
+        if (concInserted?.id) {
+          await supabase.from('conciliacao_parcelas').insert({
+            conciliacao_id: concInserted.id,
+            mutuo_id: mut.id,
+            valor_aplicado: absValor,
+          })
+        }
+
         await supabase.from('movimentacoes_bancarias').update({
           conciliado: true,
           conciliado_em: new Date().toISOString(),
