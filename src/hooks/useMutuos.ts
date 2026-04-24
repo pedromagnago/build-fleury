@@ -20,7 +20,11 @@ export interface Mutuo {
   updated_at: string
   parcelas?: MutuoParcela[]
   fornecedor?: { id: string; nome: string } | null
-  /** Soma de valor_aplicado em conciliacao_parcelas.mutuo_id (ja recebido/efetivado via extrato) */
+  /** Soma de valor_aplicado onde a mov é de ENTRADA (dinheiro entrou no caixa via extrato) */
+  valor_conciliado_entrada?: number
+  /** Soma de valor_aplicado onde a mov é de SAÍDA (dinheiro saiu do caixa via extrato) */
+  valor_conciliado_saida?: number
+  /** @deprecated mantido pra compat — soma total (entrada + saída) */
   valor_conciliado?: number
 }
 
@@ -48,10 +52,14 @@ export function useMutuos() {
       if (!companyId) return []
 
       // Fetch mutuos, parcelas e valores ja conciliados (conciliacao_parcelas.mutuo_id)
+      // Agora diferencia entrada vs saída pela direção da mov bancária.
       const [mutuosRes, parcelasRes, conciliadoRes] = await Promise.all([
         supabase.from('mutuos').select('*, fornecedor:fornecedores(id, nome)').eq('company_id', companyId).neq('categoria', 'STUB_Dedupe').order('created_at', { ascending: false }),
         supabase.from('mutuo_parcelas').select('*').eq('company_id', companyId).order('numero_parcela'),
-        supabase.from('conciliacao_parcelas').select('mutuo_id, valor_aplicado, conciliacoes!inner(company_id, status)').not('mutuo_id', 'is', null),
+        supabase
+          .from('conciliacao_parcelas')
+          .select('mutuo_id, valor_aplicado, conciliacoes!inner(company_id, status, movimentacoes_bancarias!inner(tipo))')
+          .not('mutuo_id', 'is', null),
       ])
       if (mutuosRes.error) throw mutuosRes.error
       if (parcelasRes.error) throw parcelasRes.error
@@ -63,19 +71,33 @@ export function useMutuos() {
         parcByMutuo.set(p.mutuo_id, arr)
       }
 
-      const conciliadoPorMutuo = new Map<string, number>()
+      const entradaPorMutuo = new Map<string, number>()
+      const saidaPorMutuo = new Map<string, number>()
       for (const cp of (conciliadoRes.data ?? []) as any[]) {
         const conc = Array.isArray(cp.conciliacoes) ? cp.conciliacoes[0] : cp.conciliacoes
         if (!conc || conc.company_id !== companyId || conc.status !== 'confirmado') continue
-        conciliadoPorMutuo.set(cp.mutuo_id, (conciliadoPorMutuo.get(cp.mutuo_id) ?? 0) + Number(cp.valor_aplicado))
+        const mov = Array.isArray(conc.movimentacoes_bancarias) ? conc.movimentacoes_bancarias[0] : conc.movimentacoes_bancarias
+        if (!mov) continue
+        const val = Number(cp.valor_aplicado)
+        if (mov.tipo === 'entrada') {
+          entradaPorMutuo.set(cp.mutuo_id, (entradaPorMutuo.get(cp.mutuo_id) ?? 0) + val)
+        } else {
+          saidaPorMutuo.set(cp.mutuo_id, (saidaPorMutuo.get(cp.mutuo_id) ?? 0) + val)
+        }
       }
 
-      return ((mutuosRes.data ?? []) as Extract<typeof mutuosRes.data, any[]>).map((m) => ({
-        ...m,
-        fornecedor: Array.isArray(m.fornecedor) ? m.fornecedor[0] : m.fornecedor,
-        parcelas: parcByMutuo.get(m.id) ?? [],
-        valor_conciliado: conciliadoPorMutuo.get(m.id) ?? 0,
-      })) as Mutuo[]
+      return ((mutuosRes.data ?? []) as Extract<typeof mutuosRes.data, any[]>).map((m) => {
+        const entrada = entradaPorMutuo.get(m.id) ?? 0
+        const saida = saidaPorMutuo.get(m.id) ?? 0
+        return {
+          ...m,
+          fornecedor: Array.isArray(m.fornecedor) ? m.fornecedor[0] : m.fornecedor,
+          parcelas: parcByMutuo.get(m.id) ?? [],
+          valor_conciliado_entrada: entrada,
+          valor_conciliado_saida: saida,
+          valor_conciliado: entrada + saida,  // compat
+        }
+      }) as Mutuo[]
     },
     enabled: !!companyId,
   })

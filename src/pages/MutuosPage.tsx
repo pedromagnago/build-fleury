@@ -447,10 +447,18 @@ function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; 
   const nextNumero = parcelas.length > 0 ? Math.max(...parcelas.map(p => p.numero_parcela)) + 1 : 1
   const direcao = mutuoDirecao(mutuo)
   const ehSaida = direcao === 'saida'
-  // Quanto ja entrou/saiu via conciliacao (multiplos depositos parciais somando)
-  const conciliado = Number(mutuo.valor_conciliado || 0)
   const valorTotal = Number(mutuo.valor_captado)
-  const saldoAReceber = Math.max(0, valorTotal - conciliado)
+  // Diferenciamos por direção da mov conciliada:
+  // - Captação (entrada): o que realmente entrou no caixa = valor_conciliado_entrada
+  // - Adiantamento feito (saída): o que saiu (pagamento efetivado) = valor_conciliado_saida
+  //   e o que já voltou (devolução recebida) = valor_conciliado_entrada
+  const entradaConciliada = Number(mutuo.valor_conciliado_entrada || 0)
+  const saidaConciliada   = Number(mutuo.valor_conciliado_saida || 0)
+  const efetivado  = ehSaida ? saidaConciliada : entradaConciliada
+  const jaRecebido = ehSaida ? entradaConciliada : 0
+  const saldoAReceber = ehSaida
+    ? Math.max(0, valorTotal - entradaConciliada) // devolução pendente
+    : Math.max(0, valorTotal - entradaConciliada) // captação pendente
 
   const mutuoStatusBadge = mutuo.status === 'ativo'
     ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
@@ -493,14 +501,14 @@ function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; 
         {ehSaida ? (
           <>
             <KpiCell icon={ArrowDownRight} iconColor="text-red-500" label="Emprestado" value={formatCurrency(valorTotal)} valueColor="text-red-600 dark:text-red-400" />
-            <KpiCell icon={CheckCircle2} iconColor="text-blue-500" label="Devolvido (Extrato)" value={formatCurrency(conciliado)} valueColor="text-blue-600 dark:text-blue-400" />
-            <KpiCell icon={DollarSign} iconColor="text-amber-500" label="Saldo a Receber" value={formatCurrency(saldoAReceber)} valueColor="text-amber-600 dark:text-amber-400" />
-            <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Retorno Planejado" value={formatCurrency(totalDevolucao)} valueColor="text-emerald-600 dark:text-emerald-400" />
+            <KpiCell icon={CheckCircle2} iconColor="text-slate-500" label="Saída (Extrato)" value={formatCurrency(efetivado)} valueColor="text-slate-600 dark:text-slate-400" />
+            <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Devolvido" value={formatCurrency(jaRecebido)} valueColor="text-emerald-600 dark:text-emerald-400" />
+            <KpiCell icon={DollarSign} iconColor="text-amber-500" label="A Receber" value={formatCurrency(saldoAReceber)} valueColor="text-amber-600 dark:text-amber-400" />
           </>
         ) : (
           <>
             <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Captado (Planejado)" value={formatCurrency(valorTotal)} valueColor="text-emerald-600 dark:text-emerald-400" />
-            <KpiCell icon={CheckCircle2} iconColor="text-blue-500" label="Recebido (Extrato)" value={formatCurrency(conciliado)} valueColor="text-blue-600 dark:text-blue-400" />
+            <KpiCell icon={CheckCircle2} iconColor="text-blue-500" label="Recebido (Extrato)" value={formatCurrency(efetivado)} valueColor="text-blue-600 dark:text-blue-400" />
             <KpiCell icon={DollarSign} iconColor="text-amber-500" label="A Receber" value={formatCurrency(saldoAReceber)} valueColor="text-amber-600 dark:text-amber-400" />
             <KpiCell icon={ArrowDownRight} iconColor="text-red-500" label="Devolução Planejada" value={formatCurrency(totalDevolucao)} valueColor="text-red-600 dark:text-red-400" />
           </>
@@ -629,15 +637,17 @@ export default function MutuosPage() {
   const mutuosSaida   = (mutuos ?? []).filter(m => mutuoDirecao(m) === 'saida')
 
   const totalCaptado   = mutuosEntrada.reduce((s, m) => s + Number(m.valor_captado), 0)
-  const totalCaptadoReal = mutuosEntrada.reduce((s, m) => s + Number(m.valor_conciliado || 0), 0)
+  // "Recebido real" = entradas efetivadas via extrato
+  const totalCaptadoReal = mutuosEntrada.reduce((s, m) => s + Number(m.valor_conciliado_entrada || 0), 0)
   const totalCaptacaoPendente = Math.max(0, totalCaptado - totalCaptadoReal)
   const totalDevCaptacao = mutuosEntrada.reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor), 0), 0)
   const totalJuros     = totalDevCaptacao - totalCaptado
 
   const totalEmprestado  = mutuosSaida.reduce((s, m) => s + Number(m.valor_captado), 0)
-  const totalEmprestadoReal = mutuosSaida.reduce((s, m) => s + Number(m.valor_conciliado || 0), 0)
-  const totalRetornoEsp  = mutuosSaida.reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor), 0), 0)
-  const totalRetornoRec  = mutuosSaida.reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor_pago || 0), 0), 0)
+  // "Saiu" = saídas efetivadas via extrato; "Devolvido" = entradas conciliadas ao adiantamento feito
+  const totalSaidaReal   = mutuosSaida.reduce((s, m) => s + Number(m.valor_conciliado_saida || 0), 0)
+  const totalDevolvido   = mutuosSaida.reduce((s, m) => s + Number(m.valor_conciliado_entrada || 0), 0)
+  const totalAReceberSaida = Math.max(0, totalEmprestado - totalDevolvido)
 
   const mutuosFiltrados = filtroDirecao === 'todos' ? (mutuos ?? [])
     : filtroDirecao === 'entrada' ? mutuosEntrada : mutuosSaida
@@ -704,9 +714,9 @@ export default function MutuosPage() {
           <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-red-600 dark:text-red-400">↘ Adiantamentos feitos — saídas do projeto</p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
             <SummaryCard icon={ArrowDownRight} iconColor="text-red-500" label="Emprestado (Planejado)" value={formatCurrency(totalEmprestado)} valueColor="text-red-600 dark:text-red-400" bg="bg-red-50/50 dark:bg-red-500/5" />
-            <SummaryCard icon={CheckCircle2} iconColor="text-blue-500" label="Efetivado (Extrato)" value={formatCurrency(totalEmprestadoReal)} valueColor="text-blue-600 dark:text-blue-400" bg="bg-blue-50/50 dark:bg-blue-500/5" />
-            <SummaryCard icon={ArrowUpRight} iconColor="text-emerald-500" label="Retorno Esperado" value={formatCurrency(totalRetornoEsp)} valueColor="text-emerald-600 dark:text-emerald-400" bg="bg-emerald-50/50 dark:bg-emerald-500/5" />
-            <SummaryCard icon={DollarSign} iconColor="text-amber-500" label="Já Recebido" value={formatCurrency(totalRetornoRec)} valueColor="text-amber-600 dark:text-amber-400" bg="bg-amber-50/50 dark:bg-amber-500/5" />
+            <SummaryCard icon={CheckCircle2} iconColor="text-slate-500" label="Saída Efetivada" value={formatCurrency(totalSaidaReal)} valueColor="text-slate-600 dark:text-slate-400" bg="bg-slate-50/50 dark:bg-slate-500/5" />
+            <SummaryCard icon={ArrowUpRight} iconColor="text-emerald-500" label="Devolvido" value={formatCurrency(totalDevolvido)} valueColor="text-emerald-600 dark:text-emerald-400" bg="bg-emerald-50/50 dark:bg-emerald-500/5" />
+            <SummaryCard icon={DollarSign} iconColor="text-amber-500" label="A Receber" value={formatCurrency(totalAReceberSaida)} valueColor="text-amber-600 dark:text-amber-400" bg="bg-amber-50/50 dark:bg-amber-500/5" />
           </div>
         </div>
       </div>
