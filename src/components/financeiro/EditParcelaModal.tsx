@@ -399,6 +399,22 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
           {/* Vínculos de conciliação (split) — permite desfazer baixa parcial */}
           {vinculos.length > 0 && (
             <div className="mt-4 border-t pt-4">
+              {(() => {
+                const somaLinks = vinculos.reduce((s, v) => s + Number(v.valor_aplicado), 0)
+                const divergencia = Math.abs(valorPagoNum - somaLinks)
+                if (divergencia < 0.01) return null
+                return (
+                  <div className="mb-3 rounded-md border border-red-500/30 bg-red-500/5 p-2.5 text-[11px] text-red-700 dark:text-red-400">
+                    <p className="font-bold">⚠️ Divergência detectada</p>
+                    <p className="mt-0.5">
+                      Valor pago declarado: <strong>{formatCurrency(valorPagoNum)}</strong> · Soma dos vínculos abaixo: <strong>{formatCurrency(somaLinks)}</strong>.
+                      {valorPagoNum > somaLinks
+                        ? ' Existe valor pago SEM vínculo visível — pode ser baixa manual ou efeito de bug antigo. Ajuste "Valor Pago" se necessário.'
+                        : ' Existem vínculos somando mais do que o valor pago — clique Desfazer em algum vínculo para corrigir.'}
+                    </p>
+                  </div>
+                )
+              })()}
               <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
                 Baixas vinculadas via extrato ({vinculos.length})
               </p>
