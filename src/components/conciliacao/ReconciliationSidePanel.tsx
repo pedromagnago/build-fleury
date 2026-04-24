@@ -519,6 +519,30 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     onRefresh()
   }
 
+  const handleEstornarFantasma = async () => {
+    if (row.origem !== 'parcela_fantasma' || !row.parcela_id) return
+    if (!confirm('Estornar esta baixa manual? A parcela voltará a status "A Vencer" com valor_pago=0 e data de pagamento limpa.')) return
+    const { supabase } = await import('@/lib/supabase')
+    await supabase.from('parcelas').update({
+      status: 'a_vencer',
+      valor_pago: 0,
+      data_pagamento_real: null,
+      forma_pagamento: null,
+      conta_bancaria_id: null,
+    }).eq('id', row.parcela_id)
+    onClose()
+    onRefresh()
+  }
+
+  const handleExcluirFantasma = async () => {
+    if (row.origem !== 'parcela_fantasma' || !row.parcela_id) return
+    if (!confirm('Excluir permanentemente esta parcela? Se a despesa vinculada tinha só essa parcela, considere apagar a despesa inteira na tela de Custos Indiretos.')) return
+    const { supabase } = await import('@/lib/supabase')
+    await supabase.from('parcelas').delete().eq('id', row.parcela_id)
+    onClose()
+    onRefresh()
+  }
+
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[1px]" onClick={onClose} />
@@ -643,6 +667,28 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
               className="w-full flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-500/10">
               <Trash2 className="h-3.5 w-3.5" />Excluir lançamento manual
             </button>
+          )}
+
+          {/* Ações para parcela fantasma (baixa manual sem extrato) */}
+          {row.origem === 'parcela_fantasma' && (
+            <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+              <p className="text-[11px] font-bold text-amber-700">
+                Baixa manual (sem extrato bancário vinculado)
+              </p>
+              <p className="text-[10px] text-amber-700/80">
+                A parcela foi marcada como paga direto na tela de Pagamentos ou em uma conciliação que foi desfeita. Se foi um engano, estorne; se a despesa toda foi criada errada, exclua.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={handleEstornarFantasma}
+                  className="flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-bold text-amber-700 hover:bg-amber-500/10">
+                  <RotateCcw className="h-3.5 w-3.5" />Estornar baixa
+                </button>
+                <button onClick={handleExcluirFantasma}
+                  className="flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-500/10">
+                  <Trash2 className="h-3.5 w-3.5" />Excluir parcela
+                </button>
+              </div>
+            </div>
           )}
 
           {/* Vincular a parcelas (multi-seleção N:N) */}
