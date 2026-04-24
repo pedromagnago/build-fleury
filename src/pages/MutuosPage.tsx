@@ -444,8 +444,6 @@ function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; 
   const parcelas = (mutuo.parcelas ?? []).sort((a, b) => a.numero_parcela - b.numero_parcela)
   const totalDevolucao = parcelas.reduce((s, p) => s + Number(p.valor), 0)
   const totalPago = parcelas.reduce((s, p) => s + Number(p.valor_pago || 0), 0)
-  const totalPendente = totalDevolucao - totalPago
-  const custoJuros = totalDevolucao - Number(mutuo.valor_captado)
   const nextNumero = parcelas.length > 0 ? Math.max(...parcelas.map(p => p.numero_parcela)) + 1 : 1
   const direcao = mutuoDirecao(mutuo)
   const ehSaida = direcao === 'saida'
