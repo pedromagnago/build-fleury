@@ -522,10 +522,40 @@ export function useRejectConciliacao() {
 
   return useMutation({
     mutationFn: async (conciliacaoId: string) => {
-      await supabase.from('conciliacoes').update({ status: 'rejeitado' }).eq('id', conciliacaoId)
+      // Busca mov e links antes de apagar — precisamos limpar campos residuais da mov.
+      const { data: conc } = await supabase
+        .from('conciliacoes')
+        .select('movimentacao_id')
+        .eq('id', conciliacaoId)
+        .single()
+
+      // Remove links e a própria conciliação (evita estado zombie com link órfão).
+      await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conciliacaoId)
+      await supabase.from('conciliacoes').delete().eq('id', conciliacaoId)
+
+      // Limpa campos residuais da mov se ela não tiver outra conciliação confirmada.
+      if (conc?.movimentacao_id) {
+        const { data: outra } = await supabase
+          .from('conciliacoes')
+          .select('id')
+          .eq('movimentacao_id', conc.movimentacao_id)
+          .eq('status', 'confirmado')
+          .limit(1)
+          .maybeSingle()
+        if (!outra) {
+          await supabase.from('movimentacoes_bancarias').update({
+            conciliado: false,
+            conciliado_em: null,
+            parcela_id: null,
+            categoria: null,
+          }).eq('id', conc.movimentacao_id)
+        }
+      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
       toast.success('Sugestão rejeitada')
     },
     onError: (err: Error) => toast.error(err.message),
