@@ -20,6 +20,8 @@ export interface Mutuo {
   updated_at: string
   parcelas?: MutuoParcela[]
   fornecedor?: { id: string; nome: string } | null
+  /** Soma de valor_aplicado em conciliacao_parcelas.mutuo_id (ja recebido/efetivado via extrato) */
+  valor_conciliado?: number
 }
 
 export interface MutuoParcela {
@@ -45,10 +47,11 @@ export function useMutuos() {
     queryFn: async () => {
       if (!companyId) return []
 
-      // Fetch mutuos and parcelas separately to avoid PostgREST embed issues
-      const [mutuosRes, parcelasRes] = await Promise.all([
+      // Fetch mutuos, parcelas e valores ja conciliados (conciliacao_parcelas.mutuo_id)
+      const [mutuosRes, parcelasRes, conciliadoRes] = await Promise.all([
         supabase.from('mutuos').select('*, fornecedor:fornecedores(id, nome)').eq('company_id', companyId).neq('categoria', 'STUB_Dedupe').order('created_at', { ascending: false }),
         supabase.from('mutuo_parcelas').select('*').eq('company_id', companyId).order('numero_parcela'),
+        supabase.from('conciliacao_parcelas').select('mutuo_id, valor_aplicado, conciliacoes!inner(company_id, status)').not('mutuo_id', 'is', null),
       ])
       if (mutuosRes.error) throw mutuosRes.error
       if (parcelasRes.error) throw parcelasRes.error
@@ -60,10 +63,18 @@ export function useMutuos() {
         parcByMutuo.set(p.mutuo_id, arr)
       }
 
+      const conciliadoPorMutuo = new Map<string, number>()
+      for (const cp of (conciliadoRes.data ?? []) as any[]) {
+        const conc = Array.isArray(cp.conciliacoes) ? cp.conciliacoes[0] : cp.conciliacoes
+        if (!conc || conc.company_id !== companyId || conc.status !== 'confirmado') continue
+        conciliadoPorMutuo.set(cp.mutuo_id, (conciliadoPorMutuo.get(cp.mutuo_id) ?? 0) + Number(cp.valor_aplicado))
+      }
+
       return ((mutuosRes.data ?? []) as Extract<typeof mutuosRes.data, any[]>).map((m) => ({
         ...m,
         fornecedor: Array.isArray(m.fornecedor) ? m.fornecedor[0] : m.fornecedor,
         parcelas: parcByMutuo.get(m.id) ?? [],
+        valor_conciliado: conciliadoPorMutuo.get(m.id) ?? 0,
       })) as Mutuo[]
     },
     enabled: !!companyId,

@@ -56,6 +56,51 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
   const [saving, setSaving] = useState(false)
   const [showEstorno, setShowEstorno] = useState(false)
 
+  // Vínculos de conciliação (split) — para permitir estornar baixa parcial
+  interface VinculoConc { conc_id: string; mov_id: string; mov_data: string; mov_valor: number; valor_aplicado: number; mov_desc: string | null }
+  const [vinculos, setVinculos] = useState<VinculoConc[]>([])
+  useEffect(() => {
+    ;(async () => {
+      const { data } = await supabase
+        .from('conciliacao_parcelas')
+        .select('conciliacao_id, valor_aplicado, conciliacoes!inner(id, movimentacao_id, status, movimentacoes_bancarias!inner(id, data, valor, descricao))')
+        .eq('parcela_id', parcela.id)
+      const list: VinculoConc[] = []
+      for (const row of (data ?? []) as any[]) {
+        const c = Array.isArray(row.conciliacoes) ? row.conciliacoes[0] : row.conciliacoes
+        if (!c || c.status !== 'confirmado') continue
+        const m = Array.isArray(c.movimentacoes_bancarias) ? c.movimentacoes_bancarias[0] : c.movimentacoes_bancarias
+        if (!m) continue
+        list.push({ conc_id: c.id, mov_id: m.id, mov_data: m.data, mov_valor: Number(m.valor), valor_aplicado: Number(row.valor_aplicado), mov_desc: m.descricao })
+      }
+      list.sort((a, b) => a.mov_data.localeCompare(b.mov_data))
+      setVinculos(list)
+    })()
+  }, [parcela.id])
+
+  const handleEstornarVinculo = async (v: VinculoConc) => {
+    if (!window.confirm(`Desfazer o vínculo de ${v.mov_data} (R$ ${v.valor_aplicado.toLocaleString('pt-BR', { minimumFractionDigits: 2 })})? A parcela voltará ${v.valor_aplicado < parcela.valor ? 'para pendente/parcial' : 'para A Vencer'}.`)) return
+    // Reduz valor_pago
+    const novoPago = Math.max(0, Number(parcela.valor_pago || 0) - v.valor_aplicado)
+    const totalValor = Number(parcela.valor)
+    const novoStatus = novoPago <= 0.005 ? 'a_vencer' : (novoPago >= totalValor - 0.005 ? 'paga' : 'parcialmente_paga')
+    await supabase.from('parcelas').update({
+      valor_pago: novoPago,
+      status: novoStatus,
+      ...(novoPago <= 0.005 ? { data_pagamento_real: null } : {}),
+    }).eq('id', parcela.id)
+    // Remove link e marca mov como não conciliada
+    await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', v.conc_id).eq('parcela_id', parcela.id)
+    // Se a conciliação não tem mais nenhum link, deleta e libera o movimento
+    const { data: linksRestantes } = await supabase.from('conciliacao_parcelas').select('conciliacao_id').eq('conciliacao_id', v.conc_id).limit(1)
+    if (!linksRestantes || linksRestantes.length === 0) {
+      await supabase.from('conciliacoes').delete().eq('id', v.conc_id)
+      await supabase.from('movimentacoes_bancarias').update({ conciliado: false, conciliado_em: null, parcela_id: null }).eq('id', v.mov_id)
+    }
+    toast.success('Baixa parcial estornada')
+    onDone()
+  }
+
   // Rastreabilidade (drill-down)
   const [detail, setDetail] = useState<ParcelaDetail | null>(null)
   useEffect(() => {
@@ -350,6 +395,34 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
               <StatusBadge status={computeStatus()} />
             </div>
           </form>
+
+          {/* Vínculos de conciliação (split) — permite desfazer baixa parcial */}
+          {vinculos.length > 0 && (
+            <div className="mt-4 border-t pt-4">
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                Baixas vinculadas via extrato ({vinculos.length})
+              </p>
+              <div className="space-y-1.5">
+                {vinculos.map(v => (
+                  <div key={v.conc_id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-xs">
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium truncate">{v.mov_desc || 'Movimento'}</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {new Date(v.mov_data + 'T12:00:00').toLocaleDateString('pt-BR')} · Valor aplicado {formatCurrency(v.valor_aplicado)}
+                      </p>
+                    </div>
+                    <button onClick={() => handleEstornarVinculo(v)}
+                      className="rounded border px-2 py-1 text-[10px] font-bold text-red-600 hover:bg-red-500/10">
+                      Desfazer
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-[10px] text-muted-foreground">
+                Cada linha acima é uma baixa parcial feita pela conciliação. Clique "Desfazer" para estornar apenas aquela baixa.
+              </p>
+            </div>
+          )}
 
           {/* Estorno */}
           {isPaid && (

@@ -79,7 +79,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   const createConc = useCreateConciliacao()
 
   const [search, setSearch] = useState('')
-  const [filtroTipo, setFiltroTipo] = useState<'todos' | 'parcela' | 'medicao' | 'mutuo'>('todos')
+  const [filtroTipo, setFiltroTipo] = useState<'todos' | 'pedido' | 'despesa' | 'medicao' | 'mutuo'>('todos')
   const [editing, setEditing] = useState(false)
   const [showCriar, setShowCriar] = useState(false)
   // Multi-seleção: Map<candidatoId, { valor, observacao }>
@@ -298,11 +298,12 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
 
     let arr = poolCandidatos
 
-    // Filtro por tipo (chips): parcela/medição/mútuo (captação e recebimento)
+    // Filtro por tipo (chips): pedido/despesa/medição/mútuo
     if (filtroTipo !== 'todos') {
       arr = arr.filter(c => {
         if (selecionadosSet.has(c.id)) return true
-        if (filtroTipo === 'parcela') return c.tipo === 'parcela'
+        if (filtroTipo === 'pedido')  return c.tipo === 'parcela' && !!c.raw?.pedido_id
+        if (filtroTipo === 'despesa') return c.tipo === 'parcela' && !!c.raw?.despesa_indireta_id
         if (filtroTipo === 'medicao') return c.tipo === 'medicao'
         if (filtroTipo === 'mutuo')   return c.tipo === 'mutuo_captacao' || c.tipo === 'mutuo_recebimento'
         return true
@@ -672,10 +673,11 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                 className="w-full rounded-md border bg-background pl-7 pr-2 py-1.5 text-xs" />
             </div>
             {/* Chips de filtro por tipo */}
-            <div className="mb-2 flex items-center gap-1 text-[10px] font-medium">
+            <div className="mb-2 flex flex-wrap items-center gap-1 text-[10px] font-medium">
               {([
                 { k: 'todos',    label: 'Todos',     cls: 'bg-muted text-foreground' },
-                { k: 'parcela',  label: 'Parcelas',  cls: 'bg-blue-500/10 text-blue-600' },
+                { k: 'pedido',   label: 'Pedidos',   cls: 'bg-blue-500/10 text-blue-600' },
+                { k: 'despesa',  label: 'Despesas',  cls: 'bg-amber-500/10 text-amber-600' },
                 { k: 'medicao',  label: 'Medições',  cls: 'bg-purple-500/10 text-purple-600' },
                 { k: 'mutuo',    label: 'Mútuos',    cls: 'bg-indigo-500/10 text-indigo-600' },
               ] as const).map(t => (

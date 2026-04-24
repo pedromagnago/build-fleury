@@ -161,7 +161,8 @@ export function ExtratoContaView() {
         data: p.data_pagamento_real!,
         descricao: p.pedido_item ?? p.descricao ?? `Parcela ${p.numero_parcela}`,
         fornecedor: null,
-        categoria: 'Pagamento registrado sem extrato',
+        // Explica a origem: parcela paga direto (Pagamentos > Pagar) sem vínculo com mov bancária.
+        categoria: 'Pagamento registrado fora do extrato (baixa manual)',
         valor: Number(p.valor_pago),
         tipo: p.pedido_id ? 'saida' : 'saida',
         saldo_acumulado: null,

@@ -449,6 +449,10 @@ function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; 
   const nextNumero = parcelas.length > 0 ? Math.max(...parcelas.map(p => p.numero_parcela)) + 1 : 1
   const direcao = mutuoDirecao(mutuo)
   const ehSaida = direcao === 'saida'
+  // Quanto ja entrou/saiu via conciliacao (multiplos depositos parciais somando)
+  const conciliado = Number(mutuo.valor_conciliado || 0)
+  const valorTotal = Number(mutuo.valor_captado)
+  const saldoAReceber = Math.max(0, valorTotal - conciliado)
 
   const mutuoStatusBadge = mutuo.status === 'ativo'
     ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
@@ -490,17 +494,17 @@ function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; 
       <div className="grid grid-cols-2 divide-x md:grid-cols-4">
         {ehSaida ? (
           <>
-            <KpiCell icon={ArrowDownRight} iconColor="text-red-500" label="Emprestado" value={formatCurrency(Number(mutuo.valor_captado))} valueColor="text-red-600 dark:text-red-400" />
-            <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Retorno Esperado" value={formatCurrency(totalDevolucao)} valueColor="text-emerald-600 dark:text-emerald-400" />
-            <KpiCell icon={CheckCircle2} iconColor="text-blue-500" label="Já Recebido" value={formatCurrency(totalPago)} valueColor="text-blue-600 dark:text-blue-400" />
-            <KpiCell icon={DollarSign} iconColor="text-amber-500" label="A Receber" value={formatCurrency(totalPendente)} valueColor="text-amber-600 dark:text-amber-400" />
+            <KpiCell icon={ArrowDownRight} iconColor="text-red-500" label="Emprestado" value={formatCurrency(valorTotal)} valueColor="text-red-600 dark:text-red-400" />
+            <KpiCell icon={CheckCircle2} iconColor="text-blue-500" label="Devolvido (Extrato)" value={formatCurrency(conciliado)} valueColor="text-blue-600 dark:text-blue-400" />
+            <KpiCell icon={DollarSign} iconColor="text-amber-500" label="Saldo a Receber" value={formatCurrency(saldoAReceber)} valueColor="text-amber-600 dark:text-amber-400" />
+            <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Retorno Planejado" value={formatCurrency(totalDevolucao)} valueColor="text-emerald-600 dark:text-emerald-400" />
           </>
         ) : (
           <>
-            <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Captado" value={formatCurrency(Number(mutuo.valor_captado))} valueColor="text-emerald-600 dark:text-emerald-400" />
-            <KpiCell icon={ArrowDownRight} iconColor="text-red-500" label="Devolução Total" value={formatCurrency(totalDevolucao)} valueColor="text-red-600 dark:text-red-400" />
-            <KpiCell icon={TrendingDown} iconColor="text-amber-500" label="Custo Juros" value={formatCurrency(custoJuros)} valueColor="text-amber-600 dark:text-amber-400" />
-            <KpiCell icon={DollarSign} iconColor="text-blue-500" label="Pendente" value={formatCurrency(totalPendente)} valueColor="text-blue-600 dark:text-blue-400" />
+            <KpiCell icon={ArrowUpRight} iconColor="text-emerald-500" label="Captado (Planejado)" value={formatCurrency(valorTotal)} valueColor="text-emerald-600 dark:text-emerald-400" />
+            <KpiCell icon={CheckCircle2} iconColor="text-blue-500" label="Recebido (Extrato)" value={formatCurrency(conciliado)} valueColor="text-blue-600 dark:text-blue-400" />
+            <KpiCell icon={DollarSign} iconColor="text-amber-500" label="A Receber" value={formatCurrency(saldoAReceber)} valueColor="text-amber-600 dark:text-amber-400" />
+            <KpiCell icon={ArrowDownRight} iconColor="text-red-500" label="Devolução Planejada" value={formatCurrency(totalDevolucao)} valueColor="text-red-600 dark:text-red-400" />
           </>
         )}
       </div>
@@ -627,10 +631,13 @@ export default function MutuosPage() {
   const mutuosSaida   = (mutuos ?? []).filter(m => mutuoDirecao(m) === 'saida')
 
   const totalCaptado   = mutuosEntrada.reduce((s, m) => s + Number(m.valor_captado), 0)
+  const totalCaptadoReal = mutuosEntrada.reduce((s, m) => s + Number(m.valor_conciliado || 0), 0)
+  const totalCaptacaoPendente = Math.max(0, totalCaptado - totalCaptadoReal)
   const totalDevCaptacao = mutuosEntrada.reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor), 0), 0)
   const totalJuros     = totalDevCaptacao - totalCaptado
 
   const totalEmprestado  = mutuosSaida.reduce((s, m) => s + Number(m.valor_captado), 0)
+  const totalEmprestadoReal = mutuosSaida.reduce((s, m) => s + Number(m.valor_conciliado || 0), 0)
   const totalRetornoEsp  = mutuosSaida.reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor), 0), 0)
   const totalRetornoRec  = mutuosSaida.reduce((s, m) => s + (m.parcelas ?? []).reduce((ss, p) => ss + Number(p.valor_pago || 0), 0), 0)
 
@@ -688,18 +695,20 @@ export default function MutuosPage() {
       <div id="tour-mutuos-summary" className="space-y-3">
         <div>
           <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">↗ Captações — entradas no projeto</p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <SummaryCard icon={ArrowUpRight} iconColor="text-emerald-500" label="Total Captado" value={formatCurrency(totalCaptado)} valueColor="text-emerald-600 dark:text-emerald-400" bg="bg-emerald-50/50 dark:bg-emerald-500/5" />
-            <SummaryCard icon={ArrowDownRight} iconColor="text-red-500" label="Devolução Planejada" value={formatCurrency(totalDevCaptacao)} valueColor="text-red-600 dark:text-red-400" bg="bg-red-50/50 dark:bg-red-500/5" />
-            <SummaryCard icon={TrendingDown} iconColor="text-amber-500" label="Custo Financeiro (Juros)" value={formatCurrency(totalJuros)} valueColor="text-amber-600 dark:text-amber-400" bg="bg-amber-50/50 dark:bg-amber-500/5" />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+            <SummaryCard icon={ArrowUpRight} iconColor="text-emerald-500" label="Captado (Planejado)" value={formatCurrency(totalCaptado)} valueColor="text-emerald-600 dark:text-emerald-400" bg="bg-emerald-50/50 dark:bg-emerald-500/5" />
+            <SummaryCard icon={CheckCircle2} iconColor="text-blue-500" label="Recebido (Extrato)" value={formatCurrency(totalCaptadoReal)} valueColor="text-blue-600 dark:text-blue-400" bg="bg-blue-50/50 dark:bg-blue-500/5" />
+            <SummaryCard icon={DollarSign} iconColor="text-amber-500" label="A Receber" value={formatCurrency(totalCaptacaoPendente)} valueColor="text-amber-600 dark:text-amber-400" bg="bg-amber-50/50 dark:bg-amber-500/5" />
+            <SummaryCard icon={TrendingDown} iconColor="text-red-500" label="Custo Juros" value={formatCurrency(totalJuros)} valueColor="text-red-600 dark:text-red-400" bg="bg-red-50/50 dark:bg-red-500/5" />
           </div>
         </div>
         <div>
           <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-red-600 dark:text-red-400">↘ Adiantamentos feitos — saídas do projeto</p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <SummaryCard icon={ArrowDownRight} iconColor="text-red-500" label="Total Emprestado" value={formatCurrency(totalEmprestado)} valueColor="text-red-600 dark:text-red-400" bg="bg-red-50/50 dark:bg-red-500/5" />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+            <SummaryCard icon={ArrowDownRight} iconColor="text-red-500" label="Emprestado (Planejado)" value={formatCurrency(totalEmprestado)} valueColor="text-red-600 dark:text-red-400" bg="bg-red-50/50 dark:bg-red-500/5" />
+            <SummaryCard icon={CheckCircle2} iconColor="text-blue-500" label="Efetivado (Extrato)" value={formatCurrency(totalEmprestadoReal)} valueColor="text-blue-600 dark:text-blue-400" bg="bg-blue-50/50 dark:bg-blue-500/5" />
             <SummaryCard icon={ArrowUpRight} iconColor="text-emerald-500" label="Retorno Esperado" value={formatCurrency(totalRetornoEsp)} valueColor="text-emerald-600 dark:text-emerald-400" bg="bg-emerald-50/50 dark:bg-emerald-500/5" />
-            <SummaryCard icon={CheckCircle2} iconColor="text-blue-500" label="Já Recebido" value={formatCurrency(totalRetornoRec)} valueColor="text-blue-600 dark:text-blue-400" bg="bg-blue-50/50 dark:bg-blue-500/5" />
+            <SummaryCard icon={DollarSign} iconColor="text-amber-500" label="Já Recebido" value={formatCurrency(totalRetornoRec)} valueColor="text-amber-600 dark:text-amber-400" bg="bg-amber-50/50 dark:bg-amber-500/5" />
           </div>
         </div>
       </div>
