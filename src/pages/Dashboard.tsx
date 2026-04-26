@@ -320,7 +320,7 @@ function FluxoCaixaWidget() {
   return (
     <WidgetCard title="Fluxo de Caixa Projetado" icon={TrendingUp}>
       {/* Toggles */}
-      <div className="mb-2 flex items-center justify-between text-[9px]">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[9px]">
         <div className="flex bg-muted/50 p-0.5 rounded-md gap-0.5">
           {(['dia', 'semana', 'mes'] as const).map((p) => (
             <button
@@ -333,13 +333,29 @@ function FluxoCaixaWidget() {
           ))}
         </div>
         <div className="flex bg-muted/50 p-0.5 rounded-md gap-0.5">
+          {([
+            { k: 'realizado', l: 'Realizado' },
+            { k: 'pedidos',   l: 'Pedidos+Real' },
+            { k: 'planejado', l: 'Planej+Real' },
+            { k: 'completo',  l: 'Completo' },
+          ] as const).map((m) => (
+            <button
+              key={m.k}
+              onClick={() => updatePrefs({ fluxoFinancialMode: m.k })}
+              className={`rounded px-2 py-1 font-medium transition-colors ${prefs.fluxoFinancialMode === m.k ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:bg-muted/80'}`}
+            >
+              {m.l}
+            </button>
+          ))}
+        </div>
+        <div className="flex bg-muted/50 p-0.5 rounded-md gap-0.5">
           {(['consolidado', 'maturidade'] as const).map((m) => (
             <button
               key={m}
               onClick={() => setViewMode(m)}
               className={`rounded px-2.5 py-1 font-medium transition-colors ${viewMode === m ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:bg-muted/80'}`}
             >
-              {m === 'consolidado' ? 'Consolidado' : 'Por Maturidade'}
+              {m === 'consolidado' ? 'Consolidado' : 'Maturidade'}
             </button>
           ))}
         </div>

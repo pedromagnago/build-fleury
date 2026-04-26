@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react'
-import { useProject } from '@/contexts/ProjectContext'
+import { useState } from 'react'
 
 type DashPrefs = {
   fluxoPeriodicity: 'dia' | 'semana' | 'mes'
@@ -13,32 +12,23 @@ const DEFAULTS: DashPrefs = {
   fluxoFinancialMode: 'pedidos',
 }
 
-export function useDashboardPrefs() {
-  const { currentCompany } = useProject()
-  const key = currentCompany?.id ? `bf:dash:${currentCompany.id}` : null
+// Chave única (preferência visual do usuário, não do projeto). Sem dependência
+// de currentCompany — evita flicker quando company demora pra carregar e
+// re-leituras que sobrescrevem updates feitos pelo usuário.
+const KEY = 'bf:dash:v2'
 
+export function useDashboardPrefs() {
   const [prefs, setPrefs] = useState<DashPrefs>(() => {
-    if (!key) return DEFAULTS
     try {
-      const raw = localStorage.getItem(key)
+      const raw = localStorage.getItem(KEY)
       return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS
     } catch { return DEFAULTS }
   })
 
-  useEffect(() => {
-    if (!key) return
-    try {
-      const raw = localStorage.getItem(key)
-      setPrefs(raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS)
-    } catch { setPrefs(DEFAULTS) }
-  }, [key])
-
   const update = (patch: Partial<DashPrefs>) => {
     setPrefs(prev => {
       const next = { ...prev, ...patch }
-      if (key) {
-        try { localStorage.setItem(key, JSON.stringify(next)) } catch { /* noop */ }
-      }
+      try { localStorage.setItem(KEY, JSON.stringify(next)) } catch { /* noop */ }
       return next
     })
   }
