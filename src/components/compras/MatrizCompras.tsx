@@ -535,7 +535,7 @@ export function MatrizCompras({ search }: { search: string }) {
         className="overflow-auto rounded-lg border bg-card"
         style={{ maxHeight: 'calc(100vh - 260px)' }}
       >
-        <table className="min-w-full border-separate border-spacing-0 text-xs">
+        <table className="tbl-bf min-w-full border-separate border-spacing-0 text-xs">
           <thead className="sticky top-0 z-20">
             <tr>
               <th

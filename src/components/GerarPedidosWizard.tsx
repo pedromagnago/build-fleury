@@ -419,7 +419,7 @@ function Step1(props: {
 
       {/* Table */}
       <div className="max-h-[400px] overflow-auto rounded-xl border">
-        <table className="w-full text-xs">
+        <table className="tbl-bf w-full text-xs">
           <thead className="sticky top-0 z-10 bg-muted">
             <tr>
               <th className="w-10 px-3 py-2.5 text-center">
@@ -648,7 +648,7 @@ function Step3(props: {
 
       {/* Preview table */}
       <div className="max-h-[350px] overflow-auto rounded-xl border">
-        <table className="w-full text-xs">
+        <table className="tbl-bf w-full text-xs">
           <thead className="sticky top-0 z-10 bg-muted">
             <tr>
               <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase">Item</th>

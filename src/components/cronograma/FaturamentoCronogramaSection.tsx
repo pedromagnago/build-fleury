@@ -277,7 +277,7 @@ export default function FaturamentoCronogramaSection({ etapa, dists, updateEtapa
         <p className="text-[10px] text-muted-foreground/50 italic pl-4 pb-2">Nenhuma distribuição cadastrada — adicione para definir o cronograma de faturamento</p>
       ) : (
         <div className="rounded-lg border overflow-hidden">
-          <table className="w-full text-[11px]">
+          <table className="tbl-bf w-full text-[11px]">
             <thead className="bg-muted/30">
               <tr className="text-muted-foreground">
                 <th className="px-2 py-1.5 text-center font-medium w-12">Med.</th>

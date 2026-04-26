@@ -286,7 +286,7 @@ export default function UnitCostPanel() {
       {/* Flat spreadsheet table */}
       <div className="rounded-xl border overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-xs border-collapse">
+          <table className="tbl-bf w-full text-xs border-collapse">
             <thead className="sticky top-0 z-20 bg-muted/80 backdrop-blur">
               <tr className="text-muted-foreground text-[9px] uppercase font-bold border-b">
                 <th className="px-2 py-2 w-[28px]">

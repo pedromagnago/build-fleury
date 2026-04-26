@@ -369,7 +369,7 @@ function EmptyTab({ label }: { label: string }) {
 function ChangeTable({ items, col1Label, col2Label }: { items: { tipo: string; col1: string; col2: string; campos: { campo: string; antigo: string; novo: string }[] }[]; col1Label: string; col2Label: string }) {
   return (
     <div className="rounded-lg border overflow-hidden">
-      <table className="w-full text-[11px]">
+      <table className="tbl-bf w-full text-[11px]">
         <thead className="bg-muted/30">
           <tr>
             <th className="px-3 py-1.5 text-left font-medium w-20">Ação</th>

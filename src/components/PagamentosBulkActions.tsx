@@ -157,7 +157,7 @@ function PagarLoteModal({ parcelas, fornecedorMap, onClose, onDone }: {
 
         {/* Preview */}
         <div className="max-h-40 overflow-y-auto rounded-lg border">
-          <table className="w-full text-[11px]">
+          <table className="tbl-bf w-full text-[11px]">
             <thead className="bg-muted/40 sticky top-0">
               <tr>
                 <th className="px-2 py-1.5 text-left font-medium">Fornecedor</th>
@@ -242,7 +242,7 @@ function AdiarModal({ parcelas, onClose, onDone }: { parcelas: Parcela[]; onClos
         </div>
 
         <div className="max-h-40 overflow-y-auto rounded-lg border">
-          <table className="w-full text-[11px]">
+          <table className="tbl-bf w-full text-[11px]">
             <thead className="bg-muted/40 sticky top-0">
               <tr>
                 <th className="px-2 py-1.5 text-left font-medium">#</th>

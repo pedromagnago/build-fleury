@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import { ChevronRight, ChevronDown, X, Download, Calendar, CalendarDays, Save, Loader2, ExternalLink, Trash2 } from 'lucide-react'
 import FinancialViewFilter, { type FinancialViewMode } from './FinancialViewFilter'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
+import { usePersistedState } from '@/hooks/usePersistedState'
 
 type Periodicity = 'dia' | 'semana' | 'mes'
 
@@ -56,7 +57,8 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
   const { events: cashFlowEvents, saldoInicial } = useCashFlowEvents(viewMode)
 
-  const [overrides, setOverrides] = useState<Record<string, Override>>({})
+  const overridesKey = currentCompany?.id ? `bf:sim:overrides:${currentCompany.id}` : null
+  const [overrides, setOverrides] = usePersistedState<Record<string, Override>>(overridesKey, {})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editing, setEditing] = useState<Item | null>(null)
   const [periodicity, setPeriodicity] = useState<Periodicity>('mes')
@@ -204,6 +206,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   // ── Aplicar simulações ao banco ──
   const handleApply = async () => {
     if (numOv === 0) return
+    if (numOv > 5 && !window.confirm(`Você está prestes a aplicar ${numOv} alterações no PROJETO REAL. Esta ação substitui valores e pode ser auditada. Continuar?`)) return
     setApplying(true)
     let applied = 0
     try {
@@ -275,13 +278,42 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
             applied++
           }
         }
+        // Pedidos sem parcela: pedsol-{pedidoId}-{idx}
+        if (evId.startsWith('pedsol-')) {
+          const m = evId.match(/^pedsol-([0-9a-f-]{36})-(\d+)$/i)
+          const pedidoId = m?.[1]
+          if (pedidoId && ov.newDate) {
+            await supabase.from('pedidos').update({ data_entrega_prevista: ov.newDate }).eq('id', pedidoId)
+            applied++
+          }
+        }
+        // Mútuo captação: mutcap-{uuid}
+        if (evId.startsWith('mutcap-')) {
+          const mutId = evId.replace('mutcap-', '')
+          const updates: Record<string, any> = {}
+          if (ov.newDate) updates.data_captacao = ov.newDate
+          if (ov.newValue !== undefined) updates.valor_captado = ov.newValue
+          if (Object.keys(updates).length > 0) {
+            await supabase.from('mutuos').update(updates).eq('id', mutId)
+            applied++
+          }
+        }
+        // Bruto (item sem pedido) e mutadi (adiantamento sem ID claro): ignora — não há a quem aplicar
       }
+      // Conta brutos ignorados
+      const ignorados = Object.keys(overrides).filter(id => id.startsWith('bruto-')).length
+
       setOverrides({})
       qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['pedidos'] })
       qc.invalidateQueries({ queryKey: ['mutuos'] })
       qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
       qc.invalidateQueries({ queryKey: ['medicoes'] })
-      toast.success(`${applied} alterações aplicadas ao projeto`)
+      if (ignorados > 0) {
+        toast.success(`${applied} aplicadas. ${ignorados} ignoradas (itens sem pedido — crie um pedido primeiro).`)
+      } else {
+        toast.success(`${applied} alterações aplicadas ao projeto`)
+      }
     } catch (err: any) {
       toast.error('Erro ao aplicar: ' + (err?.message || ''))
     } finally {
@@ -568,8 +600,8 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
       {/* Tabela */}
       <div className="flex-1 overflow-auto rounded-xl border scroll-visible">
-        <table className="border-collapse text-xs min-w-max">
-          <thead className="sticky top-0 z-30 bg-muted/80 backdrop-blur">
+        <table className="tbl-bf-strong border-collapse text-xs min-w-max w-full">
+          <thead className="sticky top-0 z-30 bg-muted/95 backdrop-blur shadow-[0_1px_0_0_hsl(var(--border))]">
             <tr className="border-b">
               <th className="sticky left-0 z-40 bg-muted border-r px-3 py-2.5 text-left text-[10px] font-bold uppercase text-muted-foreground tracking-wider w-[220px] min-w-[220px] shadow-[2px_0_4px_-1px_rgba(0,0,0,0.08)]">Categoria</th>
               {grid.map((w, i) => (

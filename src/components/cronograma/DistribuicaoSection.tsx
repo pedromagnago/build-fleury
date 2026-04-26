@@ -69,7 +69,7 @@ export default function DistribuicaoSection({ etapaId, dists, casasTotal, create
         <p className="text-[10px] text-muted-foreground/50 italic pl-4">Nenhuma distribuição cadastrada</p>
       ) : (
         <div className="rounded-lg border overflow-x-auto overflow-y-hidden">
-          <table className="w-full min-w-max text-[11px]">
+          <table className="tbl-bf w-full min-w-max text-[11px]">
             <thead className="bg-muted/30">
               <tr className="text-muted-foreground">
                 <th className="px-2 py-1 text-center font-medium w-12">Med.</th>

@@ -324,10 +324,9 @@ export default function MedicoesPanel() {
       </div>
 
       {/* Matrix Table */}
-      <div className="rounded-xl border overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="text-xs border-collapse min-w-max">
-            <thead className="sticky top-0 z-30 bg-muted/80 backdrop-blur">
+      <div className="rounded-xl border bg-card overflow-auto max-h-[calc(100vh-260px)]">
+          <table className="tbl-bf text-xs border-collapse min-w-max w-full">
+            <thead className="sticky top-0 z-30 bg-muted/95 backdrop-blur shadow-[0_1px_0_0_hsl(var(--border))]">
               {/* Header row 1 */}
               <tr className="border-b">
                 <th className="sticky left-0 z-40 bg-muted/90 px-2 py-2 w-[28px]">
@@ -502,8 +501,9 @@ export default function MedicoesPanel() {
                 const allPlan = distribuicoes.filter(d => d.etapa_id === etapa.id).reduce((s, d) => s + d.casas_planejadas, 0)
                 const restante = (etapa.casas_total ?? 0) - allPlan
                 const isSelected = selected.has(etapa.id)
+                const isEditingRow = editingCell?.etapaId === etapa.id
                 return (
-                  <tr key={etapa.id} className={`border-b hover:bg-muted/10 transition-colors ${isSelected ? 'bg-primary/5' : ''}`}>
+                  <tr key={etapa.id} className={`border-b transition-colors ${isEditingRow ? 'row-editing' : isSelected ? 'bg-primary/5' : 'hover:bg-muted/10'}`}>
                     <td className="sticky left-0 z-10 bg-card px-2 py-2 text-center">
                       <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(etapa.id)} className="h-3 w-3 rounded accent-primary cursor-pointer" />
                     </td>
@@ -602,7 +602,6 @@ export default function MedicoesPanel() {
               </tr>
             </tfoot>
           </table>
-        </div>
       </div>
 
       {/* Bulk Action Bar */}

@@ -504,7 +504,7 @@ export default function ConciliacaoPage() {
           </div>
 
           <div className="max-h-72 overflow-auto">
-            <table className="w-full text-xs">
+            <table className="tbl-bf w-full text-xs">
               <thead className="sticky top-0 bg-muted">
                 <tr>
                   <th className="px-3 py-2 text-left">Data</th>

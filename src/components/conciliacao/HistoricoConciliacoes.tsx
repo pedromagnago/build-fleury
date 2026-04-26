@@ -163,7 +163,7 @@ export function HistoricoConciliacoes() {
         </div>
       ) : (
         <div className="rounded-xl border bg-card overflow-hidden">
-          <table className="w-full text-xs">
+          <table className="tbl-bf w-full text-xs">
             <thead className="bg-muted/50">
               <tr>
                 <th className="text-left px-3 py-2 font-semibold">Status</th>

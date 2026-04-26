@@ -667,7 +667,7 @@ function ImpactoTab({
             Parcelas Afetadas
           </p>
           <div className="max-h-40 overflow-y-auto rounded-lg border">
-            <table className="w-full text-[11px]">
+            <table className="tbl-bf w-full text-[11px]">
               <thead className="bg-muted/40">
                 <tr className="text-muted-foreground">
                   <th className="px-2 py-1.5 text-left font-medium">Fornecedor</th>

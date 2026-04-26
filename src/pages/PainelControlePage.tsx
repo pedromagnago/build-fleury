@@ -310,7 +310,7 @@ export default function PainelControlePage() {
           Breakdown por tipo de custo
         </h2>
         <div className="overflow-hidden rounded-xl border">
-          <table className="w-full text-sm">
+          <table className="tbl-bf w-full text-sm">
             <thead className="bg-muted/80">
               <tr className="text-left text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 <th className="px-3 py-2">Tipo</th>

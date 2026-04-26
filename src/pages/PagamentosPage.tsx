@@ -277,9 +277,9 @@ function ParcelasTab({ search }: { search: string }) {
       )}
 
       {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhuma parcela encontrada" /> : (
-        <div className="overflow-x-auto rounded-xl border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
+        <div className="overflow-auto rounded-xl border bg-card max-h-[calc(100vh-260px)]">
+          <table className="tbl-bf w-full text-sm">
+            <thead className="sticky top-0 z-30 bg-muted/95 backdrop-blur shadow-[0_1px_0_0_hsl(var(--border))]">
               <tr>
                 <th className="px-2 py-2.5 text-center">
                   <input type="checkbox"
@@ -301,8 +301,9 @@ function ParcelasTab({ search }: { search: string }) {
               {allFiltered.map((p) => {
                 const cfg = statusConfig[p.status] ?? statusConfig['futura']!
                 const isMutuo = (p as any)._source === 'mutuo'
+                const isEditingRow = editingParcela?.id === p.id || payingParcela?.id === p.id
                 return (
-                  <tr key={p.id} className="group hover:bg-muted/20">
+                  <tr key={p.id} className={`group transition-colors ${isEditingRow ? 'row-editing' : 'hover:bg-muted/20'}`}>
                     <td className="px-2 py-2.5 text-center">
                       <input type="checkbox" checked={selection.isSelected(p.id)}
                         onChange={() => selection.toggle(p.id)}
@@ -946,7 +947,7 @@ function PorFornecedorTab() {
 
             {expandedId === g.id && (
               <div className="border-t px-4 pb-3 pt-2">
-                <table className="w-full text-xs">
+                <table className="tbl-bf w-full text-xs">
                   <thead>
                     <tr className="text-[9px] uppercase text-muted-foreground">
                       <th className="py-1 w-8"></th>

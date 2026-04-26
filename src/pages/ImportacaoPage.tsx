@@ -633,7 +633,7 @@ function PedidosTab() {
             <button onClick={() => setPreview(null)} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
           </div>
           <div className="max-h-96 overflow-auto">
-            <table className="w-full text-xs">
+            <table className="tbl-bf w-full text-xs">
               <thead className="sticky top-0 bg-muted"><tr>
                 <th className="px-3 py-2 text-left">#</th><th className="px-3 py-2 text-left">Item</th><th className="px-3 py-2 text-left">Etapa</th>
                 <th className="px-3 py-2 text-right">Casas</th><th className="px-3 py-2 text-right">Unit.</th><th className="px-3 py-2 text-left">Fornecedor</th>
@@ -854,7 +854,7 @@ function CustosIndiretosTab() {
             </button>
           </div>
           <div className="max-h-96 overflow-auto">
-            <table className="w-full text-xs">
+            <table className="tbl-bf w-full text-xs">
               <thead className="sticky top-0 bg-muted">
                 <tr>
                   <th className="px-3 py-2 text-left">Descrição</th>
@@ -1010,7 +1010,7 @@ function MedicoesTab() {
 
       <div className="rounded-xl border bg-card">
         <div className="max-h-[500px] overflow-auto">
-          <table className="w-full text-xs">
+          <table className="tbl-bf w-full text-xs">
             <thead className="sticky top-0 bg-muted z-10">
               <tr>
                 <th className="w-10 px-3 py-2.5 text-center font-medium">#</th>
@@ -1202,7 +1202,7 @@ function DistribuicaoTab() {
             <button onClick={() => setPreview(null)} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
           </div>
           <div className="max-h-80 overflow-auto">
-            <table className="w-full text-xs">
+            <table className="tbl-bf w-full text-xs">
               <thead className="sticky top-0 bg-muted">
                 <tr>
                   <th className="px-3 py-2 text-left">#</th>
@@ -1311,7 +1311,7 @@ function PreviewTable({ preview, onClose, importing, progress, importLabel, onIm
       )}
 
       <div className="max-h-80 overflow-auto">
-        <table className="w-full text-xs">
+        <table className="tbl-bf w-full text-xs">
           <thead className="sticky top-0 bg-muted">
             <tr>
               <th className="px-3 py-2 text-left font-medium text-muted-foreground">#</th>
@@ -2583,7 +2583,7 @@ function PagamentosRealizadosTab() {
             </div>
 
             <div className="max-h-[500px] overflow-auto">
-              <table className="w-full text-xs">
+              <table className="tbl-bf w-full text-xs">
                 <thead className="sticky top-0 bg-muted z-10">
                   <tr className="border-b text-left">
                     <th className="px-3 py-2 font-medium">#</th>

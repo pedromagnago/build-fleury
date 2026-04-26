@@ -305,7 +305,7 @@ export function ExtratoContaView() {
       {/* Tabela estilo Omie */}
       <div className="rounded-xl border bg-card overflow-hidden">
         <div className="overflow-auto max-h-[600px]">
-          <table className="w-full text-xs">
+          <table className="tbl-bf w-full text-xs">
             <thead className="sticky top-0 bg-muted z-10">
               <tr>
                 <th className="px-2 py-2 text-left font-bold">Situação</th>

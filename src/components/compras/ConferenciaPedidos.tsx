@@ -381,12 +381,11 @@ export function ConferenciaPedidos({ search = '' }: { search?: string }) {
       </div>
 
       {/* Table */}
-      <div className="rounded-xl border bg-card overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-max border-collapse">
+      <div className="rounded-xl border bg-card overflow-auto shadow-sm max-h-[calc(100vh-260px)]">
+          <table className="tbl-bf w-full min-w-max border-collapse">
 
             {/* Header */}
-            <thead>
+            <thead className="sticky top-0 z-30 bg-muted/95 backdrop-blur shadow-[0_1px_0_0_hsl(var(--border))]">
               <tr className="bg-muted/50 border-b">
                 {/* Fixed left columns */}
                 <th className="sticky left-0 z-20 bg-muted/50 px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-muted-foreground min-w-[260px]">
@@ -475,10 +474,11 @@ export function ConferenciaPedidos({ search = '' }: { search?: string }) {
                     {/* Item rows */}
                     {grupo.linhas.map(linha => {
                       const hasProblem = Object.values(linha.por_medicao).some(c => c && c.status !== 'ok')
+                      const isEditingRow = editState?.linha.etapa_id === linha.etapa_id && editState?.linha.item_id === linha.item_id
                       return (
                         <tr
                           key={`${linha.etapa_id}-${linha.item_id}-${linha.pedido_id ?? 'sem'}`}
-                          className={`transition-colors hover:bg-muted/30 ${hasProblem ? '' : ''}`}
+                          className={`transition-colors ${isEditingRow ? 'row-editing' : 'hover:bg-muted/30'} ${hasProblem ? '' : ''}`}
                         >
                           {/* Item */}
                           <td className="sticky left-0 z-10 bg-card px-3 py-2.5 hover:bg-muted/30 transition-colors">
@@ -549,7 +549,6 @@ export function ConferenciaPedidos({ search = '' }: { search?: string }) {
               )}
             </tbody>
           </table>
-        </div>
       </div>
 
       {/* Edit modal */}

@@ -208,7 +208,7 @@ export default function RecebimentosPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="tbl-bf w-full text-xs">
               <thead className="bg-muted/50">
                 <tr>
                   <th className="px-3 py-2 text-left font-bold">Status</th>

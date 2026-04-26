@@ -311,7 +311,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
 
       {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhum item encontrado" /> : (
         <div className="overflow-x-auto rounded-xl border">
-          <table className="w-full text-sm">
+          <table className="tbl-bf w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
                 <th className="px-2 py-2.5 text-center">
@@ -1338,7 +1338,7 @@ function PedidosTab({ search }: { search: string }) {
 
       {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhum pedido encontrado" /> : pedidoViewMode === 'pedido' ? (
         <div className="overflow-x-auto rounded-xl border">
-          <table className="w-full text-sm">
+          <table className="tbl-bf w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
                 <th className="px-3 py-2.5 text-center w-10">
@@ -1454,7 +1454,7 @@ function PedidosTab({ search }: { search: string }) {
 
                           {expandedCascade[itemKey] && (
                             <div className="px-7 pb-2">
-                              <table className="w-full text-xs">
+                              <table className="tbl-bf w-full text-xs">
                                 <thead>
                                   <tr className="text-[9px] uppercase text-muted-foreground">
                                     <th className="py-1 text-left">Nº</th>
@@ -1596,7 +1596,7 @@ function FornecedoresTab({ search }: { search: string }) {
 
       {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhum parceiro" /> : (
         <div className="overflow-x-auto rounded-xl border">
-          <table className="w-full text-sm">
+          <table className="tbl-bf w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
                 <th className="px-3 py-2.5 text-center w-10">
@@ -1782,7 +1782,7 @@ function ConferenciaWBSTab({ search }: { search: string }) {
 
                 {expandedEtapas[group.etapa.id] && (
                   <div className="border-t px-3 pb-2">
-                    <table className="w-full text-xs">
+                    <table className="tbl-bf w-full text-xs">
                       <thead>
                         <tr className="text-[9px] uppercase text-muted-foreground">
                           <th className="py-1.5 text-left">Código</th>
@@ -1912,7 +1912,7 @@ function CurvaABCTab() {
       {/* Table */}
       {rows.length === 0 ? <EmptyState msg="Sem itens para análise ABC" /> : (
         <div className="overflow-x-auto rounded-xl border">
-          <table className="w-full text-sm">
+          <table className="tbl-bf w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
                 <th className="px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">#</th>
@@ -2043,7 +2043,7 @@ function PorFornecedorTab() {
 
           {expandedId === g.id && (
             <div className="border-t px-4 pb-3 pt-2">
-              <table className="w-full text-xs">
+              <table className="tbl-bf w-full text-xs">
                 <thead>
                   <tr className="text-[9px] uppercase text-muted-foreground">
                     <th className="py-1 text-left">Código</th>

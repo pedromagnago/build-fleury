@@ -144,7 +144,7 @@ export default function FaturamentoSection({ etapa, dists, updateEtapa }: Fatura
 
       {dists.length > 0 && (
         <div className="rounded-lg border overflow-hidden">
-          <table className="w-full text-[11px]">
+          <table className="tbl-bf w-full text-[11px]">
             <thead className="bg-muted/30">
               <tr className="text-muted-foreground">
                 <th className="px-2 py-1.5 text-center font-medium w-12">Med.</th>

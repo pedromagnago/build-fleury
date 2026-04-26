@@ -534,7 +534,7 @@ function MutuoCard({ mutuo, onEdit, selected, onToggleSelect }: { mutuo: Mutuo; 
 
       {expanded && (
         <div className="border-t">
-          <table className="w-full text-sm">
+          <table className="tbl-bf w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/40 text-xs text-muted-foreground">
                 <th className="px-4 py-2 text-left font-medium">#</th>

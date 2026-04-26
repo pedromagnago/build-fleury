@@ -212,7 +212,7 @@ export default function ConsolidarPedidosWizard({ pedidos, parcelas, onClose, on
 
                         {expandedKey === g.key && (
                           <div className="border-t px-4 pb-3 pt-2 ml-11">
-                            <table className="w-full text-xs">
+                            <table className="tbl-bf w-full text-xs">
                               <thead>
                                 <tr className="text-[9px] uppercase text-muted-foreground">
                                   <th className="py-1 text-left">Pedido</th>

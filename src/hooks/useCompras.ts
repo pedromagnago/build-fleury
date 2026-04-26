@@ -340,6 +340,8 @@ export function useUpdatePedido() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['pedidos'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['itens_compra'] })
       toast.success('Pedido atualizado')
     },
     onError: (err: Error) => toast.error(err.message),

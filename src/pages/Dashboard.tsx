@@ -11,6 +11,7 @@ import { useMedicoes, useAvancos } from '@/hooks/useOperacional'
 import { supabase } from '@/lib/supabase'
 import { localDate } from '@/lib/parcelas'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
+import { useDashboardPrefs } from '@/hooks/useDashboardPrefs'
 import { formatCurrency, formatPercent, formatNumber } from '@/lib/utils'
 import {
   LayoutDashboard, TrendingUp, TrendingDown,
@@ -189,9 +190,12 @@ function KpiCard({ label, value, icon: Icon, accent, sub }: {
 // W3 — Fluxo de Caixa Projetado (Level 1 + Level 2)
 // ═══════════════════════════════════════════════════════════════
 function FluxoCaixaWidget() {
-  const [viewMode, setViewMode] = useState<'consolidado' | 'maturidade'>('maturidade')
-  const [periodicity, setPeriodicity] = useState<'dia' | 'semana' | 'mes'>('semana')
-  const { events, saldoInicial } = useCashFlowEvents('pedidos')
+  const { prefs, update: updatePrefs } = useDashboardPrefs()
+  const viewMode = prefs.fluxoViewMode
+  const setViewMode = (v: typeof viewMode) => updatePrefs({ fluxoViewMode: v })
+  const periodicity = prefs.fluxoPeriodicity
+  const setPeriodicity = (v: typeof periodicity) => updatePrefs({ fluxoPeriodicity: v })
+  const { events, saldoInicial } = useCashFlowEvents(prefs.fluxoFinancialMode)
 
   const chartData = useMemo(() => {
     if (events.length === 0) return []
@@ -276,6 +280,43 @@ function FluxoCaixaWidget() {
     return timeline
   }, [events, saldoInicial, periodicity])
 
+  // Label do bucket "hoje" para a ReferenceLine
+  const todayLabel = chartData[0]?.dateLabel ?? null
+
+  // Drilldown: agrupa eventos do bucket selecionado por Etapa → Categoria/Item
+  const [drillBucketLabel, setDrillBucketLabel] = useState<string | null>(null)
+  const drillItems = useMemo(() => {
+    if (!drillBucketLabel) return null
+    const bucket = chartData.find(b => b.dateLabel === drillBucketLabel)
+    if (!bucket) return null
+
+    // Filtra eventos que caem no bucket
+    const bucketDateMs = new Date((bucket as any).dateTarget + 'T00:00:00').getTime()
+    const inBucket = events.filter(e => {
+      const t = new Date(e.date + 'T00:00:00').getTime()
+      if (periodicity === 'dia') return t === bucketDateMs
+      if (periodicity === 'semana') return t >= bucketDateMs && t < bucketDateMs + 7 * 86400000
+      // mes: mesmo ano-mês
+      const d = new Date(e.date + 'T00:00:00')
+      const b = new Date((bucket as any).dateTarget + 'T00:00:00')
+      return d.getFullYear() === b.getFullYear() && d.getMonth() === b.getMonth()
+    })
+
+    const out = new Map<string, Map<string, { total: number; itens: { desc: string; valor: number; tipo: string }[] }>>()
+    for (const ev of inBucket) {
+      if (ev.type === 'entrada') continue
+      const et = ev.meta.etapa || 'Sem etapa'
+      const cat = ev.meta.cat || ev.meta.item || 'Outros'
+      if (!out.has(et)) out.set(et, new Map())
+      const sub = out.get(et)!
+      if (!sub.has(cat)) sub.set(cat, { total: 0, itens: [] })
+      const entry = sub.get(cat)!
+      entry.total += ev.valor
+      entry.itens.push({ desc: ev.meta.desc, valor: ev.valor, tipo: ev.type })
+    }
+    return out
+  }, [drillBucketLabel, chartData, events, periodicity])
+
   return (
     <WidgetCard title="Fluxo de Caixa Projetado" icon={TrendingUp}>
       {/* Toggles */}
@@ -320,6 +361,10 @@ function FluxoCaixaWidget() {
               labelFormatter={(v: unknown, payload: any) => payload?.[0]?.payload?.dateLabel || String(v)}
             />
             <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="4 4" />
+            {todayLabel && (
+              <ReferenceLine x={todayLabel} stroke="hsl(var(--primary))" strokeDasharray="3 3"
+                label={{ value: 'Hoje', position: 'insideTopLeft', fontSize: 9, fill: 'hsl(var(--primary))' }} />
+            )}
             {viewMode === 'consolidado' ? (
               <Area type="monotone" dataKey="saldo" stroke="#22c55e" fill="#22c55e" fillOpacity={0.15} strokeWidth={2} />
             ) : (
@@ -339,6 +384,73 @@ function FluxoCaixaWidget() {
           <span className="flex items-center gap-1"><span className="inline-block h-2 w-4 rounded bg-blue-500/70" />Firme (S)</span>
           <span className="flex items-center gap-1"><span className="inline-block h-2 w-4 rounded bg-slate-400/50" style={{ borderTop: '2px dashed #94a3b8' }} />Proj (S)</span>
           <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 bg-emerald-500 rounded" />Saldo</span>
+        </div>
+      )}
+
+      {/* Drilldown: ver detalhes por etapa */}
+      <div className="mt-2 flex items-center justify-end gap-2 text-[10px]">
+        <select
+          value={drillBucketLabel ?? ''}
+          onChange={(e) => setDrillBucketLabel(e.target.value || null)}
+          className="rounded border bg-background px-2 py-1 text-[10px]">
+          <option value="">Ver detalhes do período…</option>
+          {chartData.map(b => (
+            <option key={b.dateLabel} value={b.dateLabel}>{b.dateLabel}</option>
+          ))}
+        </select>
+      </div>
+
+      {drillBucketLabel && drillItems && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setDrillBucketLabel(null) }}>
+          <div className="w-full max-w-2xl rounded-xl border bg-card shadow-2xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between border-b p-4">
+              <div>
+                <h3 className="text-sm font-bold">Saídas por Etapa — {drillBucketLabel}</h3>
+                <p className="text-[10px] text-muted-foreground">{drillItems.size} etapa(s) com saídas</p>
+              </div>
+              <button onClick={() => setDrillBucketLabel(null)} className="rounded p-1.5 hover:bg-muted">✕</button>
+            </div>
+            <div className="flex-1 overflow-auto p-4 space-y-3">
+              {drillItems.size === 0 && (
+                <p className="text-center text-xs text-muted-foreground py-6">Sem saídas neste período.</p>
+              )}
+              {Array.from(drillItems.entries())
+                .map(([et, subs]) => {
+                  const totalEt = Array.from(subs.values()).reduce((s, v) => s + v.total, 0)
+                  return { et, subs, totalEt }
+                })
+                .sort((a, b) => b.totalEt - a.totalEt)
+                .map(({ et, subs, totalEt }) => (
+                  <div key={et} className="rounded border bg-card">
+                    <div className="flex items-center justify-between border-b px-3 py-2 bg-muted/30">
+                      <p className="text-xs font-bold uppercase tracking-wider">{et}</p>
+                      <p className="text-xs font-mono font-bold tabular-nums text-red-500">{formatCurrency(totalEt)}</p>
+                    </div>
+                    <div className="divide-y">
+                      {Array.from(subs.entries())
+                        .sort((a, b) => b[1].total - a[1].total)
+                        .map(([cat, info]) => (
+                          <div key={cat} className="px-3 py-1.5">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <p className="font-semibold">{cat}</p>
+                              <p className="font-mono tabular-nums">{formatCurrency(info.total)}</p>
+                            </div>
+                            <ul className="ml-3 mt-0.5 text-[10px] text-muted-foreground space-y-0.5">
+                              {info.itens.map((it, i) => (
+                                <li key={i} className="flex items-center justify-between">
+                                  <span className="truncate flex-1">└ {it.desc}</span>
+                                  <span className="font-mono tabular-nums ml-2">{formatCurrency(it.valor)}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
         </div>
       )}
     </WidgetCard>

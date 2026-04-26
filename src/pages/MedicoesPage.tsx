@@ -184,7 +184,7 @@ export default function MedicoesPage() {
         <div className="flex min-h-[200px] items-center justify-center rounded-xl border border-dashed"><p className="text-sm text-muted-foreground">Nenhuma medição cadastrada</p></div>
       ) : (
         <div className="overflow-x-auto rounded-xl border">
-          <table className="w-full text-sm">
+          <table className="tbl-bf w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
                 <th className="px-3 py-3 text-center w-8">
@@ -443,7 +443,7 @@ function BulkAdiarModal({ medicoes, onClose, onDone }: { medicoes: Medicao[]; on
         </div>
         {delta !== 0 && (
           <div className="max-h-40 overflow-y-auto rounded-lg border">
-            <table className="w-full text-[11px]">
+            <table className="tbl-bf w-full text-[11px]">
               <thead className="bg-muted/40 sticky top-0">
                 <tr>
                   <th className="px-2 py-1.5 text-center font-medium">#</th>

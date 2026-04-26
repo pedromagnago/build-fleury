@@ -426,7 +426,7 @@ export default function DespesasIndiretasPage() {
             /* ─── FLAT VIEW ─── */
             <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
+                <table className="tbl-bf w-full text-left border-collapse">
                   <thead>
                     <tr>
                       <th className={`${tableHeader} w-10`}>
@@ -485,7 +485,7 @@ export default function DespesasIndiretasPage() {
                     </div>
                     {!isCollapsed && (
                       <div className="overflow-x-auto">
-                        <table className="w-full text-left border-collapse">
+                        <table className="tbl-bf w-full text-left border-collapse">
                           <thead>
                             <tr>
                               <th className={`${tableHeader} w-10`}>

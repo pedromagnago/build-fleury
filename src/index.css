@@ -69,3 +69,27 @@
   overflow: auto !important;
   scrollbar-gutter: stable;
 }
+
+/* ─── Tabela padrão Build Fleury: zebra leve + divider visível ─── */
+@layer components {
+  .tbl-bf tbody tr {
+    @apply border-b border-border/50;
+  }
+  .tbl-bf tbody tr:nth-child(even) {
+    @apply bg-muted/[0.04];
+  }
+  .tbl-bf tbody tr:hover {
+    @apply bg-muted/30;
+  }
+  .tbl-bf tbody tr:last-child {
+    @apply border-b-0;
+  }
+  .tbl-bf-strong tbody tr:nth-child(even) {
+    @apply bg-muted/[0.08];
+  }
+  /* Linha em edição (amarela) — usar combinada com tbl-bf */
+  .tbl-bf tbody tr.row-editing,
+  .tbl-bf-strong tbody tr.row-editing {
+    @apply bg-amber-100/60 dark:bg-amber-900/20 ring-1 ring-amber-400/60;
+  }
+}

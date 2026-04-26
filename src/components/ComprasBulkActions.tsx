@@ -229,7 +229,7 @@ function GerarPedidosModal({ itens, onClose, onDone }: { itens: ItemCompra[]; on
 
         {preview.length > 0 && (
           <div className="max-h-48 overflow-y-auto rounded-lg border">
-            <table className="w-full text-[11px]">
+            <table className="tbl-bf w-full text-[11px]">
               <thead className="bg-muted/40 sticky top-0">
                 <tr>
                   <th className="px-2 py-1.5 text-left font-medium">Item</th>

@@ -183,7 +183,7 @@ export default function GestaoUsuariosPage() {
       {/* Members Table */}
       <div className="rounded-xl border bg-card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="tbl-bf w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/30">
                 <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground">Usuário</th>
