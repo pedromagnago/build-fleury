@@ -931,12 +931,47 @@ export function useCreateConciliacao() {
       if (error) throw error
       if (!conc) throw new Error('Falha ao criar concilia\u00e7\u00e3o')
 
+      // Auto-split: se o vínculo é a uma parcela contratual de pedido cuja data
+      // de pagamento é ANTES do data_vencimento, cria uma parcela 'adiantamento'
+      // nova e troca o id do vínculo. Trigger no banco recalcula as contratuais.
+      const vinculosFinal: VinculoPayload[] = []
+      for (const v of vinculos) {
+        if (v.origem !== 'parcela') { vinculosFinal.push(v); continue }
+        const { data: p } = await supabase.from('parcelas')
+          .select('pedido_id, tipo, data_vencimento, descricao, company_id')
+          .eq('id', v.origem_id).single()
+        const ehContratualPedido = p?.pedido_id && (p as any).tipo !== 'adiantamento'
+          && dataPgto && p.data_vencimento && dataPgto < p.data_vencimento
+        if (ehContratualPedido) {
+          const { data: ult } = await supabase.from('parcelas')
+            .select('numero_parcela').eq('pedido_id', p.pedido_id)
+            .order('numero_parcela', { ascending: false }).limit(1).maybeSingle()
+          const proximoNum = (ult?.numero_parcela ?? 0) + 1
+          const { data: nova } = await supabase.from('parcelas').insert({
+            company_id: (p as any).company_id || currentCompany.id,
+            pedido_id: p.pedido_id,
+            numero_parcela: proximoNum,
+            valor: v.valor_aplicado,
+            valor_pago: 0,
+            data_vencimento: dataPgto,
+            data_pagamento_real: dataPgto,
+            status: 'paga',
+            tipo: 'adiantamento',
+            descricao: p.descricao || null,
+            conta_bancaria_id: contaId,
+            forma_pagamento: formaInferida,
+          } as any).select('id').single()
+          if (nova) { vinculosFinal.push({ ...v, origem_id: nova.id }); continue }
+        }
+        vinculosFinal.push(v)
+      }
+
       await supabase.from('conciliacao_parcelas').insert(
-        vinculos.map(v => buildLinkRow(conc.id, v))
+        vinculosFinal.map(v => buildLinkRow(conc.id, v))
       )
 
       // Aplica delta positivo (adiciona valor_pago na origem)
-      for (const v of vinculos) {
+      for (const v of vinculosFinal) {
         await aplicarDeltaOrigem(v.origem, v.origem_id, v.valor_aplicado, dataPgto)
         // Rastreabilidade: grava conta+forma na parcela quando ainda não tem
         if (v.origem === 'parcela') {
@@ -949,7 +984,7 @@ export function useCreateConciliacao() {
         }
       }
 
-      const primeiro = vinculos[0]!
+      const primeiro = vinculosFinal[0]!
       // Propagar categoria da origem para a mov banc\u00e1ria
       const categoriaOrigem = await buscarCategoriaOrigem(primeiro.origem, primeiro.origem_id)
       await supabase.from('movimentacoes_bancarias').update({
