@@ -532,9 +532,13 @@ function PedidosTab({ search }: { search: string }) {
   const valorTotalLote = calculatedItems.reduce((acc, curr) => acc + curr.valorTotalCalc, 0)
 
   // -- Editable parcelas state
-  interface EditableParcela { id: string; numero_parcela: number; valor: string; data_vencimento: string; status: string; descricao: string }
+  interface EditableParcela { id: string; numero_parcela: number; valor: string; data_vencimento: string; status: string; descricao: string; tipo?: 'contratual' | 'adiantamento'; valor_pago?: number }
   const [editableParcelas, setEditableParcelas] = useState<EditableParcela[]>([])
   const [parcelasManuallyEdited, setParcelasManuallyEdited] = useState(false)
+  const adiantamentos = editableParcelas.filter(p => p.tipo === 'adiantamento')
+  const contratuaisEditaveis = editableParcelas.filter(p => p.tipo !== 'adiantamento')
+  const totalAdiantado = adiantamentos.reduce((s, p) => s + parseBRL(p.valor), 0)
+  const saldoAParcelarContratual = Math.max(0, valorTotalLote - totalAdiantado)
 
   // Auto-generate parcelas when conditions change (unless manually edited)
   useEffect(() => {
@@ -565,20 +569,24 @@ function PedidosTab({ search }: { search: string }) {
 
   const redistributeLinear = () => {
     if (valorTotalLote <= 0 || !globalForm.cond_pagamento || !globalForm.data_entrega_prevista) return
+    // Distribui APENAS o saldo após adiantamentos sobre as contratuais — adiantamentos ficam intactos.
+    const valorAParcelar = Math.max(0, valorTotalLote - totalAdiantado)
     const generated = gerarParcelas({
       pedidoId: 'preview', companyId: 'preview',
-      valorTotal: valorTotalLote,
+      valorTotal: valorAParcelar,
       condPagamento: globalForm.cond_pagamento,
       dataEntrega: localDate(globalForm.data_entrega_prevista),
     })
-    setEditableParcelas(generated.map(p => ({
+    const novasContratuais = generated.map(p => ({
       id: crypto.randomUUID(),
       numero_parcela: p.numero_parcela,
       valor: toBRLInput(p.valor),
       data_vencimento: p.data_vencimento,
       status: p.status,
       descricao: '',
-    })))
+      tipo: 'contratual' as const,
+    }))
+    setEditableParcelas([...adiantamentos, ...novasContratuais])
     setParcelasManuallyEdited(false)
   }
 
@@ -627,13 +635,15 @@ function PedidosTab({ search }: { search: string }) {
     // Fetch existing parcelas for this pedido
     const { data: existingParcelas } = await supabase.from('parcelas').select('*').eq('pedido_id', p.id).order('numero_parcela', { ascending: true })
     if (existingParcelas && existingParcelas.length > 0) {
-      setEditableParcelas(existingParcelas.map(ep => ({
+      setEditableParcelas(existingParcelas.map((ep: any) => ({
         id: ep.id,
         numero_parcela: ep.numero_parcela,
         valor: toBRLInput(ep.valor),
         data_vencimento: ep.data_vencimento,
         status: ep.status,
         descricao: ep.descricao ?? '',
+        tipo: ep.tipo ?? 'contratual',
+        valor_pago: Number(ep.valor_pago || 0),
       })))
       setParcelasManuallyEdited(true)
     } else {
@@ -1185,56 +1195,99 @@ function PedidosTab({ search }: { search: string }) {
 
             {/* Editable Parcelas */}
             {editableParcelas.length > 0 && (
-              <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">
-                    Parcelas ({editableParcelas.length}x)
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={redistributeLinear} className="rounded border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-accent" title="Redistribuir linearmente">
-                      Redistribuir
-                    </button>
-                    <button type="button" onClick={addParcela} className="flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/10">
-                      <Plus className="h-3 w-3" /> Parcela
-                    </button>
+              <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-3">
+                {/* Resumo: total / adiantado / a parcelar */}
+                {adiantamentos.length > 0 && (
+                  <div className="grid grid-cols-3 gap-3 rounded-md bg-background/60 p-2 text-[11px]">
+                    <div>
+                      <p className="text-[9px] uppercase text-muted-foreground font-bold">Total Pedido</p>
+                      <p className="font-bold tabular-nums">{formatCurrency(valorTotalLote)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] uppercase text-blue-600 font-bold">Adiantado</p>
+                      <p className="font-bold text-blue-600 tabular-nums">{formatCurrency(totalAdiantado)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] uppercase text-amber-600 font-bold">Saldo a Parcelar</p>
+                      <p className="font-bold text-amber-600 tabular-nums">{formatCurrency(saldoAParcelarContratual)}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Adiantamentos (read-only) */}
+                {adiantamentos.length > 0 && (
+                  <div>
+                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-blue-600">
+                      Adiantamentos pagos ({adiantamentos.length}) — fora do cronograma
+                    </p>
+                    <div className="space-y-1">
+                      {adiantamentos.map(p => (
+                        <div key={p.id} className="flex items-center gap-2 rounded-md border border-blue-500/30 bg-blue-500/5 px-3 py-1.5 text-xs">
+                          <span className="rounded bg-blue-500/20 px-1.5 text-[9px] font-bold text-blue-700">ADI</span>
+                          <span className="w-24 font-mono text-right tabular-nums">{formatCurrency(parseBRL(p.valor))}</span>
+                          <span className="text-muted-foreground">{p.data_vencimento}</span>
+                          <span className="flex-1 truncate text-muted-foreground">{p.descricao || '—'}</span>
+                          <span className="text-emerald-600 font-bold">PAGO</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Contratuais (editáveis) */}
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+                      Parcelas contratuais ({contratuaisEditaveis.length}x)
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button type="button" onClick={redistributeLinear} className="rounded border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-accent"
+                        title={adiantamentos.length > 0 ? `Redistribui ${formatCurrency(saldoAParcelarContratual)} sobre cond. de pagamento` : 'Redistribuir linearmente'}>
+                        {adiantamentos.length > 0 ? 'Redistribuir saldo' : 'Redistribuir'}
+                      </button>
+                      <button type="button" onClick={addParcela} className="flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/10">
+                        <Plus className="h-3 w-3" /> Parcela
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    {contratuaisEditaveis.map(p => (
+                      <div key={p.id} className="flex items-center gap-2 rounded-md border bg-card px-3 py-1.5 shadow-sm text-xs">
+                        <span className="font-bold text-primary w-8 shrink-0">P{p.numero_parcela}</span>
+                        <input
+                          type="text"
+                          value={p.valor}
+                          onChange={e => updateParcela(p.id, 'valor', e.target.value)}
+                          className="w-28 rounded border bg-background px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                          placeholder="Valor"
+                        />
+                        <input
+                          type="date"
+                          value={p.data_vencimento}
+                          onChange={e => updateParcela(p.id, 'data_vencimento', e.target.value)}
+                          className="rounded border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
+                        />
+                        <input
+                          type="text"
+                          value={p.descricao}
+                          onChange={e => updateParcela(p.id, 'descricao', e.target.value)}
+                          placeholder="Descrição (opcional)"
+                          className="flex-1 min-w-[120px] rounded border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
+                        />
+                        {p.status !== 'paga' && (p.valor_pago ?? 0) <= 0.005 && (
+                          <button type="button" onClick={() => removeParcela(p.id)} className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <div className="space-y-1.5">
-                  {editableParcelas.map(p => (
-                    <div key={p.id} className="flex items-center gap-2 rounded-md border bg-card px-3 py-1.5 shadow-sm text-xs">
-                      <span className="font-bold text-primary w-8 shrink-0">P{p.numero_parcela}</span>
-                      <input
-                        type="text"
-                        value={p.valor}
-                        onChange={e => updateParcela(p.id, 'valor', e.target.value)}
-                        className="w-28 rounded border bg-background px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
-                        placeholder="Valor"
-                      />
-                      <input
-                        type="date"
-                        value={p.data_vencimento}
-                        onChange={e => updateParcela(p.id, 'data_vencimento', e.target.value)}
-                        className="rounded border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
-                      />
-                      <input
-                        type="text"
-                        value={p.descricao}
-                        onChange={e => updateParcela(p.id, 'descricao', e.target.value)}
-                        placeholder="Descrição (opcional)"
-                        className="flex-1 min-w-[120px] rounded border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
-                      />
-                      {p.status !== 'paga' && (
-                        <button type="button" onClick={() => removeParcela(p.id)} className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
-                          <X className="h-3 w-3" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
+
                 {/* Soma vs Total */}
-                <div className={`mt-2 flex items-center gap-3 text-xs font-medium ${parcelasOk ? 'text-emerald-600' : 'text-red-500'}`}>
-                  <span>Soma: {formatCurrency(parcelaSoma)}</span>
-                  <span>Total: {formatCurrency(valorTotalLote)}</span>
+                <div className={`flex items-center gap-3 text-xs font-medium ${parcelasOk ? 'text-emerald-600' : 'text-red-500'}`}>
+                  <span>Soma das parcelas: {formatCurrency(parcelaSoma)}</span>
+                  <span>Total pedido: {formatCurrency(valorTotalLote)}</span>
                   {!parcelasOk && <span className="font-bold">Diferença: {formatCurrency(parcelaDiff)}</span>}
                   {parcelasOk && <Check className="h-3.5 w-3.5" />}
                 </div>

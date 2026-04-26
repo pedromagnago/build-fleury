@@ -18,6 +18,8 @@ export interface Parcela {
   forma_pagamento: string | null
   conta_bancaria_id: string | null
   status: 'futura' | 'a_vencer' | 'paga' | 'vencida' | 'parcialmente_paga'
+  /** contratual = parcela do cronograma cond_pagamento; adiantamento = PIX antecipado fora do cronograma */
+  tipo?: 'contratual' | 'adiantamento'
   comprovante_path: string | null
   deleted_at: string | null
   created_at: string
