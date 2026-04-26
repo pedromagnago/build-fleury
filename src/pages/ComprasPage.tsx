@@ -712,18 +712,39 @@ function PedidosTab({ search }: { search: string }) {
           return
         }
 
-        const { data: existingParcelas } = await supabase.from('parcelas').select('id, status').eq('pedido_id', editingPedido.id)
-        const futuras = (existingParcelas || []).filter(p => p.status !== 'paga')
-        const pagas = (existingParcelas || []).filter(p => p.status === 'paga')
+        const { data: existingParcelas } = await supabase
+          .from('parcelas')
+          .select('id, status, valor_pago')
+          .eq('pedido_id', editingPedido.id)
 
-        if (pagas.length === (existingParcelas || []).length && (existingParcelas || []).length > 0) {
-          toast.error('Todas as parcelas já foram pagas. Não é possível alterar parcelas.')
+        // Parcelas com qualquer baixa (paga, parcial OU links de conciliação) NÃO podem ser deletadas:
+        // a delete falharia silenciosamente (FK em conciliacao_parcelas), deixando lixo + duplicatas.
+        const parcelaIds = (existingParcelas || []).map(p => p.id)
+        const { data: comLinks } = parcelaIds.length > 0
+          ? await supabase.from('conciliacao_parcelas').select('parcela_id').in('parcela_id', parcelaIds)
+          : { data: [] as any[] }
+        const idsComLink = new Set((comLinks || []).map((l: any) => l.parcela_id))
+        const protegidas = (existingParcelas || []).filter(p =>
+          p.status === 'paga' || p.status === 'parcialmente_paga' ||
+          Number(p.valor_pago || 0) > 0 || idsComLink.has(p.id)
+        )
+        const deletaveis = (existingParcelas || []).filter(p => !protegidas.find(pr => pr.id === p.id))
+
+        if (protegidas.length === (existingParcelas || []).length && (existingParcelas || []).length > 0) {
+          toast.error('Todas as parcelas já têm baixa ou conciliação. Não é possível alterar parcelas.')
         } else {
-          const shouldUpdate = futuras.length === 0 || confirm(`${futuras.length} parcela(s) futura(s) serão atualizadas. Continuar?`)
+          const shouldUpdate = deletaveis.length === 0 || confirm(`${deletaveis.length} parcela(s) futura(s) serão substituídas. ${protegidas.length} parcela(s) com baixa/conciliação serão preservadas. Continuar?`)
           if (shouldUpdate) {
-            await supabase.from('parcelas').delete().eq('pedido_id', editingPedido.id).neq('status', 'paga')
+            // Deleta SOMENTE as parcelas sem baixa e sem links — evita falha silenciosa por FK.
+            if (deletaveis.length > 0) {
+              const { error: delErr } = await supabase.from('parcelas').delete().in('id', deletaveis.map(p => p.id))
+              if (delErr) {
+                toast.error('Erro ao remover parcelas antigas: ' + delErr.message)
+                return
+              }
+            }
             const parcelasParaInserir = editableParcelas
-              .filter(ep => ep.status !== 'paga')
+              .filter(ep => ep.status !== 'paga' && !protegidas.find(pr => pr.id === ep.id))
               .map((ep) => ({
                 company_id: currentCompany.id,
                 pedido_id: editingPedido.id,
@@ -733,9 +754,13 @@ function PedidosTab({ search }: { search: string }) {
                 status: 'futura',
                 descricao: ep.descricao || null,
               }))
-            
+
             if (parcelasParaInserir.length > 0) {
-              await supabase.from('parcelas').insert(parcelasParaInserir)
+              const { error: insErr } = await supabase.from('parcelas').insert(parcelasParaInserir)
+              if (insErr) {
+                toast.error('Erro ao inserir parcelas: ' + insErr.message)
+                return
+              }
               toast.success(`Parcelas atualizadas (${parcelasParaInserir.length})`)
             }
             qc.invalidateQueries({ queryKey: ['parcelas'] })
