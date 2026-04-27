@@ -79,19 +79,45 @@ export default function RecebimentosPage() {
       })
     }
 
-    // 2) Mútuos (Capital de Giro: captações + Adiantamento a Receber)
+    // 2) Mútuos: distinguir por categoria/direção
+    // - Captação genuína (entrada): valor_captado já é a entrada planejada/realizada → vai pra Recebimentos.
+    // - Adiantamento Feito (saída): valor_captado representa $ que SAIU. NÃO mostra como recebimento;
+    //   o que SIM é recebimento são as parcelas (devolução esperada do terceiro).
+    // - Adiantamento Recebido (entrada via captação manual): valor_captado é entrada.
     for (const mut of mutuos) {
       if (mut.categoria === 'STUB_Dedupe') continue
-      const isAdiantamento = mut.categoria === 'Adiantamento a Receber'
+      const cat = String(mut.categoria ?? '').toLowerCase()
+      const isAdiantamentoFeito = cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
+
+      if (isAdiantamentoFeito) {
+        // Parcelas de devolução = recebimentos esperados (entrada futura)
+        for (const mp of (mut.parcelas ?? []) as any[]) {
+          result.push({
+            id: `mutpar-${mp.id}`,
+            origem: 'adiantamento',
+            descricao: `Devolução: ${mut.nome}` + (mp.numero_parcela ? ` · P${mp.numero_parcela}` : ''),
+            parceiro: (mut as any).fornecedor?.nome ?? '—',
+            valor: Number(mp.valor) || 0,
+            data_prevista: mp.data_vencimento,
+            data_efetiva: mp.status === 'paga' ? mp.data_pagamento_real : null,
+            status: mp.status === 'paga' ? 'recebido' : 'previsto',
+            raw: mp,
+          })
+        }
+        // valor_captado do adiantamento NÃO é recebimento — é a saída original (já entra em Pagamentos/Fluxo)
+        continue
+      }
+
+      // Captação ou Adiantamento Recebido = entrada de dinheiro no projeto
       result.push({
         id: `mut-${mut.id}`,
-        origem: isAdiantamento ? 'adiantamento' : 'captacao',
+        origem: 'captacao',
         descricao: mut.nome,
         parceiro: (mut as any).fornecedor?.nome ?? '—',
         valor: Number(mut.valor_captado) || 0,
         data_prevista: mut.data_captacao,
         data_efetiva: mut.status === 'quitado' ? mut.data_captacao : null,
-        status: mut.status === 'quitado' ? 'recebido' : isAdiantamento ? 'previsto' : 'recebido',
+        status: mut.status === 'quitado' ? 'recebido' : 'previsto',
         raw: mut,
       })
     }

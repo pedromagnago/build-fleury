@@ -167,10 +167,16 @@ function ParcelasTab({ search }: { search: string }) {
     return true // 'todos' and 'mutuos' handled separately
   })
 
-  // Merge mutuo parcelas into the list
+  // Merge mutuo parcelas into the list — APENAS de captação (parcelas = devolução = SAÍDA).
+  // Adiantamentos feitos têm parcelas que são RECEBIMENTOS (entram no caixa) — vão pra Recebimentos.
   const mutuoParcelas = useMemo(() => {
     const result: Array<Parcela & { _source: 'mutuo'; _mutuoNome: string }> = []
+    const isAdiantamentoFeito = (m: any) => {
+      const cat = String(m.categoria ?? '').toLowerCase()
+      return cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
+    }
     mutuos.forEach(m => {
+      if (isAdiantamentoFeito(m)) return // pula — pertence a Recebimentos
       ;(m.parcelas ?? []).forEach((mp: any) => {
         result.push({
           id: mp.id,
