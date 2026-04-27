@@ -27,6 +27,7 @@ import {
 } from '@/hooks/useCompras'
 import { useDistribuicao } from '@/hooks/useOperacional'
 import { useEtapas } from '@/hooks/useEtapas'
+import { useParcelas } from '@/hooks/useFinanceiro'
 import { useProject } from '@/contexts/ProjectContext'
 import { formatCurrency, formatNumber } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -92,6 +93,7 @@ export function MatrizCompras({ search }: { search: string }) {
   const { data: fornecedores = [] } = useFornecedores()
   const { data: etapas = [] } = useEtapas()
   const { data: dists = [] } = useDistribuicao()
+  const { data: parcelas = [] } = useParcelas()
 
   const createPedido = useCreatePedido()
   const updatePedido = useUpdatePedido()
@@ -107,6 +109,23 @@ export function MatrizCompras({ search }: { search: string }) {
   // Aglutinação — TUDO COLAPSADO por default (etapas e pedidos)
   const [expandedEtapas, setExpandedEtapas] = useState<Set<string>>(new Set())
   const [expandedPedidos, setExpandedPedidos] = useState<Set<number>>(new Set())
+  // Itens com a faixa "parcelas formadas" expandida — chave: item.id
+  const [expandedParcelas, setExpandedParcelas] = useState<Set<string>>(new Set())
+
+  // Indexa parcelas por pedido_id para acesso O(1)
+  const parcelasByPedido = useMemo(() => {
+    const m = new Map<string, typeof parcelas>()
+    for (const p of parcelas) {
+      if (!p.pedido_id) continue
+      const arr = m.get(p.pedido_id) ?? []
+      arr.push(p)
+      m.set(p.pedido_id, arr)
+    }
+    for (const arr of m.values()) {
+      arr.sort((a, b) => (a.numero_parcela ?? 0) - (b.numero_parcela ?? 0))
+    }
+    return m
+  }, [parcelas])
   // Fornecedores: default EXPANDIDO quando etapa abre → trackeamos os COLAPSADOS
   const [collapsedFornecedores, setCollapsedFornecedores] = useState<Set<string>>(new Set())
 
@@ -660,6 +679,14 @@ export function MatrizCompras({ search }: { search: string }) {
                     onUpdateDataEntrega={handleUpdateDataEntrega}
                     onAddPedido={handleAddPedido}
                     onDeletePedido={id => deletePedido.mutate(id)}
+                    parcelasByPedido={parcelasByPedido}
+                    expandedParcelas={expandedParcelas}
+                    onToggleParcelas={(itemId) => setExpandedParcelas(prev => {
+                      const next = new Set(prev)
+                      if (next.has(itemId)) next.delete(itemId)
+                      else next.add(itemId)
+                      return next
+                    })}
                   />
                 )
               })
@@ -848,6 +875,9 @@ interface EtapaAccordionProps {
   onUpdateDataEntrega: (id: string, etapaId: string, pedidoIndex: number, novaData: string) => Promise<void>
   onAddPedido: (item: ItemCompra) => Promise<void>
   onDeletePedido: (id: string) => void
+  parcelasByPedido: Map<string, Array<{ id: string; numero_parcela: number; valor: number; data_vencimento: string; status: string; valor_pago: number }>>
+  expandedParcelas: Set<string>
+  onToggleParcelas: (itemId: string) => void
 }
 
 function EtapaAccordion(props: EtapaAccordionProps) {
@@ -1059,6 +1089,9 @@ interface ItemRowProps {
   onUpdateDataEntrega: (id: string, etapaId: string, pedidoIndex: number, novaData: string) => Promise<void>
   onAddPedido: (item: ItemCompra) => Promise<void>
   onDeletePedido: (id: string) => void
+  parcelasByPedido: Map<string, Array<{ id: string; numero_parcela: number; valor: number; data_vencimento: string; status: string; valor_pago: number }>>
+  expandedParcelas: Set<string>
+  onToggleParcelas: (itemId: string) => void
 }
 
 const W_ETAPA = 140
@@ -1070,6 +1103,7 @@ function ItemMatrixRow(props: ItemRowProps) {
     expandedPedidos, pedidoColOffset, distsByEtapa, fornecedoresList,
     activeCell, setActiveCell, editingCell, setEditingCell,
     onUpdatePedido, onUpdateDataEntrega, onAddPedido, onDeletePedido,
+    parcelasByPedido, expandedParcelas, onToggleParcelas,
   } = props
 
   const item = row.item
@@ -1084,7 +1118,14 @@ function ItemMatrixRow(props: ItemRowProps) {
     ? 'bg-white dark:bg-zinc-900'
     : 'bg-zinc-50 dark:bg-zinc-800'
 
+  // Quantidade total de parcelas dos pedidos desse item
+  const totalParcelas = row.pedidos.reduce((s, p) => s + (parcelasByPedido.get(p.id)?.length ?? 0), 0)
+  const parcelasOpen = expandedParcelas.has(item.id)
+  // Pra ocupar todas as colunas no row de parcelas
+  const colSpanFull = 2 + (showPorCasa ? 4 : 0) + (showNCasas ? 4 : 0) + (1 + maxPedidos)
+
   return (
+    <>
     <tr className={`${rowBg} hover:bg-accent`}>
       <td
         className={`sticky left-0 z-10 border-b border-r px-3 py-1.5 text-[11px] text-muted-foreground ${rowBg}`}
@@ -1097,7 +1138,18 @@ function ItemMatrixRow(props: ItemRowProps) {
         style={{ left: W_ETAPA, minWidth: W_ITEM, width: W_ITEM }}
         title={item.descricao}
       >
-        <div className="truncate max-w-[260px]">{item.descricao}</div>
+        <div className="flex items-center gap-1.5">
+          {totalParcelas > 0 && (
+            <button
+              onClick={() => onToggleParcelas(item.id)}
+              className={`rounded px-1 py-0.5 text-[9px] font-bold transition-colors ${parcelasOpen ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground hover:bg-muted/70'}`}
+              title={`${parcelasOpen ? 'Ocultar' : 'Ver'} ${totalParcelas} parcela(s)`}
+            >
+              {parcelasOpen ? '▾' : '▸'} {totalParcelas}
+            </button>
+          )}
+          <div className="truncate max-w-[230px]">{item.descricao}</div>
+        </div>
       </td>
 
       {showPorCasa && (
@@ -1179,6 +1231,50 @@ function ItemMatrixRow(props: ItemRowProps) {
         </button>
       </td>
     </tr>
+
+    {/* Sub-linha: parcelas formadas a partir da cond. de pagamento */}
+    {parcelasOpen && totalParcelas > 0 && (
+      <tr className="bg-blue-50/40 dark:bg-blue-900/10 border-b">
+        <td colSpan={colSpanFull} className="px-3 py-2">
+          <div className="space-y-1.5">
+            {row.pedidos.map(ped => {
+              const parcs = parcelasByPedido.get(ped.id) ?? []
+              if (parcs.length === 0) return null
+              const totalPedido = parcs.reduce((s, p) => s + Number(p.valor), 0)
+              return (
+                <div key={ped.id} className="flex flex-wrap items-center gap-2 text-[10px]">
+                  <span className="font-bold text-blue-700 dark:text-blue-400 shrink-0 min-w-[110px]">
+                    Pedido #{ped.numero_pedido ?? '?'}
+                  </span>
+                  <span className="text-muted-foreground shrink-0">
+                    {ped.cond_pagamento || '—'} · {parcs.length}x · Total {formatCurrency(totalPedido)}
+                  </span>
+                  <span className="flex flex-wrap gap-1 ml-auto">
+                    {parcs.map(p => {
+                      const statusCls =
+                        p.status === 'paga' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+                        : p.status === 'parcialmente_paga' ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+                        : p.status === 'vencida' ? 'bg-red-500/15 text-red-700 dark:text-red-400'
+                        : 'bg-muted text-muted-foreground'
+                      const dataFmt = p.data_vencimento
+                        ? new Date(p.data_vencimento + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' })
+                        : '—'
+                      return (
+                        <span key={p.id} className={`rounded px-1.5 py-0.5 font-mono tabular-nums ${statusCls}`}
+                          title={`P${p.numero_parcela} · Venc ${dataFmt} · ${p.status}${p.valor_pago > 0 ? ` · Pago ${formatCurrency(p.valor_pago)}` : ''}`}>
+                          P{p.numero_parcela} · {dataFmt} · {formatCurrency(Number(p.valor))}
+                        </span>
+                      )
+                    })}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </td>
+      </tr>
+    )}
+    </>
   )
 }
 
