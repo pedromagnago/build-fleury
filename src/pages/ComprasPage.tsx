@@ -741,22 +741,18 @@ function PedidosTab({ search }: { search: string }) {
           .select('id, status, valor_pago')
           .eq('pedido_id', editingPedido.id)
 
-        // Parcelas com qualquer baixa (paga, parcial OU links de conciliação) NÃO podem ser deletadas:
-        // a delete falharia silenciosamente (FK em conciliacao_parcelas), deixando lixo + duplicatas.
+        // Protege parcelas que ja tem baixa real (status pago, valor_pago > 0)
+        // ou link polimorfico em conciliacao_parcelas. NAO protege por FK legada
+        // mb.parcela_id — esse ponteiro denormalizado eh limpado antes do delete
+        // (a fonte da verdade do vinculo eh conciliacao_parcelas).
         const parcelaIds = (existingParcelas || []).map(p => p.id)
         const { data: comLinks } = parcelaIds.length > 0
           ? await supabase.from('conciliacao_parcelas').select('parcela_id').in('parcela_id', parcelaIds)
           : { data: [] as any[] }
         const idsComLink = new Set((comLinks || []).map((l: any) => l.parcela_id))
-        // FK legada: movimentacoes_bancarias.parcela_id referencia parcelas direto.
-        // Se houver mov apontando, o delete falha — tratar como protegida tambem.
-        const { data: movsLegado } = parcelaIds.length > 0
-          ? await supabase.from('movimentacoes_bancarias').select('parcela_id').in('parcela_id', parcelaIds)
-          : { data: [] as any[] }
-        const idsComMovLegado = new Set((movsLegado || []).map((m: any) => m.parcela_id))
         const protegidas = (existingParcelas || []).filter(p =>
           p.status === 'paga' || p.status === 'parcialmente_paga' ||
-          Number(p.valor_pago || 0) > 0 || idsComLink.has(p.id) || idsComMovLegado.has(p.id)
+          Number(p.valor_pago || 0) > 0 || idsComLink.has(p.id)
         )
         const deletaveis = (existingParcelas || []).filter(p => !protegidas.find(pr => pr.id === p.id))
 
@@ -765,9 +761,13 @@ function PedidosTab({ search }: { search: string }) {
         } else {
           const shouldUpdate = deletaveis.length === 0 || confirm(`${deletaveis.length} parcela(s) futura(s) serão substituídas. ${protegidas.length} parcela(s) com baixa/conciliação serão preservadas. Continuar?`)
           if (shouldUpdate) {
-            // Deleta SOMENTE as parcelas sem baixa e sem links — evita falha silenciosa por FK.
             if (deletaveis.length > 0) {
-              const { error: delErr } = await supabase.from('parcelas').delete().in('id', deletaveis.map(p => p.id))
+              const delIds = deletaveis.map(p => p.id)
+              // 1) Limpa ponteiro legado mb.parcela_id se houver — evita FK violation.
+              // O vinculo real (se houver) esta em conciliacao_parcelas e ja foi
+              // capturado em idsComLink; quem chegou aqui nao tem link ativo.
+              await supabase.from('movimentacoes_bancarias').update({ parcela_id: null }).in('parcela_id', delIds)
+              const { error: delErr } = await supabase.from('parcelas').delete().in('id', delIds)
               if (delErr) {
                 toast.error('Erro ao remover parcelas antigas: ' + delErr.message)
                 return
