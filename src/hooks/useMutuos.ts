@@ -138,34 +138,65 @@ export function useCreateMutuo() {
         if (parErr) throw parErr
       }
 
-      // Cria mov_bancaria + conciliacao auto pra captacao (entrada/saida na data_captacao)
       // Garante paridade: o que aparece como mutuo no plano tambem aparece no extrato.
+      // IDEMPOTENTE: tenta achar mov bancaria ja existente compativel (mesma conta,
+      // valor, tipo, data ±3d). Se achar, conecta o mutuo a ELA. Senao, cria nova.
       const cat = String((input.mutuo as any).categoria ?? '').toLowerCase()
       const tipoMov: 'entrada' | 'saida' = cat.includes('adiantamento') && cat.includes('feito') ? 'saida' : 'entrada'
       const valor = Number((input.mutuo as any).valor_captado || 0)
       const data = (input.mutuo as any).data_captacao
       if (input.contaBancariaId && valor > 0 && data) {
-        const { data: movRow, error: eMov } = await supabase.from('movimentacoes_bancarias').insert({
-          company_id: companyId,
-          conta_id: input.contaBancariaId,
-          data,
-          descricao: `Mútuo: ${(input.mutuo as any).nome ?? 'OPERAÇÃO'}`,
-          valor,
-          tipo: tipoMov,
-        }).select('id').single()
-        if (eMov) throw eMov
-        if (movRow) {
-          const { data: concRow, error: eConc } = await supabase.from('conciliacoes').insert({
+        // Busca mov compativel sem link polimorfico (preferencia) ou qualquer mov compativel
+        const dataObj = new Date(data + 'T00:00:00')
+        const dataIni = new Date(dataObj.getTime() - 3 * 86400000).toISOString().split('T')[0]!
+        const dataFim = new Date(dataObj.getTime() + 3 * 86400000).toISOString().split('T')[0]!
+        const { data: candidatas } = await supabase
+          .from('movimentacoes_bancarias')
+          .select('id, data')
+          .eq('company_id', companyId)
+          .eq('conta_id', input.contaBancariaId)
+          .eq('tipo', tipoMov)
+          .eq('valor', valor)
+          .gte('data', dataIni)
+          .lte('data', dataFim)
+        const movExistente = (candidatas ?? []).sort((a: any, b: any) =>
+          Math.abs(new Date(a.data + 'T00:00:00').getTime() - dataObj.getTime()) -
+          Math.abs(new Date(b.data + 'T00:00:00').getTime() - dataObj.getTime())
+        )[0]
+        let movId: string | null = movExistente?.id ?? null
+
+        if (!movId) {
+          const { data: movRow, error: eMov } = await supabase.from('movimentacoes_bancarias').insert({
             company_id: companyId,
-            movimentacao_id: movRow.id,
-            match_type: 'manual',
-            confidence: 100,
-            status: 'aprovado',
+            conta_id: input.contaBancariaId,
+            data,
+            descricao: `Mútuo: ${(input.mutuo as any).nome ?? 'OPERAÇÃO'}`,
+            valor,
+            tipo: tipoMov,
           }).select('id').single()
-          if (eConc) throw eConc
-          if (concRow) {
+          if (eMov) throw eMov
+          movId = movRow?.id ?? null
+        }
+
+        if (movId) {
+          // Reusa conciliacao existente da mov, ou cria
+          const { data: concExistente } = await supabase
+            .from('conciliacoes').select('id').eq('movimentacao_id', movId).limit(1).maybeSingle()
+          let concId: string | null = concExistente?.id ?? null
+          if (!concId) {
+            const { data: concRow, error: eConc } = await supabase.from('conciliacoes').insert({
+              company_id: companyId,
+              movimentacao_id: movId,
+              match_type: 'manual',
+              confidence: 100,
+              status: 'aprovado',
+            }).select('id').single()
+            if (eConc) throw eConc
+            concId = concRow?.id ?? null
+          }
+          if (concId) {
             await supabase.from('conciliacao_parcelas').insert({
-              conciliacao_id: concRow.id,
+              conciliacao_id: concId,
               mutuo_id: mutuo.id,
               valor_aplicado: valor,
             })
