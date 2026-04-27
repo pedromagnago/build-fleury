@@ -734,9 +734,15 @@ function PedidosTab({ search }: { search: string }) {
           ? await supabase.from('conciliacao_parcelas').select('parcela_id').in('parcela_id', parcelaIds)
           : { data: [] as any[] }
         const idsComLink = new Set((comLinks || []).map((l: any) => l.parcela_id))
+        // FK legada: movimentacoes_bancarias.parcela_id referencia parcelas direto.
+        // Se houver mov apontando, o delete falha — tratar como protegida tambem.
+        const { data: movsLegado } = parcelaIds.length > 0
+          ? await supabase.from('movimentacoes_bancarias').select('parcela_id').in('parcela_id', parcelaIds)
+          : { data: [] as any[] }
+        const idsComMovLegado = new Set((movsLegado || []).map((m: any) => m.parcela_id))
         const protegidas = (existingParcelas || []).filter(p =>
           p.status === 'paga' || p.status === 'parcialmente_paga' ||
-          Number(p.valor_pago || 0) > 0 || idsComLink.has(p.id)
+          Number(p.valor_pago || 0) > 0 || idsComLink.has(p.id) || idsComMovLegado.has(p.id)
         )
         const deletaveis = (existingParcelas || []).filter(p => !protegidas.find(pr => pr.id === p.id))
 
