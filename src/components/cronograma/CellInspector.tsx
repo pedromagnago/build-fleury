@@ -94,9 +94,12 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
   const aplicarSimulacao = (ev: CashFlowEvent) => {
     if (!onAddOverride) return
     const v = parseFloat(editValor)
+    // Compara com valor TOTAL e data_vencimento (não com saldo/ev.date que pode estar empurrada para hoje)
+    const valorBase = ev.meta.valorOriginal ?? ev.valor
+    const dataBase = ev.meta.dataVencimento ?? ev.date
     onAddOverride(ev.id, {
-      newValue: !isNaN(v) && Math.abs(v - ev.valor) > 0.005 ? v : undefined,
-      newDate: editData !== ev.date ? editData : undefined,
+      newValue: !isNaN(v) && Math.abs(v - valorBase) > 0.005 ? v : undefined,
+      newDate: editData !== dataBase ? editData : undefined,
     })
     setEditingId(null)
     toast.success('Adicionado à simulação')

@@ -216,13 +216,13 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         // Parcelas: par-{uuid}
         if (evId.startsWith('par-')) {
           const parId = evId.replace('par-', '')
-          const { data: parc } = await supabase.from('parcelas').select('status').eq('id', parId).single()
-          const isPaga = parc?.status === 'paga' || parc?.status === 'parcialmente_paga'
+          const { data: parc } = await supabase.from('parcelas').select('status, valor, valor_pago').eq('id', parId).single()
+          // SÓ "totalmente paga" altera data_pagamento_real. Parcialmente_paga ainda
+          // tem saldo aberto — a data efetiva no fluxo é data_vencimento.
+          const totalmentePaga = parc?.status === 'paga' || (Number(parc?.valor_pago || 0) >= Number(parc?.valor || 0) - 0.005 && Number(parc?.valor || 0) > 0)
           const updates: Record<string, any> = {}
           if (ov.newDate) {
-            // Para parcelas pagas, ajusta data_pagamento_real (usada pelo fluxo para realizadas).
-            // Para não pagas, ajusta data_vencimento.
-            if (isPaga) updates.data_pagamento_real = ov.newDate
+            if (totalmentePaga) updates.data_pagamento_real = ov.newDate
             else updates.data_vencimento = ov.newDate
           }
           if (ov.newValue !== undefined) updates.valor = ov.newValue
@@ -234,11 +234,11 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         // Parcela de mútuo: mutpar-{uuid}
         if (evId.startsWith('mutpar-')) {
           const mpId = evId.replace('mutpar-', '')
-          const { data: mp } = await supabase.from('mutuo_parcelas').select('status').eq('id', mpId).single()
-          const isPaga = mp?.status === 'paga' || mp?.status === 'parcialmente_paga'
+          const { data: mp } = await supabase.from('mutuo_parcelas').select('status, valor, valor_pago').eq('id', mpId).single()
+          const totalmentePaga = mp?.status === 'paga' || (Number(mp?.valor_pago || 0) >= Number(mp?.valor || 0) - 0.005 && Number(mp?.valor || 0) > 0)
           const updates: Record<string, any> = {}
           if (ov.newDate) {
-            if (isPaga) updates.data_pagamento_real = ov.newDate
+            if (totalmentePaga) updates.data_pagamento_real = ov.newDate
             else updates.data_vencimento = ov.newDate
           }
           if (ov.newValue !== undefined) updates.valor = ov.newValue
