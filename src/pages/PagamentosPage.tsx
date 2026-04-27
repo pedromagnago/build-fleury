@@ -438,7 +438,24 @@ function ParcelasTab({ search }: { search: string }) {
       )}
 
       {/* Bulk Action Bar */}
-      <BulkActionBar count={selection.count} onClear={selection.clear}>
+      <BulkActionBar
+        count={selection.count}
+        onClear={selection.clear}
+        summary={(() => {
+          const sel = parcelas.filter(p => selection.selected.has(p.id))
+          if (sel.length === 0) return undefined
+          const total = sel.reduce((s, p) => s + Number(p.valor || 0), 0)
+          const pago = sel.reduce((s, p) => s + Number(p.valor_pago || 0), 0)
+          const pendente = sel.reduce((s, p) => s + Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0)), 0)
+          const vencidas = sel.filter(p => p.status !== 'paga' && p.data_vencimento < new Date().toISOString().split('T')[0]!).length
+          return [
+            { label: 'Valor', value: formatCurrency(total), tone: 'primary' as const },
+            ...(pago > 0 ? [{ label: 'Pago', value: formatCurrency(pago), tone: 'emerald' as const }] : []),
+            { label: 'Pendente', value: formatCurrency(pendente), tone: 'amber' as const },
+            ...(vencidas > 0 ? [{ label: 'Vencidas', value: String(vencidas), tone: 'red' as const }] : []),
+          ]
+        })()}
+      >
         <PagamentosBulkActions
           parcelas={parcelas}
           selectedIds={selection.selected}

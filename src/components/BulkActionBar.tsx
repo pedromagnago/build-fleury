@@ -4,9 +4,19 @@ interface BulkActionBarProps {
   count: number
   onClear: () => void
   children: React.ReactNode
+  /** Totais agregados da selecao (ex: valor total, pendente, pago). Aparece em chips ao lado do contador. */
+  summary?: Array<{ label: string; value: string; tone?: 'default' | 'emerald' | 'amber' | 'red' | 'primary' }>
 }
 
-export default function BulkActionBar({ count, onClear, children }: BulkActionBarProps) {
+const TONE: Record<NonNullable<NonNullable<BulkActionBarProps['summary']>[number]['tone']>, string> = {
+  default: 'text-foreground',
+  emerald: 'text-emerald-600',
+  amber: 'text-amber-600',
+  red: 'text-red-600',
+  primary: 'text-primary',
+}
+
+export default function BulkActionBar({ count, onClear, children, summary }: BulkActionBarProps) {
   if (count === 0) return null
 
   return (
@@ -15,6 +25,19 @@ export default function BulkActionBar({ count, onClear, children }: BulkActionBa
         <span className="text-sm font-semibold text-primary">
           {count} selecionado{count > 1 ? 's' : ''}
         </span>
+        {summary && summary.length > 0 && (
+          <>
+            <div className="h-5 w-px bg-border" />
+            <div className="flex items-center gap-3 text-xs">
+              {summary.map((s, i) => (
+                <div key={i} className="flex flex-col leading-tight">
+                  <span className="text-[9px] uppercase text-muted-foreground tracking-wide">{s.label}</span>
+                  <span className={`font-bold tabular-nums ${TONE[s.tone ?? 'default']}`}>{s.value}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
         <div className="h-5 w-px bg-border" />
         <div className="flex items-center gap-1.5">
           {children}
