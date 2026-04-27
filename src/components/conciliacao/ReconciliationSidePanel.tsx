@@ -96,6 +96,8 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   const [showCriar, setShowCriar] = useState(false)
   // Multi-seleção: Map<candidatoId, { valor, observacao }>
   const [selecao, setSelecao] = useState<Map<string, { valor: number; observacao: string }>>(new Map())
+  // Quais candidatos tem o campo de observacao expandido (default: oculto)
+  const [obsExpandidos, setObsExpandidos] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     if (row) {
@@ -721,19 +723,27 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[1px]" onClick={onClose} />
 
       <div className="fixed right-0 top-0 bottom-0 z-50 w-[480px] max-w-[95vw] bg-card border-l shadow-2xl flex flex-col">
-        {/* Header */}
-        <div className="flex items-start justify-between border-b p-4">
+        {/* Header compacto: tudo em 2 linhas + chips de meta */}
+        <div className="flex items-start justify-between border-b p-3">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase text-muted-foreground">
+            <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase text-muted-foreground flex-wrap">
               {isSaida ? <ArrowUpCircle className="h-3 w-3 text-red-500" /> : <ArrowDownCircle className="h-3 w-3 text-emerald-500" />}
               <span>{isSaida ? 'Saída' : 'Entrada'}</span>
               <span>·</span>
               <span>{fmtDateBr(row.data)}</span>
+              <span>·</span>
+              <span className={
+                String(row.situacao).toLowerCase().includes('nao') || String(row.situacao).toLowerCase().includes('não') ? 'text-amber-600' :
+                String(row.situacao).toLowerCase().includes('sugerido') ? 'text-blue-600' :
+                String(row.situacao).toLowerCase().includes('concil') ? 'text-emerald-600' : ''
+              }>{String(row.situacao || '').replace(/_/g, ' ')}</span>
+              {row.categoria && (<><span>·</span><span className="normal-case font-normal">{row.categoria}</span></>)}
             </div>
             <p className="text-sm font-semibold truncate mt-0.5" title={row.descricao}>
               {row.descricao || '—'}
+              {row.fornecedor && <span className="ml-1 text-[10px] font-normal text-muted-foreground">({row.fornecedor})</span>}
             </p>
-            <p className={`mt-1 text-2xl font-bold tabular-nums ${isSaida ? 'text-red-500' : 'text-emerald-600'}`}>
+            <p className={`mt-0.5 text-2xl font-bold tabular-nums ${isSaida ? 'text-red-500' : 'text-emerald-600'}`}>
               {isSaida ? '−' : '+'}{formatCurrency(absValor)}
             </p>
           </div>
@@ -743,26 +753,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* Status */}
-          <div className="rounded-lg border bg-muted/30 p-3 space-y-1.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">Situação</span>
-              <span className="font-bold">{String(row.situacao || '').toUpperCase()}</span>
-            </div>
-            {row.categoria && (
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">Categoria</span>
-                <span className="font-medium">{row.categoria}</span>
-              </div>
-            )}
-            {row.fornecedor && (
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">Fornecedor (BD)</span>
-                <span className="font-medium truncate max-w-[240px]">{row.fornecedor}</span>
-              </div>
-            )}
-          </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-3">
 
           {/* Itens já vinculados (parcela/medição/mútuo) */}
           {vinculosDoMov.length > 0 && (
@@ -984,25 +975,25 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                             Venc {fmtDateBr(c.data)} · saldo {formatCurrency(c.saldo)}
                             {c.valor_pago > 0 && ` · pago ${formatCurrency(c.valor_pago)}/${formatCurrency(c.valor)}`}
                           </p>
-                          {c.pedidoCond && (
-                            <p className="text-[10px] text-blue-600/80 truncate">
-                              Cond {c.pedidoCond}{c.pedidoEntrega ? ` · entrega ${fmtDateBr(c.pedidoEntrega)}` : ''}
-                            </p>
-                          )}
-                          {/* Ligacao do consumo: orcado / consumido / saldo do item */}
-                          {(c.itemValorOrcado != null || c.pedidoValorTotal != null) && (
-                            <p className="text-[10px] text-emerald-700/80 truncate" title="Consumo do item de orcamento">
-                              {c.itemValorOrcado != null && (
-                                <>Item orçado {formatCurrency(c.itemValorOrcado)}
-                                {c.itemValorConsumido != null && (
-                                  <> · consumido {formatCurrency(c.itemValorConsumido)} · saldo <span className={c.itemValorOrcado - c.itemValorConsumido < absValor ? 'text-amber-600 font-bold' : ''}>{formatCurrency(c.itemValorOrcado - c.itemValorConsumido)}</span></>
-                                )}
-                                </>
+                          {/* Meta linha unica: cond + entrega + consumo do item (chips) */}
+                          {(c.pedidoCond || c.itemValorOrcado != null) && (
+                            <div className="flex items-center gap-1 flex-wrap mt-0.5 text-[9px]">
+                              {c.pedidoCond && (
+                                <span className="bg-blue-500/10 text-blue-700 px-1 rounded font-mono" title="Condição de pagamento">
+                                  {c.pedidoCond}{c.pedidoEntrega ? ` ⟶ ${fmtDateBr(c.pedidoEntrega)}` : ''}
+                                </span>
                               )}
-                              {c.pedidoValorTotal != null && (
-                                <> · pedido {formatCurrency(c.pedidoValorTotal)}</>
-                              )}
-                            </p>
+                              {c.itemValorOrcado != null && c.itemValorConsumido != null && (() => {
+                                const saldo = c.itemValorOrcado - c.itemValorConsumido
+                                const estoura = saldo < absValor
+                                return (
+                                  <span className={`px-1 rounded font-mono ${estoura ? 'bg-amber-500/15 text-amber-700' : 'bg-emerald-500/10 text-emerald-700'}`}
+                                    title={`Item orçado ${formatCurrency(c.itemValorOrcado)} · consumido ${formatCurrency(c.itemValorConsumido)}${estoura ? ' (saldo insuficiente p/ esta MOV)' : ''}`}>
+                                    saldo item {formatCurrency(saldo)}
+                                  </span>
+                                )
+                              })()}
+                            </div>
                           )}
                         </div>
                         {/* Botão "Quitar pedido" para parcela com pedido_id */}
@@ -1020,11 +1011,18 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                             onClick={(e) => e.stopPropagation()}
                             className="w-24 rounded border bg-background px-1.5 py-0.5 text-xs text-right font-mono" />
                         )}
+                        {sel && !obsExpandidos.has(c.id) && !obs && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setObsExpandidos(s => { const n = new Set(s); n.add(c.id); return n }) }}
+                            className="text-[9px] rounded border px-1 py-0.5 text-muted-foreground hover:bg-muted shrink-0"
+                            title="Adicionar observacao"
+                          >+ obs</button>
+                        )}
                       </div>
-                      {sel && (
+                      {sel && (obsExpandidos.has(c.id) || !!obs) && (
                         <div className="px-2 pb-2">
                           <textarea value={obs} onChange={(e) => updateObservacao(c.id, e.target.value)}
-                            placeholder="📝 Observa\u00e7\u00e3o (opcional): mem\u00f3ria do consumo, lote, motivo do split..."
+                            placeholder="Observacao (opcional): memoria do consumo, lote, motivo do split..."
                             rows={2}
                             className="w-full rounded border bg-background px-2 py-1.5 text-[11px] placeholder:text-muted-foreground/60" />
                         </div>
