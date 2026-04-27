@@ -5,13 +5,15 @@
  * que Dashboard, CashFlowChart e SimuladorPanel mostrem os mesmos números.
  */
 import { useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useProject } from '@/contexts/ProjectContext'
-import { useParcelas } from '@/hooks/useFinanceiro'
-import { useMedicoes, useDistribuicao } from '@/hooks/useOperacional'
+import { useParcelas, useContasBancarias } from '@/hooks/useFinanceiro'
+import { useMedicoes, useDistribuicao, useMovimentacoes } from '@/hooks/useOperacional'
 import { useItensCompra, usePedidos } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useMutuos } from '@/hooks/useMutuos'
 import { localDate, parsearCondicao } from '@/lib/parcelas'
+import { supabase } from '@/lib/supabase'
 import type { FinancialViewMode } from '@/components/cronograma/FinancialViewFilter'
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -76,8 +78,32 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
   const { data: etapas = [] } = useEtapas()
   const { data: mutuos = [] } = useMutuos()
   const { data: distribuicoes = [] } = useDistribuicao()
+  const { data: movs = [] } = useMovimentacoes()
+  const { data: contasBancarias = [] } = useContasBancarias()
+  // Liga conciliacao -> parcela/mutuo/medicao para sabermos quais movs
+  // ja estao representadas por parcelas (evita dupla contagem).
+  const { data: linksMovs = [] } = useQuery({
+    queryKey: ['cashflow-links-movs', currentCompany?.id],
+    queryFn: async () => {
+      if (!currentCompany) return [] as any[]
+      const { data, error } = await supabase
+        .from('conciliacoes')
+        .select('movimentacao_id, status, conciliacao_parcelas(parcela_id, mutuo_parcela_id, mutuo_id, medicao_id)')
+        .eq('company_id', currentCompany.id)
+        .neq('status', 'rejeitado')
+      if (error) throw error
+      return data ?? []
+    },
+    enabled: !!currentCompany,
+  })
 
-  const saldoInicial = currentCompany?.saldo_inicial_caixa ?? 0
+  // Saldo inicial = soma dos saldos iniciais de TODAS as contas ativas (multi-conta).
+  // Fallback para o legado company.saldo_inicial_caixa quando ainda nao ha contas.
+  const saldoInicial = useMemo(() => {
+    const ativas = (contasBancarias as any[]).filter(c => c.ativa)
+    if (ativas.length === 0) return currentCompany?.saldo_inicial_caixa ?? 0
+    return ativas.reduce((s, c) => s + Number(c.saldo_inicial || 0), 0)
+  }, [contasBancarias, currentCompany?.saldo_inicial_caixa])
   const prazoRecebimento = currentCompany?.prazo_recebimento_dias ?? 30
 
   const events = useMemo(() => {
@@ -393,8 +419,49 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       })
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // 7. REALIZADO — Movs bancarias orfas (sem vinculo a parcela/mutuo/medicao)
+    // Garante que tarifas, transferencias e qualquer mov fora do plano
+    // entrem no Realizado/Planejado e ajustem o saldo do fluxo.
+    // ═══════════════════════════════════════════════════════════
+    if (apenasRealizado || viewMode === 'completo') {
+      // IDs ja conciliados com algum item planejado (parcela / mutuo / medicao)
+      const movsConciliadasComPlano = new Set<string>()
+      for (const c of (linksMovs as any[])) {
+        const links = c.conciliacao_parcelas ?? []
+        if (links.some((l: any) => l.parcela_id || l.mutuo_parcela_id || l.mutuo_id || l.medicao_id)) {
+          movsConciliadasComPlano.add(c.movimentacao_id)
+        }
+      }
+
+      for (const m of (movs as any[])) {
+        if (!m.data) continue
+        if (movsConciliadasComPlano.has(m.id)) continue
+        // Tambem pula se a propria mov tem parcela_id direto (legado, ja contado)
+        if (m.parcela_id) continue
+        const val = Math.abs(Number(m.valor))
+        if (!(val > 0)) continue
+        const isEntrada = m.tipo === 'entrada'
+
+        all.push({
+          id: `mov-orfa-${m.id}`,
+          date: m.data,
+          type: isEntrada ? 'entrada' : 'firme',
+          valor: val,
+          meta: {
+            cat: isEntrada ? 'Outros' : 'Despesa',
+            etapa: 'Banco',
+            forn: undefined,
+            item: undefined,
+            desc: m.descricao || (isEntrada ? 'Crédito bancário' : 'Débito bancário'),
+            orig: val,
+          },
+        })
+      }
+    }
+
     return all
-  }, [parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, viewMode])
+  }, [parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, movs, linksMovs, viewMode])
 
   return { events, saldoInicial }
 }
