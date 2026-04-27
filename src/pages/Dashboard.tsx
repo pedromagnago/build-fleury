@@ -12,6 +12,7 @@ import { supabase } from '@/lib/supabase'
 import { localDate } from '@/lib/parcelas'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
 import { useDashboardPrefs } from '@/hooks/useDashboardPrefs'
+import { CellInspector } from '@/components/cronograma/CellInspector'
 import { formatCurrency, formatPercent, formatNumber } from '@/lib/utils'
 import {
   LayoutDashboard, TrendingUp, TrendingDown,
@@ -283,38 +284,21 @@ function FluxoCaixaWidget() {
   // Label do bucket "hoje" para a ReferenceLine
   const todayLabel = chartData[0]?.dateLabel ?? null
 
-  // Drilldown: agrupa eventos do bucket selecionado por Etapa → Categoria/Item
+  // Drilldown via CellInspector unificado
   const [drillBucketLabel, setDrillBucketLabel] = useState<string | null>(null)
-  const drillItems = useMemo(() => {
+  const drillEvents = useMemo(() => {
     if (!drillBucketLabel) return null
     const bucket = chartData.find(b => b.dateLabel === drillBucketLabel)
     if (!bucket) return null
-
-    // Filtra eventos que caem no bucket
     const bucketDateMs = new Date((bucket as any).dateTarget + 'T00:00:00').getTime()
-    const inBucket = events.filter(e => {
+    return events.filter(e => {
       const t = new Date(e.date + 'T00:00:00').getTime()
       if (periodicity === 'dia') return t === bucketDateMs
       if (periodicity === 'semana') return t >= bucketDateMs && t < bucketDateMs + 7 * 86400000
-      // mes: mesmo ano-mês
       const d = new Date(e.date + 'T00:00:00')
       const b = new Date((bucket as any).dateTarget + 'T00:00:00')
       return d.getFullYear() === b.getFullYear() && d.getMonth() === b.getMonth()
     })
-
-    const out = new Map<string, Map<string, { total: number; itens: { desc: string; valor: number; tipo: string }[] }>>()
-    for (const ev of inBucket) {
-      if (ev.type === 'entrada') continue
-      const et = ev.meta.etapa || 'Sem etapa'
-      const cat = ev.meta.cat || ev.meta.item || 'Outros'
-      if (!out.has(et)) out.set(et, new Map())
-      const sub = out.get(et)!
-      if (!sub.has(cat)) sub.set(cat, { total: 0, itens: [] })
-      const entry = sub.get(cat)!
-      entry.total += ev.valor
-      entry.itens.push({ desc: ev.meta.desc, valor: ev.valor, tipo: ev.type })
-    }
-    return out
   }, [drillBucketLabel, chartData, events, periodicity])
 
   return (
@@ -416,58 +400,12 @@ function FluxoCaixaWidget() {
         </select>
       </div>
 
-      {drillBucketLabel && drillItems && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm p-4"
-          onClick={(e) => { if (e.target === e.currentTarget) setDrillBucketLabel(null) }}>
-          <div className="w-full max-w-2xl rounded-xl border bg-card shadow-2xl max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between border-b p-4">
-              <div>
-                <h3 className="text-sm font-bold">Saídas por Etapa — {drillBucketLabel}</h3>
-                <p className="text-[10px] text-muted-foreground">{drillItems.size} etapa(s) com saídas</p>
-              </div>
-              <button onClick={() => setDrillBucketLabel(null)} className="rounded p-1.5 hover:bg-muted">✕</button>
-            </div>
-            <div className="flex-1 overflow-auto p-4 space-y-3">
-              {drillItems.size === 0 && (
-                <p className="text-center text-xs text-muted-foreground py-6">Sem saídas neste período.</p>
-              )}
-              {Array.from(drillItems.entries())
-                .map(([et, subs]) => {
-                  const totalEt = Array.from(subs.values()).reduce((s, v) => s + v.total, 0)
-                  return { et, subs, totalEt }
-                })
-                .sort((a, b) => b.totalEt - a.totalEt)
-                .map(({ et, subs, totalEt }) => (
-                  <div key={et} className="rounded border bg-card">
-                    <div className="flex items-center justify-between border-b px-3 py-2 bg-muted/30">
-                      <p className="text-xs font-bold uppercase tracking-wider">{et}</p>
-                      <p className="text-xs font-mono font-bold tabular-nums text-red-500">{formatCurrency(totalEt)}</p>
-                    </div>
-                    <div className="divide-y">
-                      {Array.from(subs.entries())
-                        .sort((a, b) => b[1].total - a[1].total)
-                        .map(([cat, info]) => (
-                          <div key={cat} className="px-3 py-1.5">
-                            <div className="flex items-center justify-between text-[11px]">
-                              <p className="font-semibold">{cat}</p>
-                              <p className="font-mono tabular-nums">{formatCurrency(info.total)}</p>
-                            </div>
-                            <ul className="ml-3 mt-0.5 text-[10px] text-muted-foreground space-y-0.5">
-                              {info.itens.map((it, i) => (
-                                <li key={i} className="flex items-center justify-between">
-                                  <span className="truncate flex-1">└ {it.desc}</span>
-                                  <span className="font-mono tabular-nums ml-2">{formatCurrency(it.valor)}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        ))}
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
-        </div>
+      {drillBucketLabel && drillEvents && (
+        <CellInspector
+          bucketLabel={drillBucketLabel}
+          events={drillEvents}
+          onClose={() => setDrillBucketLabel(null)}
+        />
       )}
     </WidgetCard>
   )

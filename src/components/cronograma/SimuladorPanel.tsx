@@ -12,6 +12,7 @@ import { ChevronRight, ChevronDown, X, Download, Calendar, CalendarDays, Save, L
 import FinancialViewFilter, { type FinancialViewMode } from './FinancialViewFilter'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
 import { usePersistedState } from '@/hooks/usePersistedState'
+import { CellInspector } from './CellInspector'
 
 type Periodicity = 'dia' | 'semana' | 'mes'
 
@@ -61,6 +62,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   const [overrides, setOverrides] = usePersistedState<Record<string, Override>>(overridesKey, {})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editing, setEditing] = useState<Item | null>(null)
+  const [inspectingBucket, setInspectingBucket] = useState<{ label: string; eventIds: string[] } | null>(null)
   const [periodicity, setPeriodicity] = useState<Periodicity>('mes')
   const [applying, setApplying] = useState(false)
 
@@ -422,7 +424,10 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
                   <td
                     key={ci}
                     className={`border-r px-2 py-1.5 text-right tabular-nums cursor-pointer hover:bg-primary/5 ${match.some(m => m.modified) ? 'bg-amber-50/60 dark:bg-amber-900/10' : ''}`}
-                    onClick={() => match.length > 0 && setEditing(match[0] ?? null)}
+                    onClick={() => match.length > 0 && setInspectingBucket({
+                      label: `${desc} · ${w.lbl}`,
+                      eventIds: match.map(m => m.id),
+                    })}
                   >
                     {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
                   </td>
@@ -519,6 +524,18 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
             <button onClick={() => setEditing(null)} className="w-full mt-3 bg-primary text-primary-foreground rounded py-1.5 text-xs font-semibold hover:bg-primary/90">OK</button>
           </div>
         </>
+      )}
+
+      {/* Inspetor de Célula (substitui drilldowns separados) */}
+      {inspectingBucket && (
+        <CellInspector
+          bucketLabel={inspectingBucket.label}
+          events={cashFlowEvents.filter(e => inspectingBucket.eventIds.includes(e.id))}
+          overrides={overrides}
+          onAddOverride={(id, ov) => setOverrides(p => ({ ...p, [id]: { ...p[id], ...ov } }))}
+          onClearOverride={(id) => setOverrides(p => { const n = { ...p }; delete n[id]; return n })}
+          onClose={() => setInspectingBucket(null)}
+        />
       )}
 
       {/* View Mode Filter + Periodicity */}
