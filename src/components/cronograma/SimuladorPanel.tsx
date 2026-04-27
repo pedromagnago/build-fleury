@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useProject } from '@/contexts/ProjectContext'
 import { useParcelas } from '@/hooks/useFinanceiro'
@@ -209,6 +209,23 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   }, [weeks, items, currentCompany, parcelas])
 
   const numOv = Object.keys(overrides).length
+
+  // Indice do bucket que contem HOJE (para auto-scroll e highlight)
+  const todayIdx = useMemo(() => {
+    const todayMs = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() })()
+    return grid.findIndex(w => todayMs >= w.s.getTime() && todayMs <= w.e.getTime())
+  }, [grid])
+
+  // Auto-scroll horizontal para deixar HOJE visivel ao entrar/trocar periodicidade
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!scrollRef.current || todayIdx < 0) return
+    const colW = periodicity === 'dia' ? 80 : periodicity === 'mes' ? 100 : 110
+    const stickyW = 220
+    // posiciona 'hoje' a ~3 colunas do inicio visivel para dar contexto do passado
+    const target = Math.max(0, stickyW + colW * todayIdx - colW * 3)
+    scrollRef.current.scrollLeft = target
+  }, [todayIdx, periodicity])
 
   // ── Aplicar simulações ao banco ──
   const handleApply = async () => {
@@ -621,17 +638,20 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
       )}
 
       {/* Tabela */}
-      <div className="flex-1 overflow-auto rounded-xl border scroll-visible">
+      <div ref={scrollRef} className="flex-1 overflow-auto rounded-xl border scroll-visible">
         <table className="tbl-bf-strong border-collapse text-xs min-w-max w-full">
           <thead className="sticky top-0 z-30 bg-muted/95 backdrop-blur shadow-[0_1px_0_0_hsl(var(--border))]">
             <tr className="border-b">
               <th className="sticky left-0 z-40 bg-muted border-r px-3 py-2.5 text-left text-[10px] font-bold uppercase text-muted-foreground tracking-wider w-[220px] min-w-[220px] shadow-[2px_0_4px_-1px_rgba(0,0,0,0.08)]">Categoria</th>
-              {grid.map((w, i) => (
-                <th key={i} className={`border-r px-2 py-2.5 text-center font-medium ${periodicity === 'dia' ? 'w-[80px] min-w-[80px]' : periodicity === 'mes' ? 'w-[100px] min-w-[100px]' : 'w-[110px] min-w-[110px]'}`}>
-                  <div className="text-[9px] text-muted-foreground">{periodicity === 'dia' ? `D${i + 1}` : periodicity === 'mes' ? `M${i + 1}` : `S${i + 1}`}</div>
-                  <div className="text-[10px] mt-0.5">{w.lbl}</div>
-                </th>
-              ))}
+              {grid.map((w, i) => {
+                const isHoje = i === todayIdx
+                return (
+                  <th key={i} className={`border-r px-2 py-2.5 text-center font-medium ${periodicity === 'dia' ? 'w-[80px] min-w-[80px]' : periodicity === 'mes' ? 'w-[100px] min-w-[100px]' : 'w-[110px] min-w-[110px]'} ${isHoje ? 'bg-primary/15 ring-1 ring-primary/40' : ''}`}>
+                    <div className={`text-[9px] ${isHoje ? 'text-primary font-bold' : 'text-muted-foreground'}`}>{isHoje ? 'HOJE' : periodicity === 'dia' ? `D${i + 1}` : periodicity === 'mes' ? `M${i + 1}` : `S${i + 1}`}</div>
+                    <div className={`text-[10px] mt-0.5 ${isHoje ? 'text-primary font-bold' : ''}`}>{w.lbl}</div>
+                  </th>
+                )
+              })}
             </tr>
           </thead>
           <tbody>
