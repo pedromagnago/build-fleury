@@ -393,13 +393,15 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       if (link.mutuo_id) {
         const mut = (mutuos as any[]).find((m: any) => m.id === link.mutuo_id)
         if (mut) {
+          // Para mutuos, a data efetiva é a do extrato (row.data) — não a data_captacao planejada
           return {
             tipo: 'mutuo_captacao' as const,
             link,
             descricao: `Captação: ${mut.nome}`,
             fornecedor: mut.fornecedor?.nome ?? mut.instituicao ?? null,
             valor: Number(mut.valor_captado),
-            venc: mut.data_captacao,
+            venc: row?.data ?? mut.data_captacao,
+            dataPlanejada: mut.data_captacao,
           }
         }
       }
@@ -617,7 +619,10 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                         </div>
                         <p className="text-muted-foreground text-[10px]">
                           {v.fornecedor ? `${v.fornecedor} · ` : ''}
-                          Venc {fmtDateBr(v.venc)} · Valor {formatCurrency(v.valor)}
+                          {v.tipo === 'mutuo_captacao' ? 'Captado em' : 'Venc'} {fmtDateBr(v.venc)} · Valor {formatCurrency(v.valor)}
+                          {v.tipo === 'mutuo_captacao' && (v as any).dataPlanejada && (v as any).dataPlanejada !== v.venc && (
+                            <span className="ml-1 italic">(planejado {fmtDateBr((v as any).dataPlanejada)})</span>
+                          )}
                         </p>
                       </div>
                       <span className="font-mono font-semibold ml-2">{formatCurrency(Number(v.link.valor_aplicado))}</span>
