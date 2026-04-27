@@ -195,52 +195,87 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       return cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
     }
 
-    // Lookup: para cada mutuo, a data da PRIMEIRA mov bancaria vinculada (via conciliacao_parcelas.mutuo_id).
-    // Se houver, usamos essa data como verdadeira (nao a data_captacao do plano).
-    const movDateByMutuoId = new Map<string, string>()
+    // Mutuos lixo (STUB_Dedupe / cancelados) — nao representam dinheiro real
+    const mutuosLixoIds = new Set<string>()
+    for (const m of (mutuos as any[])) {
+      const cat = String((m as any).categoria ?? '').toUpperCase()
+      const status = String((m as any).status ?? '').toLowerCase()
+      if (cat.includes('STUB_DEDUPE') || cat === 'STUB' || status === 'cancelado') {
+        mutuosLixoIds.add(m.id)
+      }
+    }
+    // Lookups: para cada item do plano, lista de movs bancarias vinculadas
+    const movsByMutuoId = new Map<string, Set<string>>()
+    const movsByParcelaId = new Map<string, Set<string>>()
+    const movsByMutuoParcelaId = new Map<string, Set<string>>()
     for (const c of (linksMovs as any[])) {
       const links = c.conciliacao_parcelas ?? []
       for (const l of links) {
-        if (!l.mutuo_id) continue
-        // Busca a mov correspondente para extrair a data
-        const mov = (movs as any[]).find(m => m.id === c.movimentacao_id)
-        if (mov?.data && !movDateByMutuoId.has(l.mutuo_id)) {
-          movDateByMutuoId.set(l.mutuo_id, mov.data as string)
+        const movId = c.movimentacao_id
+        if (l.parcela_id) {
+          const s = movsByParcelaId.get(l.parcela_id) ?? new Set<string>()
+          s.add(movId); movsByParcelaId.set(l.parcela_id, s)
+        }
+        if (l.mutuo_parcela_id) {
+          const s = movsByMutuoParcelaId.get(l.mutuo_parcela_id) ?? new Set<string>()
+          s.add(movId); movsByMutuoParcelaId.set(l.mutuo_parcela_id, s)
+        }
+        if (l.mutuo_id && !mutuosLixoIds.has(l.mutuo_id)) {
+          const s = movsByMutuoId.get(l.mutuo_id) ?? new Set<string>()
+          s.add(movId); movsByMutuoId.set(l.mutuo_id, s)
         }
       }
     }
+    // IDs de movs que pertencem a algum item plano (parcela/mutuo_parcela/mutuo nao-lixo)
+    const movsConciliadasIds = new Set<string>()
+    for (const s of movsByMutuoId.values()) for (const id of s) movsConciliadasIds.add(id)
+    for (const s of movsByParcelaId.values()) for (const id of s) movsConciliadasIds.add(id)
+    for (const s of movsByMutuoParcelaId.values()) for (const id of s) movsConciliadasIds.add(id)
 
+    // ═══════════════════════════════════════════════════════════
+    // EVENTO REAL — TODAS as movs bancarias viram eventos com valor + data REAIS.
+    // Garante: saldo historico do Fluxo == saldo da Conciliacao (sem aproximacao).
+    // ═══════════════════════════════════════════════════════════
+    for (const mv of (movs as any[])) {
+      if (!mv.data) continue
+      const val = Math.abs(Number(mv.valor))
+      if (!(val > 0)) continue
+      const isEntrada = mv.tipo === 'entrada'
+      all.push({
+        id: `mb-${mv.id}`,
+        date: mv.data,
+        type: isEntrada ? 'entrada' : 'firme',
+        valor: val,
+        meta: { cat: isEntrada ? 'Banco' : 'Banco', etapa: 'Banco', desc: mv.descricao || (isEntrada ? 'Crédito bancário' : 'Débito bancário'), orig: val },
+      })
+    }
+
+    // Mutuos SEM mov bancaria vinculada — previsao do plano (data_captacao).
+    // Mutuos COM mov vinculada NAO emitem evento agregado: as movs ja viram eventos no bloco acima.
     mutuos.forEach(m => {
       if (!m.data_captacao) return
-      // Ignora mutuos lixo de dedupe ou cancelados — nao representam dinheiro real.
-      const cat = String((m as any).categoria ?? '').toUpperCase()
-      const status = String((m as any).status ?? '').toLowerCase()
-      if (cat.includes('STUB_DEDUPE') || cat === 'STUB' || status === 'cancelado') return
-      // Em 'realizado' ou 'planejado': só mostra mútuos já efetivamente captados/emprestados (data passada).
-      if (apenasRealizado && m.data_captacao > today) return
+      if (mutuosLixoIds.has(m.id)) return
+      if ((movsByMutuoId.get(m.id)?.size ?? 0) > 0) return // ja representado pelas movs
 
-      // Se ha mov bancaria vinculada, usa a data dela (verdade do extrato).
-      // Senao, cai na data_captacao do plano.
-      const date = movDateByMutuoId.get(m.id) ?? m.data_captacao
+      if (apenasRealizado && m.data_captacao > today) return
       const val = Number(m.valor_captado)
       if (!(val > 0)) return
-
-      if (isAdiantamentoFeito(m)) {
-        // Saída: dinheiro emprestado pelo projeto a terceiros (já saiu na data de captação)
+      const isAdi = isAdiantamentoFeito(m)
+      if (isAdi) {
         all.push({
           id: `mutadi-${m.id}`,
-          date,
+          date: m.data_captacao,
           type: 'firme',
           valor: val,
-          meta: { cat: m.tipo || 'Mútuo', etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Adiantamento feito: ${m.nome}`, orig: val }
+          meta: { cat: m.tipo || 'Mútuo', etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Adiantamento feito: ${m.nome}`, orig: val },
         })
       } else {
         all.push({
           id: `mutcap-${m.id}`,
-          date,
+          date: m.data_captacao,
           type: 'entrada',
           valor: val,
-          meta: { cat: m.tipo, desc: `Mútuo: ${m.nome}`, orig: val }
+          meta: { cat: m.tipo, desc: `Mútuo: ${m.nome}`, orig: val },
         })
       }
     })
@@ -252,6 +287,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       if (!p.data_vencimento) return
       // Considera paga também quando valor_pago cobre o valor (status pode estar dessincronizado em parcelas antigas)
       const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
+      // Se ja tem mov bancaria vinculada, a mov ja virou evento — pula a parcela
+      // (evita dupla contagem e desincronizacao de data/valor entre plano e extrato).
+      if (isPaga && (movsByParcelaId.get(p.id)?.size ?? 0) > 0) return
       // Em 'realizado' ou 'planejado': só parcelas pagas (parcela em aberto é previsão de pedido).
       if (apenasRealizado && !isPaga) return
 
@@ -331,6 +369,8 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       ;(m.parcelas || []).forEach((p: any) => {
         if (!p.data_vencimento) return
         const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
+        // Se ja tem mov bancaria vinculada, a mov ja virou evento — pula
+        if (isPaga && (movsByMutuoParcelaId.get(p.id)?.size ?? 0) > 0) return
         if (apenasRealizado && !isPaga) return
 
         const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
@@ -451,62 +491,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       })
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 7. REALIZADO — Movs bancarias orfas (sem vinculo a parcela/mutuo/medicao)
-    // Garante que tarifas, transferencias e qualquer mov fora do plano
-    // entrem no Realizado/Planejado e ajustem o saldo do fluxo.
-    // ═══════════════════════════════════════════════════════════
-    // Movs bancarias orfas SAO FATOS REAIS — devem contar em TODOS os modos
-    // (incluindo 'pedidos' e 'planejado'). Antes, so rodava em realizado/completo,
-    // o que fazia o saldo de 'Pedidos+Real' ficar diferente do Realizado por
-    // ignorar tarifas, transferencias e qualquer mov fora do plano.
-    {
-      // Mutuos cujo evento foi REMOVIDO (lixo de dedupe / cancelados) — links pra
-      // esses mutuos NAO contam como "ja conciliado" (a mov volta a ser orfa).
-      const mutuosFiltradosIds = new Set<string>()
-      for (const m of (mutuos as any[])) {
-        const cat = String((m as any).categoria ?? '').toUpperCase()
-        const status = String((m as any).status ?? '').toLowerCase()
-        if (cat.includes('STUB_DEDUPE') || cat === 'STUB' || status === 'cancelado') {
-          mutuosFiltradosIds.add(m.id)
-        }
-      }
-      // IDs ja conciliados com algum item planejado QUE EFETIVAMENTE ENTRA NO FLUXO
-      const movsConciliadasComPlano = new Set<string>()
-      for (const c of (linksMovs as any[])) {
-        const links = c.conciliacao_parcelas ?? []
-        const temLinkValido = links.some((l: any) =>
-          l.parcela_id || l.mutuo_parcela_id || l.medicao_id ||
-          (l.mutuo_id && !mutuosFiltradosIds.has(l.mutuo_id))
-        )
-        if (temLinkValido) movsConciliadasComPlano.add(c.movimentacao_id)
-      }
-
-      for (const m of (movs as any[])) {
-        if (!m.data) continue
-        if (movsConciliadasComPlano.has(m.id)) continue
-        // Tambem pula se a propria mov tem parcela_id direto (legado, ja contado)
-        if (m.parcela_id) continue
-        const val = Math.abs(Number(m.valor))
-        if (!(val > 0)) continue
-        const isEntrada = m.tipo === 'entrada'
-
-        all.push({
-          id: `mov-orfa-${m.id}`,
-          date: m.data,
-          type: isEntrada ? 'entrada' : 'firme',
-          valor: val,
-          meta: {
-            cat: isEntrada ? 'Outros' : 'Despesa',
-            etapa: 'Banco',
-            forn: undefined,
-            item: undefined,
-            desc: m.descricao || (isEntrada ? 'Crédito bancário' : 'Débito bancário'),
-            orig: val,
-          },
-        })
-      }
-    }
+    // (Bloco de movs orfas removido — agora TODAS as movs viram eventos
+    // no inicio do useMemo, e itens do plano com mov vinculada nao emitem
+    // evento agregado. Garante saldo historico = Conciliacao.)
 
     return all
   }, [parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, movs, linksMovs, viewMode])
