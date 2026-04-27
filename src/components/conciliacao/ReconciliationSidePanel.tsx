@@ -45,6 +45,14 @@ interface Candidato {
   data: string
   status: string
   raw: any
+  // Hierarquia para conciliação por pedido (apenas para tipo='parcela' de pedido)
+  pedidoId?: string | null
+  pedidoNumero?: number | null
+  pedidoCond?: string | null
+  pedidoEntrega?: string | null
+  itemDescricao?: string | null
+  etapaNome?: string | null
+  parcelaNumero?: number | null
 }
 
 function fmtDateBr(d: string | null | undefined): string {
@@ -136,6 +144,13 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
           data: p.data_vencimento,
           status: p.status,
           raw: p,
+          pedidoId: p.pedido_id,
+          pedidoNumero: (p as any).pedido_numero ?? null,
+          pedidoCond: (p as any).pedido_cond_pagamento ?? null,
+          pedidoEntrega: (p as any).pedido_data_entrega ?? null,
+          itemDescricao: (p as any).pedido_item ?? null,
+          etapaNome: (p as any).etapa_nome ?? null,
+          parcelaNumero: p.numero_parcela,
         })
       }
 
@@ -459,13 +474,157 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     setSelecao(novo)
   }
 
+  // Quita um pedido inteiro: marca todas as parcelas em aberto e distribui FIFO
+  // o valor disponível da MOV (mov.valor - já aplicado em outras parcelas).
+  const quitarPedido = (pedidoId: string) => {
+    if (!row) return
+    const parcDoPedido = poolCandidatos
+      .filter(c => c.tipo === 'parcela' && c.pedidoId === pedidoId)
+      .sort((a, b) => (a.data || '').localeCompare(b.data || ''))
+    if (parcDoPedido.length === 0) return
+    const novo = new Map(selecao)
+    // Limpa qualquer parcela desse pedido já marcada
+    for (const c of parcDoPedido) novo.delete(c.id)
+    // Recalcula disponível
+    const jaAplicado = Array.from(novo.values()).reduce((s, v) => s + v.valor, 0)
+    let restante = absValor - jaAplicado
+    if (restante <= 0) restante = parcDoPedido.reduce((s, c) => s + c.saldo, 0) // se já zerou, distribui pelo total
+    for (const c of parcDoPedido) {
+      if (restante <= 0.005) break
+      const aplicar = Math.min(c.saldo, restante)
+      novo.set(c.id, { valor: aplicar, observacao: '' })
+      restante -= aplicar
+    }
+    setSelecao(novo)
+  }
+
+  // Sugestões automáticas: combinações de parcelas/pedidos cuja soma == abs(mov.valor).
+  // Inclui: pedido inteiro (soma das parcelas em aberto), parcelas individuais, combinações 2-N.
+  const sugestoes = useMemo(() => {
+    if (!row) return [] as Array<{ key: string; label: string; ids: string[]; total: number; tipo: 'pedido' | 'comb' }>
+    const cands = poolCandidatos.filter(c => c.tipo === 'parcela' && c.saldo > 0.01)
+    const out: Array<{ key: string; label: string; ids: string[]; total: number; tipo: 'pedido' | 'comb' }> = []
+
+    // 1) Pedidos inteiros: soma de saldos por pedido_id
+    const porPedido = new Map<string, Candidato[]>()
+    for (const c of cands) {
+      if (!c.pedidoId) continue
+      const arr = porPedido.get(c.pedidoId) ?? []
+      arr.push(c); porPedido.set(c.pedidoId, arr)
+    }
+    for (const [pedId, arr] of porPedido) {
+      const total = arr.reduce((s, c) => s + c.saldo, 0)
+      if (Math.abs(total - absValor) <= 0.01) {
+        const c0 = arr[0]!
+        out.push({
+          key: `ped-${pedId}`,
+          label: `Pedido #${c0.pedidoNumero ?? '?'} inteiro · ${arr.length} parcela(s) · ${c0.fornecedor ?? ''}`,
+          ids: arr.map(c => c.id),
+          total,
+          tipo: 'pedido',
+        })
+      }
+    }
+
+    // 2) Parcelas individuais com valor exato
+    for (const c of cands) {
+      if (Math.abs(c.saldo - absValor) <= 0.01) {
+        out.push({
+          key: `single-${c.id}`,
+          label: `${c.descricao} · P${c.parcelaNumero ?? '?'} · ${c.fornecedor ?? ''}`,
+          ids: [c.id],
+          total: c.saldo,
+          tipo: 'comb',
+        })
+      }
+    }
+
+    // 3) Combinações 2-5 parcelas que somem == absValor (subset sum DP simples)
+    // Limita pra performance: só candidatos com saldo <= absValor; processa até 60.
+    const top = cands
+      .filter(c => c.saldo <= absValor + 0.01)
+      .sort((a, b) => Math.abs(a.saldo - absValor / 2) - Math.abs(b.saldo - absValor / 2))
+      .slice(0, 60)
+    const seen = new Set<string>()
+    const recurse = (idx: number, soma: number, picked: Candidato[]) => {
+      if (Math.abs(soma - absValor) <= 0.01 && picked.length >= 2) {
+        const key = picked.map(c => c.id).sort().join('|')
+        if (!seen.has(key)) {
+          seen.add(key)
+          out.push({
+            key: `comb-${key.slice(0, 30)}`,
+            label: `${picked.length} parcelas · ${picked.map(c => `P${c.parcelaNumero ?? '?'}`).join(' + ')}`,
+            ids: picked.map(c => c.id),
+            total: soma,
+            tipo: 'comb',
+          })
+        }
+        return
+      }
+      if (picked.length >= 5 || soma > absValor + 0.01 || idx >= top.length) return
+      // Inclui top[idx]
+      recurse(idx + 1, soma + top[idx]!.saldo, [...picked, top[idx]!])
+      // Pula top[idx]
+      recurse(idx + 1, soma, picked)
+    }
+    if (top.length > 0 && top.length <= 25) recurse(0, 0, [])
+
+    // Dedup por ids equivalentes (pedido pode duplicar com combo das suas parcelas)
+    const finalKeys = new Set<string>()
+    return out.filter(s => {
+      const k = s.ids.slice().sort().join('|')
+      if (finalKeys.has(k)) return false
+      finalKeys.add(k); return true
+    }).slice(0, 50)
+  }, [poolCandidatos, absValor, row])
+
+  const aplicarSugestao = (sug: { ids: string[] }) => {
+    const novo = new Map<string, { valor: number; observacao: string }>()
+    let restante = absValor
+    const cands = sug.ids.map(id => poolCandidatos.find(c => c.id === id)).filter((c): c is Candidato => !!c)
+    for (const c of cands) {
+      const aplicar = Math.min(c.saldo, restante)
+      novo.set(c.id, { valor: aplicar, observacao: '' })
+      restante = Math.max(0, restante - aplicar)
+    }
+    setSelecao(novo)
+  }
+
+  // Avisa pedido distante (>60 dias da MOV) — apenas warning visual
+  const movDate = row?.data ? new Date(row.data + 'T00:00:00').getTime() : Date.now()
+  const isPedidoDistante = (c: Candidato) => {
+    if (!c.pedidoEntrega) return false
+    const t = new Date(c.pedidoEntrega + 'T00:00:00').getTime()
+    return Math.abs(t - movDate) > 60 * 86400000
+  }
+
   const handleVincularSelecionados = async () => {
     if (selecao.size === 0) return
     if (!row.raw?.id) {
       alert('Movimento sem ID — não é possível vincular')
       return
     }
-    // Converte selecao em VinculoPayload polim\u00f3rfico
+    // Warning anti-estouro: alguma parcela esta sendo sobre-aplicada
+    const estouros = Array.from(selecao.entries()).filter(([id, { valor }]) => {
+      const c = poolCandidatos.find(x => x.id === id)
+      return c && valor > c.saldo + 0.01
+    })
+    if (estouros.length > 0) {
+      const detalhe = estouros.map(([id, { valor }]) => {
+        const c = poolCandidatos.find(x => x.id === id)
+        return c ? `- ${c.descricao}: aplicar R$ ${valor.toFixed(2)} > saldo R$ ${c.saldo.toFixed(2)}` : ''
+      }).filter(Boolean).join('\n')
+      if (!window.confirm(`Atencao: ${estouros.length} item(ns) com valor MAIOR que o saldo aberto:\n\n${detalhe}\n\nContinuar mesmo assim?`)) return
+    }
+    // Warning pedido distante (>60 dias da data do MOV)
+    const distantes = Array.from(selecao.keys()).filter(id => {
+      const c = poolCandidatos.find(x => x.id === id)
+      return c && isPedidoDistante(c)
+    })
+    if (distantes.length > 0) {
+      if (!window.confirm(`Atencao: ${distantes.length} item(ns) de pedido distante (>60 dias da data do MOV). Verifique se e mesmo o vinculo correto. Continuar?`)) return
+    }
+    // Converte selecao em VinculoPayload polimorfico
     const vinculos = Array.from(selecao.entries()).map(([id, { valor, observacao }]) => {
       const c = poolCandidatos.find(x => x.id === id)
       if (!c) return null
@@ -742,6 +901,29 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
               ))}
             </div>
 
+            {/* Sugestões automáticas (subset sum exato) */}
+            {sugestoes.length > 0 && (
+              <div className="mb-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2">
+                <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                  🎯 Sugestões ({sugestoes.length}) — somam {formatCurrency(absValor)} exato
+                </p>
+                <div className="space-y-1 max-h-32 overflow-auto">
+                  {sugestoes.map(s => (
+                    <button key={s.key} onClick={() => aplicarSugestao(s)}
+                      className="w-full text-left rounded border bg-background px-2 py-1 text-[10px] hover:bg-emerald-500/10 transition-colors">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate">
+                          {s.tipo === 'pedido' && <span className="rounded bg-blue-500/15 text-blue-700 px-1 mr-1 text-[9px] font-bold">PEDIDO</span>}
+                          {s.label}
+                        </span>
+                        <span className="font-mono tabular-nums shrink-0">{formatCurrency(s.total)}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {candidatosFiltrados.length === 0 ? (
               <div className="rounded-md bg-muted/40 p-3 text-center">
                 <AlertTriangle className="mx-auto h-4 w-4 text-muted-foreground mb-1" />
@@ -775,13 +957,36 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                             {c.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
                             {c.tipo === 'mutuo_recebimento' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
                           {c.tipo === 'mutuo_captacao' && <span className="text-[9px] bg-indigo-500/10 text-indigo-600 px-1 rounded">CAP</span>}
+                            {c.pedidoNumero != null && (
+                              <span className="text-[9px] bg-blue-500/10 text-blue-700 px-1 rounded font-mono">
+                                #{c.pedidoNumero}{c.parcelaNumero ? `·P${c.parcelaNumero}` : ''}
+                              </span>
+                            )}
+                            {isPedidoDistante(c) && (
+                              <span className="text-[9px] bg-amber-500/15 text-amber-700 px-1 rounded font-bold" title="Pedido distante (>60 dias da data do PIX). Verifique se é o vínculo correto.">⚠ DIST</span>
+                            )}
                           </div>
                           <p className="text-[10px] text-muted-foreground truncate">
                             {c.fornecedor ? `${c.fornecedor} · ` : ''}
+                            {c.etapaNome ? `${c.etapaNome} · ` : ''}
                             Venc {fmtDateBr(c.data)} · saldo {formatCurrency(c.saldo)}
                             {c.valor_pago > 0 && ` · pago ${formatCurrency(c.valor_pago)}/${formatCurrency(c.valor)}`}
                           </p>
+                          {c.pedidoCond && (
+                            <p className="text-[10px] text-blue-600/80 truncate">
+                              Cond {c.pedidoCond}{c.pedidoEntrega ? ` · entrega ${fmtDateBr(c.pedidoEntrega)}` : ''}
+                            </p>
+                          )}
                         </div>
+                        {/* Botão "Quitar pedido" para parcela com pedido_id */}
+                        {c.pedidoId && !sel && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); quitarPedido(c.pedidoId!) }}
+                            className="text-[9px] rounded border px-1.5 py-0.5 text-blue-700 hover:bg-blue-500/10 shrink-0"
+                            title={`Marca todas as parcelas em aberto do pedido #${c.pedidoNumero ?? '?'} (FIFO)`}>
+                            Quitar pedido
+                          </button>
+                        )}
                         {sel && (
                           <input type="number" step="0.01" value={val}
                             onChange={(e) => updateValor(c.id, Number(e.target.value) || 0)}

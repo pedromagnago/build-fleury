@@ -61,7 +61,7 @@ export function useParcelas() {
       while (hasMore) {
         const { data, error } = await supabase
           .from('parcelas')
-          .select('*, pedidos(item_compra_id, fornecedor_id, fornecedores(nome), itens_compra(descricao, deleted_at)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
+          .select('*, pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, fornecedores(nome), itens_compra(descricao, etapa_id, etapas(nome), deleted_at)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
           .eq('company_id', companyId)
           .is('deleted_at', null)
           .order('data_vencimento', { ascending: true })
@@ -92,7 +92,8 @@ export function useParcelas() {
         })
         .map((p: Record<string, unknown>) => {
         const pedido = p.pedidos as Record<string, unknown> | null
-        const item = pedido?.itens_compra as Record<string, string> | null
+        const item = pedido?.itens_compra as Record<string, any> | null
+        const etapa = item?.etapas as Record<string, string> | null
         const despesa = p.despesas_indiretas as Record<string, unknown> | null
         const fornPed = pedido?.fornecedores as Record<string, string> | null
         const fornDesp = despesa?.fornecedores as Record<string, string> | null
@@ -101,8 +102,13 @@ export function useParcelas() {
           pedido_item: item?.descricao ?? (despesa?.descricao as string) ?? null,
           item_compra_id: (pedido?.item_compra_id as string) ?? null,
           fornecedor_nome: fornPed?.nome ?? fornDesp?.nome ?? null,
+          // Enriquecimento para hierarquia Item → Pedido → Parcela na conciliação
+          pedido_numero: (pedido?.numero_pedido as number) ?? null,
+          pedido_cond_pagamento: (pedido?.cond_pagamento as string) ?? null,
+          pedido_data_entrega: (pedido?.data_entrega_prevista as string) ?? null,
+          etapa_nome: etapa?.nome ?? null,
         }
-      }) as Parcela[]
+      }) as unknown as Parcela[]
     },
     enabled: !!companyId,
   })
