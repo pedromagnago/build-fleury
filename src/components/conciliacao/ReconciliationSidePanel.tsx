@@ -50,9 +50,13 @@ interface Candidato {
   pedidoNumero?: number | null
   pedidoCond?: string | null
   pedidoEntrega?: string | null
+  pedidoValorTotal?: number | null
   itemDescricao?: string | null
   etapaNome?: string | null
   parcelaNumero?: number | null
+  // Ligacao do consumo (item de compra)
+  itemValorOrcado?: number | null
+  itemValorConsumido?: number | null
 }
 
 function fmtDateBr(d: string | null | undefined): string {
@@ -148,9 +152,12 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
           pedidoNumero: (p as any).pedido_numero ?? null,
           pedidoCond: (p as any).pedido_cond_pagamento ?? null,
           pedidoEntrega: (p as any).pedido_data_entrega ?? null,
+          pedidoValorTotal: (p as any).pedido_valor_total ?? null,
           itemDescricao: (p as any).pedido_item ?? null,
           etapaNome: (p as any).etapa_nome ?? null,
           parcelaNumero: p.numero_parcela,
+          itemValorOrcado: (p as any).item_valor_orcado ?? null,
+          itemValorConsumido: (p as any).item_valor_consumido ?? null,
         })
       }
 
@@ -980,6 +987,21 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                           {c.pedidoCond && (
                             <p className="text-[10px] text-blue-600/80 truncate">
                               Cond {c.pedidoCond}{c.pedidoEntrega ? ` · entrega ${fmtDateBr(c.pedidoEntrega)}` : ''}
+                            </p>
+                          )}
+                          {/* Ligacao do consumo: orcado / consumido / saldo do item */}
+                          {(c.itemValorOrcado != null || c.pedidoValorTotal != null) && (
+                            <p className="text-[10px] text-emerald-700/80 truncate" title="Consumo do item de orcamento">
+                              {c.itemValorOrcado != null && (
+                                <>Item orçado {formatCurrency(c.itemValorOrcado)}
+                                {c.itemValorConsumido != null && (
+                                  <> · consumido {formatCurrency(c.itemValorConsumido)} · saldo <span className={c.itemValorOrcado - c.itemValorConsumido < absValor ? 'text-amber-600 font-bold' : ''}>{formatCurrency(c.itemValorOrcado - c.itemValorConsumido)}</span></>
+                                )}
+                                </>
+                              )}
+                              {c.pedidoValorTotal != null && (
+                                <> · pedido {formatCurrency(c.pedidoValorTotal)}</>
+                              )}
                             </p>
                           )}
                         </div>
