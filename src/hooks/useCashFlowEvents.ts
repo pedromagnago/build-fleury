@@ -456,7 +456,11 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // Garante que tarifas, transferencias e qualquer mov fora do plano
     // entrem no Realizado/Planejado e ajustem o saldo do fluxo.
     // ═══════════════════════════════════════════════════════════
-    if (apenasRealizado || viewMode === 'completo') {
+    // Movs bancarias orfas SAO FATOS REAIS — devem contar em TODOS os modos
+    // (incluindo 'pedidos' e 'planejado'). Antes, so rodava em realizado/completo,
+    // o que fazia o saldo de 'Pedidos+Real' ficar diferente do Realizado por
+    // ignorar tarifas, transferencias e qualquer mov fora do plano.
+    {
       // Mutuos cujo evento foi REMOVIDO (lixo de dedupe / cancelados) — links pra
       // esses mutuos NAO contam como "ja conciliado" (a mov volta a ser orfa).
       const mutuosFiltradosIds = new Set<string>()
