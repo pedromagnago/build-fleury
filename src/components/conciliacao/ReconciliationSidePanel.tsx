@@ -434,10 +434,12 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     return concs.find((c: any) => c.id === row.conciliacao_id) ?? null
   }, [concs, row])
 
-  if (!row) return null
-
-  const isSaida = row.tipo === 'saida'
-  const absValor = Math.abs(Number(row.valor))
+  // IMPORTANTE: nao colocar early return aqui — abaixo ainda ha useMemo
+  // (sugestoes) que precisa rodar SEMPRE no mesmo lugar (Rules of Hooks).
+  // Calculamos derivacoes com guards para row=null e fazemos o early return
+  // logo antes do JSX final.
+  const isSaida = row?.tipo === 'saida'
+  const absValor = row ? Math.abs(Number(row.valor)) : 0
 
   const totalSelecionado = Array.from(selecao.values()).reduce((s, v) => s + v.valor, 0)
   const difSelecao = absValor - totalSelecionado
@@ -703,6 +705,9 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     onClose()
     onRefresh()
   }
+
+  // Early return APOS todos os hooks — preserva Rules of Hooks
+  if (!row) return null
 
   return (
     <>
