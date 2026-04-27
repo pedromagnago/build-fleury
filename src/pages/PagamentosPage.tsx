@@ -761,9 +761,12 @@ function MutuoBaixaModal({
 }) {
   const mutuoId = (parcela as any).mutuo_id ?? (parcela as any).raw?.mutuo_id ?? null
   const mutuo = mutuos.find(m => m.id === mutuoId)
+  // Direcao da PARCELA do mutuo (oposta a do principal):
+  // - Captacao (nao Adi-Feito): principal=ENTRADA → parcelas=SAIDA (paga ao credor)
+  // - Adiantamento Feito: principal=SAIDA → parcelas=ENTRADA (terceiro devolve ao projeto)
   const isAdiantamentoFeito = (mutuo?.categoria || '').toLowerCase().includes('adiantamento') &&
                               (mutuo?.categoria || '').toLowerCase().includes('feito')
-  const tipoMov: 'entrada' | 'saida' = isAdiantamentoFeito ? 'saida' : 'entrada'
+  const tipoMov: 'entrada' | 'saida' = isAdiantamentoFeito ? 'entrada' : 'saida'
   const restante = Number(parcela.valor) - Number(parcela.valor_pago || 0)
 
   const [form, setForm] = useState({
