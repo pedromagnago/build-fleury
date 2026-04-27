@@ -60,6 +60,13 @@ function todayISO(): string {
   return fmtISO(d)
 }
 
+function tomorrowISO(): string {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  d.setDate(d.getDate() + 1)
+  return fmtISO(d)
+}
+
 function addDaysISO(baseIso: string, days: number): string {
   if (!baseIso) return baseIso
   const d = new Date(baseIso)
@@ -108,6 +115,10 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
 
   const events = useMemo(() => {
     const today = todayISO()
+    // Atrasados nao pagos sao empurrados para AMANHA (nao hoje) — assim o saldo
+    // de hoje em modo 'pedidos'/'completo' fica IGUAL ao Realizado, e a divergencia
+    // entre os modos comeca apenas a partir do dia seguinte (futuro/projecao).
+    const amanha = tomorrowISO()
     const all: CashFlowEvent[] = []
 
     // Regra: em 'realizado' e 'planejado' mostramos apenas o que é REAL (pago/confirmado).
@@ -127,9 +138,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
         baseDate = addDaysISO(baseDate, prazoRecebimento)
       }
       
-      // Vencida e não-paga: move para hoje (apenas em visões com previsão)
+      // Vencida e não-paga: move para AMANHA (não hoje) — saldo de hoje fica igual ao Realizado.
       if (m.status !== 'paga' && baseDate < today && !apenasRealizado) {
-        baseDate = today
+        baseDate = amanha
       }
 
       const dists = distribuicoes.filter(dd => dd.medicao_numero === m.numero)
@@ -148,7 +159,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           }
 
           if (m.status !== 'paga' && evDate < today && !apenasRealizado) {
-            evDate = today
+            evDate = amanha
           }
 
           const etapa = etapas.find(e => e.id === dist.etapa_id)
@@ -250,7 +261,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       // Paga: usa data_pagamento_real; se null (legado), cai em data_vencimento. Nunca empurra paga para hoje.
       // Não paga: empurra vencida para hoje só na projeção (não em realizado/planejado).
       let date = isPaga ? (p.data_pagamento_real || p.data_vencimento) : p.data_vencimento
-      if (!isPaga && date < today && !apenasRealizado) date = today
+      if (!isPaga && date < today && !apenasRealizado) date = amanha
 
       const ped = pedidos.find(pd => pd.id === p.pedido_id)
       
@@ -326,7 +337,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
         if (calcVal <= 0) return
 
         let date = isPaga ? (p.data_pagamento_real || p.data_vencimento) : p.data_vencimento
-        if (!isPaga && date < today && !apenasRealizado) date = today
+        if (!isPaga && date < today && !apenasRealizado) date = amanha
 
         all.push({
           id: `mutpar-${p.id}`,
@@ -364,7 +375,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             const dt = localDate(baseDateStr)
             dt.setDate(dt.getDate() + dd)
             let dateStr = fmtISO(dt)
-            if (dateStr < today) dateStr = today
+            if (dateStr < today) dateStr = amanha
 
             all.push({
               id: `pedsol-${p.id}-${pIdx}`,
@@ -413,7 +424,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             const dt = localDate(baseDate)
             dt.setDate(dt.getDate() + dd)
             let dateStr = fmtISO(dt)
-            if (dateStr < today) dateStr = today
+            if (dateStr < today) dateStr = amanha
 
             all.push({
               id: `bruto-${item.id}-${dIdx}-${pIdx}`,

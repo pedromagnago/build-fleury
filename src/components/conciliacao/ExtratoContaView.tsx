@@ -65,6 +65,7 @@ export function ExtratoContaView() {
   const { data: concs = [] } = useConciliacoes()
   const qc = useQueryClient()
 
+  // contaId pode ser '__all__' para visao consolidada (somar todas as ativas)
   const [contaId, setContaId] = useState<string>(() => contas[0]?.id ?? '')
   const [periodDays, setPeriodDays] = useState(30)
   const [filterSituacao, setFilterSituacao] = useState<Situacao | 'todos'>('todos')
@@ -80,8 +81,17 @@ export function ExtratoContaView() {
     qc.invalidateQueries({ queryKey: ['conciliacao_history'] })
   }
 
-  const contaAtiva = contas.find(c => c.id === contaId) ?? contas[0] ?? null
+  const isAllContas = contaId === '__all__'
+  const contaAtiva = isAllContas ? null : (contas.find(c => c.id === contaId) ?? contas[0] ?? null)
   const effectiveContaId = contaAtiva?.id ?? ''
+  const selectedContaIds = useMemo<Set<string>>(() => {
+    if (isAllContas) return new Set((contas as any[]).filter(c => c.ativa).map((c: any) => c.id as string))
+    return new Set(effectiveContaId ? [effectiveContaId] : [])
+  }, [isAllContas, contas, effectiveContaId])
+  const saldoInicialBase = useMemo(() => {
+    if (isAllContas) return (contas as any[]).filter(c => c.ativa).reduce((s, c: any) => s + Number(c.saldo_inicial || 0), 0)
+    return contaAtiva?.saldo_inicial ?? 0
+  }, [isAllContas, contas, contaAtiva])
 
   const cutoff = useMemo(() => {
     const d = new Date()
@@ -108,12 +118,12 @@ export function ExtratoContaView() {
   }, [concs])
 
   const rows: ExtratoRow[] = useMemo(() => {
-    if (!effectiveContaId) return []
+    if (selectedContaIds.size === 0) return []
     const result: ExtratoRow[] = []
     const today = new Date().toISOString().split('T')[0]!
 
-    // Movimentos bancários da conta no período
-    for (const m of (movs as any[]).filter((x: any) => x.conta_id === effectiveContaId && x.data >= cutoff)) {
+    // Movimentos bancários das contas selecionadas no período
+    for (const m of (movs as any[]).filter((x: any) => selectedContaIds.has(x.conta_id) && x.data >= cutoff)) {
       const conc = concByMovId.get(m.id)
       let situacao: Situacao
       if (m.origem === 'manual' && !conc) situacao = 'manual'
@@ -144,9 +154,9 @@ export function ExtratoContaView() {
       })
     }
 
-    // Parcelas pagas dessa conta sem movimento bancário (fantasmas)
+    // Parcelas pagas das contas selecionadas sem movimento bancário (fantasmas)
     const parcelasDaConta = parcelas.filter((p: any) =>
-      p.conta_bancaria_id === effectiveContaId &&
+      p.conta_bancaria_id && selectedContaIds.has(p.conta_bancaria_id) &&
       (p.status === 'paga' || p.status === 'parcialmente_paga') &&
       !confirmedParcelaIds.has(p.id) &&
       p.data_pagamento_real &&
@@ -166,7 +176,7 @@ export function ExtratoContaView() {
         valor: Number(p.valor_pago),
         tipo: p.pedido_id ? 'saida' : 'saida',
         saldo_acumulado: null,
-        conta_id: effectiveContaId,
+        conta_id: (p as any).conta_bancaria_id,
         parcela_id: p.id,
         conciliado: false,
         raw: p,
@@ -176,14 +186,14 @@ export function ExtratoContaView() {
     result.sort((a, b) => a.data.localeCompare(b.data))
 
     // Calcular saldo previsto corrido
-    let saldoCorrente = contaAtiva?.saldo_inicial ?? 0
+    let saldoCorrente = saldoInicialBase
     // Adicionar movs anteriores ao período
-    for (const m of (movs as any[]).filter((x: any) => x.conta_id === effectiveContaId && x.data < cutoff)) {
+    for (const m of (movs as any[]).filter((x: any) => selectedContaIds.has(x.conta_id) && x.data < cutoff)) {
       saldoCorrente += m.tipo === 'entrada' ? Number(m.valor) : -Number(m.valor)
     }
 
     return result
-  }, [effectiveContaId, movs, parcelas, concByMovId, confirmedParcelaIds, cutoff, contaAtiva])
+  }, [selectedContaIds, movs, parcelas, concByMovId, confirmedParcelaIds, cutoff, saldoInicialBase])
 
   // Filtros
   const filtered = useMemo(() => {
@@ -198,28 +208,27 @@ export function ExtratoContaView() {
 
   // Saldo previsto com base nas linhas filtradas, dia a dia
   const withSaldo = useMemo(() => {
-    let saldo = contaAtiva?.saldo_inicial ?? 0
-    for (const m of (movs as any[]).filter((x: any) => x.conta_id === effectiveContaId && x.data < cutoff)) {
+    let saldo = saldoInicialBase
+    for (const m of (movs as any[]).filter((x: any) => selectedContaIds.has(x.conta_id) && x.data < cutoff)) {
       saldo += m.tipo === 'entrada' ? Number(m.valor) : -Number(m.valor)
     }
     return filtered.map(r => {
       saldo += r.tipo === 'entrada' ? r.valor : -r.valor
       return { ...r, saldo_previsto: saldo }
     })
-  }, [filtered, contaAtiva, movs, effectiveContaId, cutoff])
+  }, [filtered, saldoInicialBase, movs, selectedContaIds, cutoff])
 
   // Totalizadores
   const totais = useMemo(() => {
     const conciliados = rows.filter(r => r.conciliado)
       .reduce((s, r) => s + (r.tipo === 'entrada' ? r.valor : -r.valor), 0)
     const total = rows.reduce((s, r) => s + (r.tipo === 'entrada' ? r.valor : -r.valor), 0)
-    const saldoInicial = contaAtiva?.saldo_inicial ?? 0
     return {
-      saldo_conciliado: saldoInicial + conciliados,
-      saldo_atual: saldoInicial + total,
-      saldo_previsto: saldoInicial + total,
+      saldo_conciliado: saldoInicialBase + conciliados,
+      saldo_atual: saldoInicialBase + total,
+      saldo_previsto: saldoInicialBase + total,
     }
-  }, [rows, contaAtiva])
+  }, [rows, saldoInicialBase])
 
   const counts = useMemo(() => {
     const c = { todos: rows.length, conciliado: 0, nao_conciliado: 0, sugerido: 0, atrasado: 0, manual: 0 }
@@ -241,9 +250,10 @@ export function ExtratoContaView() {
       <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-3">
         <div className="flex items-center gap-2">
           <label className="text-[10px] font-bold uppercase text-muted-foreground">Conta</label>
-          <select value={effectiveContaId} onChange={(e) => setContaId(e.target.value)}
+          <select value={isAllContas ? '__all__' : effectiveContaId} onChange={(e) => setContaId(e.target.value)}
             className="rounded-md border bg-background px-2 py-1.5 text-xs font-semibold">
-            {contas.map(c => <option key={c.id} value={c.id}>{c.nome} {c.banco ? `· ${c.banco}` : ''}</option>)}
+            <option value="__all__">📊 Todas as contas (consolidado)</option>
+            {contas.filter(c => c.ativa).map(c => <option key={c.id} value={c.id}>{c.nome} {c.banco ? `· ${c.banco}` : ''}</option>)}
           </select>
         </div>
         <div className="flex items-center gap-2">
@@ -323,8 +333,8 @@ export function ExtratoContaView() {
               <tr className="bg-emerald-500/5 font-bold">
                 <td colSpan={4} className="px-2 py-1.5 text-[11px]">SALDO INICIAL</td>
                 <td className="px-2 py-1.5 text-right tabular-nums">—</td>
-                <td className="px-2 py-1.5 text-right tabular-nums">{formatCurrency(contaAtiva?.saldo_inicial ?? 0)}</td>
-                <td className="px-2 py-1.5 text-right tabular-nums">{formatCurrency(contaAtiva?.saldo_inicial ?? 0)}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{formatCurrency(saldoInicialBase)}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{formatCurrency(saldoInicialBase)}</td>
                 <td></td>
               </tr>
 
@@ -416,7 +426,7 @@ export function ExtratoContaView() {
 
       {/* Dialog novo lançamento manual */}
       {showNovo && (
-        <NovoLancamentoDialog defaultContaId={effectiveContaId} onClose={() => setShowNovo(false)} />
+        <NovoLancamentoDialog defaultContaId={effectiveContaId || (contas.find(c => c.ativa)?.id ?? '')} onClose={() => setShowNovo(false)} />
       )}
     </div>
   )
