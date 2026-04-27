@@ -1987,9 +1987,10 @@ function PorFornecedorTab() {
   const { data: pedidos = [] } = usePedidos()
   const { data: fornecedores = [] } = useFornecedores()
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
 
   const groups = useMemo(() => {
-    // Group items by fornecedor
+    // Seed por itens (fornecedor preferencial do orcamento)
     const map = new Map<string, { fornecedor: Fornecedor | null; itens: ItemCompra[]; totalOrcado: number; totalConsumido: number }>()
 
     itens.forEach((item) => {
@@ -2004,18 +2005,25 @@ function PorFornecedorTab() {
       g.totalConsumido += item.valor_consumido
     })
 
-    // Enrich with parcela info
+    // Inclui fornecedores que so tem PEDIDOS (sem item proprio) — caso BRUNO MARKLEWSKI
+    pedidos.forEach((p) => {
+      const fid = p.fornecedor_id ?? '__sem_fornecedor__'
+      if (!map.has(fid)) {
+        const forn = fornecedores.find((f) => f.id === fid) ?? null
+        map.set(fid, { fornecedor: forn, itens: [], totalOrcado: 0, totalConsumido: 0 })
+      }
+    })
+
+    // Enrich with parcela / pedido info
     return [...map.entries()].map(([fid, g]) => {
-      // Find pedidos of this fornecedor
       const fornPedidos = pedidos.filter((p) => (p.fornecedor_id ?? '__sem_fornecedor__') === fid)
       const pedidoIds = new Set(fornPedidos.map((p) => p.id))
+      const totalPedidos = fornPedidos.reduce((s, p) => s + Number(p.valor_total_real ?? 0), 0)
 
-      // Find parcelas
       const fornParcelas = parcelas.filter((p) => p.pedido_id && pedidoIds.has(p.pedido_id))
       const totalPago = fornParcelas.filter((p) => p.status === 'paga').reduce((s, p) => s + p.valor_pago, 0)
       const pendente = fornParcelas.filter((p) => p.status !== 'paga').reduce((s, p) => s + p.valor - p.valor_pago, 0)
 
-      // Next due date
       const today = new Date().toISOString().split('T')[0]!
       const proxVenc = fornParcelas
         .filter((p) => p.status !== 'paga' && p.data_vencimento >= today)
@@ -2027,19 +2035,47 @@ function PorFornecedorTab() {
         itens: g.itens,
         totalOrcado: g.totalOrcado,
         totalConsumido: g.totalConsumido,
+        totalPedidos,
+        qtdPedidos: fornPedidos.length,
         totalPago,
         pendente,
         proxVenc: proxVenc ? proxVenc.data_vencimento : null,
       }
-    }).sort((a, b) => b.totalOrcado - a.totalOrcado)
+    })
+    // Ordena por relevancia: o que tem maior valor (orcado OU pedidos)
+    .sort((a, b) => Math.max(b.totalOrcado, b.totalPedidos) - Math.max(a.totalOrcado, a.totalPedidos))
   }, [itens, parcelas, pedidos, fornecedores])
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase().trim()
+    if (!q) return groups
+    return groups.filter(g => g.nome.toLowerCase().includes(q))
+  }, [groups, search])
 
   if (isLoading) return <Spinner />
   if (groups.length === 0) return <EmptyState msg="Sem dados de fornecedores" />
 
   return (
     <div className="space-y-3">
-      {groups.map((g) => (
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar parceiro por nome…"
+          className="w-full rounded-lg border bg-background pl-9 pr-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+        />
+        {search && (
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">
+            {filtered.length}/{groups.length}
+          </span>
+        )}
+      </div>
+      {filtered.length === 0 && search && (
+        <EmptyState msg={`Nenhum parceiro encontrado para "${search}"`} />
+      )}
+      {filtered.map((g) => (
         <div key={g.id} className="rounded-xl border bg-card transition-shadow hover:shadow-sm">
           <button
             onClick={() => setExpandedId(expandedId === g.id ? null : g.id)}
@@ -2048,12 +2084,15 @@ function PorFornecedorTab() {
             {expandedId === g.id ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
             <div className="flex-1">
               <h4 className="text-sm font-semibold">{g.nome}</h4>
-              <p className="text-[10px] text-muted-foreground">{g.itens.length} itens</p>
+              <p className="text-[10px] text-muted-foreground">
+                {g.itens.length} {g.itens.length === 1 ? 'item' : 'itens'}
+                {g.qtdPedidos > 0 && ` · ${g.qtdPedidos} ${g.qtdPedidos === 1 ? 'pedido' : 'pedidos'}`}
+              </p>
             </div>
             <div className="flex items-center gap-4 text-xs">
               <div className="text-right">
-                <p className="text-[10px] text-muted-foreground">Orçado</p>
-                <p className="font-medium">{formatCurrency(g.totalOrcado)}</p>
+                <p className="text-[10px] text-muted-foreground">{g.itens.length === 0 ? 'Pedidos' : 'Orçado'}</p>
+                <p className="font-medium">{formatCurrency(g.itens.length === 0 ? g.totalPedidos : g.totalOrcado)}</p>
               </div>
               <div className="text-right">
                 <p className="text-[10px] text-muted-foreground">Pago</p>
@@ -2098,6 +2137,41 @@ function PorFornecedorTab() {
                   ))}
                 </tbody>
               </table>
+              {/* Pedidos do parceiro (incluindo aqueles cujo item nao tem fornecedor preferencial) */}
+              {g.qtdPedidos > 0 && (
+                <div className="mt-3">
+                  <p className="text-[9px] uppercase text-muted-foreground mb-1">Pedidos ({g.qtdPedidos})</p>
+                  <table className="tbl-bf w-full text-xs">
+                    <thead>
+                      <tr className="text-[9px] uppercase text-muted-foreground">
+                        <th className="py-1 text-left">#</th>
+                        <th className="py-1 text-left">Item</th>
+                        <th className="py-1 text-left">Status</th>
+                        <th className="py-1 text-right">Valor</th>
+                        <th className="py-1 text-right">Entrega</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/30">
+                      {pedidos
+                        .filter(p => (p.fornecedor_id ?? '__sem_fornecedor__') === g.id)
+                        .sort((a, b) => (b.numero_pedido ?? 0) - (a.numero_pedido ?? 0))
+                        .slice(0, 50)
+                        .map(p => {
+                          const it = itens.find(i => i.id === p.item_compra_id)
+                          return (
+                            <tr key={p.id}>
+                              <td className="py-1.5 font-mono text-[10px]">#{p.numero_pedido ?? '—'}</td>
+                              <td className="max-w-[180px] truncate py-1.5">{it?.descricao ?? p.item_descricao ?? '—'}</td>
+                              <td className="py-1.5 text-muted-foreground text-[10px]">{p.status}</td>
+                              <td className="py-1.5 text-right">{formatCurrency(Number(p.valor_total_real ?? 0))}</td>
+                              <td className="py-1.5 text-right text-[10px] text-muted-foreground">{p.data_entrega_prevista ? localDate(p.data_entrega_prevista).toLocaleDateString('pt-BR') : '—'}</td>
+                            </tr>
+                          )
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </div>
