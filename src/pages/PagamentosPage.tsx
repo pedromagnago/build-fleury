@@ -104,6 +104,52 @@ export default function PagamentosPage() {
 
 type TypeFilter = 'todos' | 'pedidos' | 'mutuos' | 'avulsas'
 
+// Estorno unificado: limpa conciliacao + mov + zera parcela/mutuo_parcela.
+async function estornarParcela(p: Parcela, isMutuo: boolean, qc: ReturnType<typeof useQueryClient>) {
+  if (!window.confirm(`Estornar baixa de ${formatCurrency(p.valor_pago || p.valor)}?\nIsso apaga a movimentacao bancaria e a conciliacao vinculadas.`)) return
+  try {
+    const linkCol = isMutuo ? 'mutuo_parcela_id' : 'parcela_id'
+    const { data: links } = await supabase
+      .from('conciliacao_parcelas').select('conciliacao_id').eq(linkCol, p.id)
+    const concIds = Array.from(new Set((links ?? []).map((l: any) => l.conciliacao_id as string)))
+    if (concIds.length > 0) {
+      const { data: concs } = await supabase
+        .from('conciliacoes').select('movimentacao_id').in('id', concIds)
+      const movIds = Array.from(new Set((concs ?? []).map((c: any) => c.movimentacao_id as string)))
+      await supabase.from('conciliacao_parcelas').delete().in('conciliacao_id', concIds)
+      await supabase.from('conciliacoes').delete().in('id', concIds)
+      if (movIds.length > 0) {
+        await supabase.from('movimentacoes_bancarias').delete().in('id', movIds)
+      }
+    }
+    if (isMutuo) {
+      await supabase.from('mutuo_parcelas').update({
+        status: 'pendente',
+        valor_pago: 0,
+        data_pagamento_real: null,
+        conta_bancaria_id: null,
+        forma_pagamento: null,
+      }).eq('id', p.id)
+    } else {
+      await supabase.from('parcelas').update({
+        status: 'a_vencer',
+        valor_pago: 0,
+        data_pagamento_real: null,
+        forma_pagamento: null,
+        comprovante_path: null,
+      }).eq('id', p.id)
+    }
+    qc.invalidateQueries({ queryKey: ['parcelas'] })
+    qc.invalidateQueries({ queryKey: ['mutuos'] })
+    qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+    qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+    qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+    toast.success('Baixa estornada')
+  } catch (err: any) {
+    toast.error('Erro ao estornar: ' + (err?.message ?? String(err)))
+  }
+}
+
 function ParcelasTab({ search }: { search: string }) {
   const { currentCompany } = useProject()
   const qc = useQueryClient()
@@ -366,6 +412,15 @@ function ParcelasTab({ search }: { search: string }) {
                         {p.status !== 'paga' && !isMutuo && (
                           <button onClick={() => { if (window.confirm('Excluir parcela?')) deleteParcela.mutate(p.id) }} className="rounded-md p-1 text-red-500 hover:bg-red-500/10 transition-colors text-[10px]" title="Excluir">
                             <Trash2 className="h-3 w-3" />
+                          </button>
+                        )}
+                        {(p.status === 'paga' || p.status === 'parcialmente_paga') && (
+                          <button
+                            onClick={() => estornarParcela(p, isMutuo, qc)}
+                            className="rounded-md bg-amber-500/10 px-2.5 py-1 text-[10px] font-semibold text-amber-600 hover:bg-amber-500/20 transition-colors"
+                            title="Estornar baixa (apaga mov + conciliacao)"
+                          >
+                            Estornar
                           </button>
                         )}
                       </div>
@@ -1275,9 +1330,9 @@ function BatchPaymentModal({
           }
         }
 
-        // 3. Bank transaction
+        // 3. Bank transaction + auto-conciliacao (paridade com Conciliacao + Fluxo)
         if (form.conta_bancaria_id) {
-          await supabase.from('movimentacoes_bancarias').insert({
+          const { data: movRow, error: eMov } = await supabase.from('movimentacoes_bancarias').insert({
             company_id: companyId,
             conta_id: form.conta_bancaria_id,
             data: form.data_pagamento,
@@ -1285,7 +1340,25 @@ function BatchPaymentModal({
             valor: valorPago,
             tipo: 'saida',
             parcela_id: parc.id,
-          })
+          }).select('id').single()
+          if (eMov) throw eMov
+          if (movRow) {
+            const { data: concRow, error: eConc } = await supabase.from('conciliacoes').insert({
+              company_id: companyId,
+              movimentacao_id: movRow.id,
+              match_type: 'manual',
+              confidence: 100,
+              status: 'aprovado',
+            }).select('id').single()
+            if (eConc) throw eConc
+            if (concRow) {
+              await supabase.from('conciliacao_parcelas').insert({
+                conciliacao_id: concRow.id,
+                parcela_id: parc.id,
+                valor_aplicado: valorPago,
+              })
+            }
+          }
         }
 
         // 4. Audit log

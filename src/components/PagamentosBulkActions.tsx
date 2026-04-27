@@ -98,8 +98,8 @@ function PagarLoteModal({ parcelas, fornecedorMap, onClose, onDone }: {
           }
         }
 
-        // Create movimentação
-        await supabase.from('movimentacoes_bancarias').insert({
+        // Create movimentação + conciliacao auto (visivel na Conciliacao + Fluxo)
+        const { data: movRow, error: eMov } = await supabase.from('movimentacoes_bancarias').insert({
           company_id: currentCompany?.id,
           conta_id: contaId,
           data: dataPgto,
@@ -107,7 +107,25 @@ function PagarLoteModal({ parcelas, fornecedorMap, onClose, onDone }: {
           valor: valorPagar,
           tipo: 'saida',
           parcela_id: p.id,
-        })
+        }).select('id').single()
+        if (eMov) throw eMov
+        if (movRow) {
+          const { data: concRow, error: eConc } = await supabase.from('conciliacoes').insert({
+            company_id: currentCompany?.id,
+            movimentacao_id: movRow.id,
+            match_type: 'manual',
+            confidence: 100,
+            status: 'aprovado',
+          }).select('id').single()
+          if (eConc) throw eConc
+          if (concRow) {
+            await supabase.from('conciliacao_parcelas').insert({
+              conciliacao_id: concRow.id,
+              parcela_id: p.id,
+              valor_aplicado: valorPagar,
+            })
+          }
+        }
       }
 
       await supabase.from('audit_logs').insert({
@@ -463,6 +481,28 @@ function EstornarLoteModal({ parcelas, onClose, onDone }: { parcelas: Parcela[];
     setSaving(true)
     try {
       const ids = parcelas.map(p => p.id)
+      // 1) Localiza conciliacoes vinculadas a essas parcelas
+      const { data: links } = await supabase
+        .from('conciliacao_parcelas')
+        .select('conciliacao_id, parcela_id')
+        .in('parcela_id', ids)
+      const concIds = Array.from(new Set((links ?? []).map((l: any) => l.conciliacao_id as string)))
+
+      if (concIds.length > 0) {
+        // 2) Pega movs dessas conciliacoes para deletar tambem
+        const { data: concs } = await supabase
+          .from('conciliacoes').select('movimentacao_id').in('id', concIds)
+        const movIds = Array.from(new Set((concs ?? []).map((c: any) => c.movimentacao_id as string)))
+
+        // 3) Deleta links -> conciliacoes -> movs (ordem importa por FK)
+        await supabase.from('conciliacao_parcelas').delete().in('conciliacao_id', concIds)
+        await supabase.from('conciliacoes').delete().in('id', concIds)
+        if (movIds.length > 0) {
+          await supabase.from('movimentacoes_bancarias').delete().in('id', movIds)
+        }
+      }
+
+      // 4) Zera as parcelas
       for (let i = 0; i < ids.length; i += 50) {
         const chunk = ids.slice(i, i + 50)
         const { error } = await supabase.from('parcelas').update({
@@ -477,6 +517,7 @@ function EstornarLoteModal({ parcelas, onClose, onDone }: { parcelas: Parcela[];
 
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
       qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
       toast.success(`${parcelas.length} parcelas estornadas`)
       onDone()
