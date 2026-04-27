@@ -27,6 +27,12 @@ export interface CashFlowEvent {
     item?: string         // Descrição do item
     desc: string          // Label descritivo para exibição
     orig?: number         // Valor original (pré-override)
+    pedidoId?: string     // ID do pedido (para rastreamento)
+    pedidoNumero?: number // Número humano do pedido
+    parcelaNumero?: number
+    parcelaTotal?: number
+    parcelaTipo?: 'contratual' | 'adiantamento'
+    dataVencimento?: string
   }
 }
 
@@ -223,6 +229,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
         etapaStr = 'Outros'
       }
 
+      // Conta total de parcelas do mesmo pedido para sublabel "Parc 1/3"
+      const totalParcPedido = ped ? parcelas.filter(pp => pp.pedido_id === ped.id).length : undefined
+
       all.push({
         id: `par-${p.id}`,
         date,
@@ -234,7 +243,13 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           forn: fornStr,
           item: itemStr,
           desc: descStr,
-          orig: calcVal
+          orig: calcVal,
+          pedidoId: ped?.id,
+          pedidoNumero: ped?.numero_pedido ?? undefined,
+          parcelaNumero: p.numero_parcela,
+          parcelaTotal: totalParcPedido,
+          parcelaTipo: (p as any).tipo,
+          dataVencimento: p.data_vencimento,
         }
       })
     })

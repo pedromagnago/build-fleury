@@ -41,7 +41,7 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
   const [editData, setEditData] = useState<string>('')
   const [tab, setTab] = useState<EventType>('firme')
 
-  // Agrupa por tipo, depois por etapa, depois por fornecedor/item
+  // Agrupa por tipo, depois por etapa, depois por FORNECEDOR (sublabel mantém a hierarquia visível)
   const grouped = useMemo(() => {
     const out: Record<EventType, Map<string, Map<string, CashFlowEvent[]>>> = {
       entrada: new Map(), firme: new Map(), bruto: new Map(),
@@ -54,6 +54,19 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
       const m = out[tipo].get(etapa)!
       if (!m.has(sub)) m.set(sub, [])
       m.get(sub)!.push(ev)
+    }
+    // Ordena dentro de cada subgrupo por pedidoNumero/parcelaNumero
+    for (const tipo of ['entrada','firme','bruto'] as const) {
+      for (const subs of out[tipo].values()) {
+        for (const arr of subs.values()) {
+          arr.sort((a, b) => {
+            const pa = a.meta.pedidoNumero ?? 0
+            const pb = b.meta.pedidoNumero ?? 0
+            if (pa !== pb) return pa - pb
+            return (a.meta.parcelaNumero ?? 0) - (b.meta.parcelaNumero ?? 0)
+          })
+        }
+      }
     }
     return out
   }, [events])
@@ -162,8 +175,16 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
   }
 
   const linkExternoPara = (ev: CashFlowEvent): { url: string; label: string } | null => {
-    const search = `?search=${encodeURIComponent(ev.meta.desc)}`
-    if (ev.id.startsWith('par-') || ev.id.startsWith('mutpar-')) return { url: `/pagamentos${search}`, label: 'Pagamentos' }
+    // Quando temos pedidoNumero, busca mais precisa
+    const searchTerm = ev.meta.pedidoNumero != null ? `#${ev.meta.pedidoNumero}` : ev.meta.desc
+    const search = `?search=${encodeURIComponent(searchTerm)}`
+    if (ev.id.startsWith('par-')) {
+      // Para parcelas com pedido, abre em Compras (pra ver o pedido inteiro), senão Pagamentos
+      return ev.meta.pedidoNumero != null
+        ? { url: `/compras${search}`, label: `Pedido #${ev.meta.pedidoNumero}` }
+        : { url: `/pagamentos${search}`, label: 'Pagamentos' }
+    }
+    if (ev.id.startsWith('mutpar-')) return { url: `/pagamentos${search}`, label: 'Pagamentos' }
     if (ev.id.startsWith('mutcap-')) return { url: `/mutuos${search}`, label: 'Capital & Mútuos' }
     if (ev.id.startsWith('pedsol-')) return { url: `/compras${search}`, label: 'Compras' }
     if (ev.id.startsWith('med-')) return { url: `/cronograma?tab=medicoes&search=${encodeURIComponent(ev.meta.desc)}`, label: 'Medições' }
@@ -261,16 +282,36 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
                                     const isModified = ov && (ov.newDate || ov.newValue !== undefined)
                                     const isEditing = editingId === ev.id
                                     const link = linkExternoPara(ev)
+                                    // Linha PRINCIPAL: descrição do item específico (não a desc genérica "Parc 1 — FORN")
+                                    const tituloPrincipal = ev.meta.item || ev.meta.desc
+                                    // Sublabel rico com rastreamento do pedido e parcela
+                                    const partes: string[] = []
+                                    if (ev.meta.pedidoNumero != null) partes.push(`Pedido #${ev.meta.pedidoNumero}`)
+                                    if (ev.meta.parcelaNumero != null) {
+                                      partes.push(ev.meta.parcelaTotal ? `Parc ${ev.meta.parcelaNumero}/${ev.meta.parcelaTotal}` : `Parc ${ev.meta.parcelaNumero}`)
+                                    }
+                                    if (ev.meta.parcelaTipo === 'adiantamento') partes.push('Adiantamento')
+                                    const venc = ev.meta.dataVencimento
+                                    const dataMostrar = venc && venc !== ev.date
+                                      ? `Pago ${new Date(ev.date + 'T00:00:00').toLocaleDateString('pt-BR')} · Venc ${new Date(venc + 'T00:00:00').toLocaleDateString('pt-BR')}`
+                                      : new Date(ev.date + 'T00:00:00').toLocaleDateString('pt-BR')
                                     return (
                                       <div key={ev.id} className={`px-3 py-2 border-b last:border-0 ${isModified ? 'bg-amber-50/40 dark:bg-amber-900/10' : ''}`}>
                                         <div className="flex items-start justify-between gap-2 text-[11px]">
                                           <div className="min-w-0 flex-1">
-                                            <p className="truncate" title={ev.meta.desc}>
+                                            <p className="truncate font-medium" title={tituloPrincipal}>
                                               {isModified && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5" />}
-                                              {ev.meta.desc}
+                                              {tituloPrincipal}
                                             </p>
+                                            {partes.length > 0 && (
+                                              <p className="text-[10px] text-muted-foreground flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
+                                                {partes.map((p, i) => (
+                                                  <span key={i} className={i === 0 ? 'font-semibold text-blue-600' : ''}>{p}</span>
+                                                ))}
+                                              </p>
+                                            )}
                                             <p className="text-[10px] text-muted-foreground">
-                                              {new Date(ev.date + 'T00:00:00').toLocaleDateString('pt-BR')}
+                                              {dataMostrar}
                                               {isModified && ov.newDate && (
                                                 <span className="text-amber-600 ml-1">→ {new Date(ov.newDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
                                               )}
