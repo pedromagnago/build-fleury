@@ -21,6 +21,7 @@ import {
   Tags,
 } from 'lucide-react'
 import { useMutuos, useCreateMutuo, useDeleteMutuo, useUpdateMutuo, useUpdateMutuoParcela, useCreateMutuoParcela, useDeleteMutuoParcela, useBatchDeleteMutuos, useBatchUpdateMutuosCategory } from '@/hooks/useMutuos'
+import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { useFornecedores } from '@/hooks/useCompras'
 import type { Mutuo, MutuoParcela } from '@/hooks/useMutuos'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -89,9 +90,11 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
     nome: '', tipo: 'MÚTUO' as Mutuo['tipo'], categoria: 'Capital de Giro',
     instituicao: '', fornecedor_id: '', valor_captado: '', data_captacao: '',
     taxa_juros_mensal: '', observacoes: '', status: 'ativo' as Mutuo['status'],
+    conta_bancaria_id: '',
   })
   const [parcelasText, setParcelasText] = useState('')
   const { data: fornecedores } = useFornecedores()
+  const { data: contasBancarias = [] } = useContasBancarias()
 
   useEffect(() => {
     if (open && initialData) {
@@ -107,12 +110,17 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
         taxa_juros_mensal: initialData.taxa_juros_mensal ? String(initialData.taxa_juros_mensal) : '',
         observacoes: initialData.observacoes ?? '',
         status: initialData.status ?? 'ativo',
+        conta_bancaria_id: '',
       })
     } else if (open) {
+      const contaPadrao = (contasBancarias as any[]).find(c => c.ativa && /caixa/i.test(c.nome))?.id
+        ?? (contasBancarias as any[]).find(c => c.ativa)?.id
+        ?? ''
       setForm({
         direcao: 'entrada',
         nome: '', tipo: 'MÚTUO', categoria: 'Capital de Giro', instituicao: '', fornecedor_id: '',
         valor_captado: '', data_captacao: '', taxa_juros_mensal: '', observacoes: '', status: 'ativo',
+        conta_bancaria_id: contaPadrao,
       })
       setParcelasText('')
     }
@@ -137,7 +145,11 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
       updateMutuo.mutate({ id: initialData!.id, ...payload } as any, { onSuccess: () => onClose() })
     } else {
       const parcelas = parseParcelasText(parcelasText)
-      createMutuo.mutate({ mutuo: payload, parcelas }, { onSuccess: () => onClose() })
+      createMutuo.mutate({
+        mutuo: payload,
+        parcelas,
+        contaBancariaId: form.conta_bancaria_id || null,
+      }, { onSuccess: () => onClose() })
     }
   }
 
@@ -231,10 +243,20 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Taxa Juros Mensal (%)</label>
               <input type="text" value={form.taxa_juros_mensal} onChange={e => setForm({ ...form, taxa_juros_mensal: e.target.value })} className={inputCls} placeholder="1,5" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Conta Bancária {!isEditing && '*'}</label>
+              <select value={form.conta_bancaria_id} onChange={e => setForm({ ...form, conta_bancaria_id: e.target.value })} className={inputCls} disabled={isEditing} title={isEditing ? 'Conta bancária da captação só pode ser definida na criação' : undefined}>
+                <option value="">Selecione...</option>
+                {(contasBancarias as any[]).filter(c => c.ativa).map(c => (
+                  <option key={c.id} value={c.id}>{c.nome}</option>
+                ))}
+              </select>
+              {!isEditing && <p className="mt-0.5 text-[10px] text-muted-foreground">Cria mov bancária + conciliação na data da captação.</p>}
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Observações</label>

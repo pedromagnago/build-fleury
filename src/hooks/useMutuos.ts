@@ -111,6 +111,7 @@ export function useCreateMutuo() {
     mutationFn: async (input: {
       mutuo: Partial<Mutuo>
       parcelas: Array<{ valor: number; data_vencimento: string }>
+      contaBancariaId?: string | null
     }) => {
       if (!currentCompany) throw new Error('Sem empresa selecionada')
       const companyId = currentCompany.id
@@ -137,10 +138,47 @@ export function useCreateMutuo() {
         if (parErr) throw parErr
       }
 
+      // Cria mov_bancaria + conciliacao auto pra captacao (entrada/saida na data_captacao)
+      // Garante paridade: o que aparece como mutuo no plano tambem aparece no extrato.
+      const cat = String((input.mutuo as any).categoria ?? '').toLowerCase()
+      const tipoMov: 'entrada' | 'saida' = cat.includes('adiantamento') && cat.includes('feito') ? 'saida' : 'entrada'
+      const valor = Number((input.mutuo as any).valor_captado || 0)
+      const data = (input.mutuo as any).data_captacao
+      if (input.contaBancariaId && valor > 0 && data) {
+        const { data: movRow, error: eMov } = await supabase.from('movimentacoes_bancarias').insert({
+          company_id: companyId,
+          conta_id: input.contaBancariaId,
+          data,
+          descricao: `Mútuo: ${(input.mutuo as any).nome ?? 'OPERAÇÃO'}`,
+          valor,
+          tipo: tipoMov,
+        }).select('id').single()
+        if (eMov) throw eMov
+        if (movRow) {
+          const { data: concRow, error: eConc } = await supabase.from('conciliacoes').insert({
+            company_id: companyId,
+            movimentacao_id: movRow.id,
+            match_type: 'manual',
+            confidence: 100,
+            status: 'aprovado',
+          }).select('id').single()
+          if (eConc) throw eConc
+          if (concRow) {
+            await supabase.from('conciliacao_parcelas').insert({
+              conciliacao_id: concRow.id,
+              mutuo_id: mutuo.id,
+              valor_aplicado: valor,
+            })
+          }
+        }
+      }
+
       return mutuo as Mutuo
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
       qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
       toast.success('Mútuo cadastrado com sucesso')
     },
