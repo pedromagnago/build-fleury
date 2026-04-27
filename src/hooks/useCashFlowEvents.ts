@@ -288,8 +288,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       // Considera paga também quando valor_pago cobre o valor (status pode estar dessincronizado em parcelas antigas)
       const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
       // Se ja tem mov bancaria vinculada, a mov ja virou evento — pula a parcela
-      // (evita dupla contagem e desincronizacao de data/valor entre plano e extrato).
-      if (isPaga && (movsByParcelaId.get(p.id)?.size ?? 0) > 0) return
+      // SEMPRE (mesmo se valor_pago/data_pagamento_real nao foi sincronizado pela
+      // baixa). Evita dupla contagem entre evento-plano e mov-real do extrato.
+      if ((movsByParcelaId.get(p.id)?.size ?? 0) > 0) return
       // Em 'realizado' ou 'planejado': só parcelas pagas (parcela em aberto é previsão de pedido).
       if (apenasRealizado && !isPaga) return
 
@@ -369,8 +370,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       ;(m.parcelas || []).forEach((p: any) => {
         if (!p.data_vencimento) return
         const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
-        // Se ja tem mov bancaria vinculada, a mov ja virou evento — pula
-        if (isPaga && (movsByMutuoParcelaId.get(p.id)?.size ?? 0) > 0) return
+        // Se ja tem mov bancaria vinculada, a mov ja virou evento — pula SEMPRE
+        // (mesmo se valor_pago/data_pagamento_real nao foi sincronizado pela baixa)
+        if ((movsByMutuoParcelaId.get(p.id)?.size ?? 0) > 0) return
         if (apenasRealizado && !isPaga) return
 
         const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
