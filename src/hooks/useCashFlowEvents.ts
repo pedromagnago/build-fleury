@@ -33,6 +33,12 @@ export interface CashFlowEvent {
     parcelaTotal?: number
     parcelaTipo?: 'contratual' | 'adiantamento'
     dataVencimento?: string
+    /** Valor TOTAL da parcela (não o saldo aberto). Útil para edições corretas. */
+    valorOriginal?: number
+    /** Valor já pago da parcela. */
+    valorPago?: number
+    /** Status real da parcela no banco. */
+    parcelaStatus?: string
   }
 }
 
@@ -250,6 +256,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           parcelaTotal: totalParcPedido,
           parcelaTipo: (p as any).tipo,
           dataVencimento: p.data_vencimento,
+          valorOriginal: Number(p.valor),
+          valorPago: Number(p.valor_pago || 0),
+          parcelaStatus: p.status,
         }
       })
     })

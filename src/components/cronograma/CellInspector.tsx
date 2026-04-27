@@ -82,8 +82,13 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
   const startEdit = (ev: CashFlowEvent) => {
     setEditingId(ev.id)
     const ov = overrides[ev.id]
-    setEditValor(String(ov?.newValue ?? ev.valor))
-    setEditData(ov?.newDate ?? ev.date)
+    // Para parcelas parcialmente pagas, ev.valor é o SALDO aberto.
+    // Editar deve mostrar o valor TOTAL (valorOriginal), não o saldo.
+    const valorBase = ev.meta.valorOriginal ?? ev.valor
+    setEditValor(String(ov?.newValue ?? valorBase))
+    // Para parcelas, edita data_vencimento (não data_pagamento_real do extrato)
+    const dataBase = ev.meta.dataVencimento ?? ev.date
+    setEditData(ov?.newDate ?? dataBase)
   }
 
   const aplicarSimulacao = (ev: CashFlowEvent) => {
@@ -100,16 +105,22 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
   const salvarNoReal = async (ev: CashFlowEvent) => {
     const v = parseFloat(editValor)
     const updates: Record<string, any> = {}
-    const newDate = editData !== ev.date ? editData : null
-    const newValue = !isNaN(v) && Math.abs(v - ev.valor) > 0.005 ? v : null
+    // Compara com valor TOTAL e data_vencimento da parcela (não com saldo/ev.date)
+    const valorBase = ev.meta.valorOriginal ?? ev.valor
+    const dataBase = ev.meta.dataVencimento ?? ev.date
+    const newDate = editData !== dataBase ? editData : null
+    const newValue = !isNaN(v) && Math.abs(v - valorBase) > 0.005 ? v : null
 
     try {
       if (ev.id.startsWith('par-')) {
         const id = ev.id.replace('par-', '')
-        const { data: parc } = await supabase.from('parcelas').select('status').eq('id', id).single()
-        const isPaga = parc?.status === 'paga' || parc?.status === 'parcialmente_paga'
+        const { data: parc } = await supabase.from('parcelas').select('status, valor_pago, valor').eq('id', id).single()
+        const totalmentePaga = parc?.status === 'paga' || (Number(parc?.valor_pago || 0) >= Number(parc?.valor || 0) - 0.005 && Number(parc?.valor || 0) > 0)
+        // Regra:
+        // - 100% paga: edita data_pagamento_real (data efetiva do banco) e/ou valor total.
+        // - Não paga / parcialmente paga: edita data_vencimento e valor total.
         if (newDate) {
-          if (isPaga) updates.data_pagamento_real = newDate
+          if (totalmentePaga) updates.data_pagamento_real = newDate
           else updates.data_vencimento = newDate
         }
         if (newValue !== null) updates.valor = newValue
@@ -345,14 +356,24 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
                                         {/* Editor inline */}
                                         {isEditing && (
                                           <div className="mt-2 rounded-md border bg-background p-2 space-y-2">
+                                            {ev.meta.parcelaStatus === 'parcialmente_paga' && (
+                                              <div className="rounded bg-amber-50 dark:bg-amber-900/10 p-1.5 text-[10px] text-amber-800 dark:text-amber-300">
+                                                ⚠️ Parcela parcialmente paga — você está editando o <strong>valor TOTAL</strong> e a <strong>data de vencimento</strong> da parcela (não o saldo aberto nem a data do pagamento já feito).
+                                                <br/>Original: {formatCurrency(ev.meta.valorOriginal ?? 0)} · Pago: {formatCurrency(ev.meta.valorPago ?? 0)} · Saldo: {formatCurrency((ev.meta.valorOriginal ?? 0) - (ev.meta.valorPago ?? 0))}
+                                              </div>
+                                            )}
                                             <div className="grid grid-cols-2 gap-2">
                                               <div>
-                                                <label className="text-[9px] uppercase font-bold text-muted-foreground block mb-0.5">Valor (R$)</label>
+                                                <label className="text-[9px] uppercase font-bold text-muted-foreground block mb-0.5">
+                                                  {ev.meta.parcelaStatus === 'parcialmente_paga' ? 'Valor Total (R$)' : 'Valor (R$)'}
+                                                </label>
                                                 <input type="number" step="0.01" value={editValor} onChange={e => setEditValor(e.target.value)}
                                                   className="w-full rounded border bg-background px-2 py-1 text-xs text-right font-mono" />
                                               </div>
                                               <div>
-                                                <label className="text-[9px] uppercase font-bold text-muted-foreground block mb-0.5">Data</label>
+                                                <label className="text-[9px] uppercase font-bold text-muted-foreground block mb-0.5">
+                                                  {ev.meta.parcelaStatus === 'paga' ? 'Data Pagamento' : 'Data Vencimento'}
+                                                </label>
                                                 <input type="date" value={editData} onChange={e => setEditData(e.target.value)}
                                                   className="w-full rounded border bg-background px-2 py-1 text-xs" />
                                               </div>
