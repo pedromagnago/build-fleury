@@ -13,7 +13,7 @@ import { useProject } from '@/contexts/ProjectContext'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
-import { useMutuos, useUpdateMutuoParcela } from '@/hooks/useMutuos'
+import { useMutuos } from '@/hooks/useMutuos'
 import { toast } from 'sonner'
 import { useDropzone } from 'react-dropzone'
 import BulkActionBar from '@/components/BulkActionBar'
@@ -114,13 +114,13 @@ function ParcelasTab({ search }: { search: string }) {
   const deleteParcela = useDeleteParcela()
   const [showForm, setShowForm] = useState(false)
   const [payingParcela, setPayingParcela] = useState<Parcela | null>(null)
+  const [payingMutuo, setPayingMutuo] = useState<Parcela | null>(null)
   const [editingParcela, setEditingParcela] = useState<Parcela | null>(null)
   const [viewingVinculos, setViewingVinculos] = useState<Parcela | null>(null)
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('todos')
   const selection = useSelection()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: mutuos = [] } = useMutuos()
-  const updateMutuoParcela = useUpdateMutuoParcela()
 
   // Build fornecedor lookup map for bulk actions
   const fornecedorMap = useMemo(() => {
@@ -357,13 +357,8 @@ function ParcelasTab({ search }: { search: string }) {
                         )}
                         {p.status !== 'paga' && isMutuo && (
                           <button
-                            onClick={() => {
-                              if (window.confirm(`Confirmar baixa de ${formatCurrency(p.valor)}?`)) {
-                                updateMutuoParcela.mutate({ id: p.id, status: 'paga', valor_pago: p.valor, data_pagamento_real: new Date().toISOString().split('T')[0] })
-                              }
-                            }}
-                            disabled={updateMutuoParcela.isPending}
-                            className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                            onClick={() => setPayingMutuo(p)}
+                            className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20 transition-colors"
                           >
                             Baixar
                           </button>
@@ -405,6 +400,24 @@ function ParcelasTab({ search }: { search: string }) {
             setPayingParcela(null)
             qc.invalidateQueries({ queryKey: ['parcelas'] })
             qc.invalidateQueries({ queryKey: ['itens_compra'] })
+            qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+            qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+          }}
+        />
+      )}
+
+      {/* Mutuo Baixa Modal — pra mantermos paridade com Pagamento (cria mov + conciliacao) */}
+      {payingMutuo && currentCompany && (
+        <MutuoBaixaModal
+          parcela={payingMutuo}
+          mutuos={mutuos as any[]}
+          contas={contas}
+          companyId={currentCompany.id}
+          onClose={() => setPayingMutuo(null)}
+          onDone={() => {
+            setPayingMutuo(null)
+            qc.invalidateQueries({ queryKey: ['mutuos'] })
+            qc.invalidateQueries({ queryKey: ['parcelas'] })
             qc.invalidateQueries({ queryKey: ['movimentacoes'] })
             qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
           }}
@@ -537,9 +550,9 @@ function PaymentModal({
         }
       }
 
-      // 4. Create bank transaction
+      // 4. Create bank transaction + auto-conciliation (mov visivel na Conciliacao e no Fluxo)
       if (form.conta_bancaria_id) {
-        await supabase.from('movimentacoes_bancarias').insert({
+        const { data: movRow, error: eMov } = await supabase.from('movimentacoes_bancarias').insert({
           company_id: companyId,
           conta_id: form.conta_bancaria_id,
           data: form.data_pagamento,
@@ -547,7 +560,25 @@ function PaymentModal({
           valor: valorPago,
           tipo: 'saida',
           parcela_id: parcela.id,
-        })
+        }).select('id').single()
+        if (eMov) throw eMov
+        if (movRow) {
+          const { data: concRow, error: eConc } = await supabase.from('conciliacoes').insert({
+            company_id: companyId,
+            movimentacao_id: movRow.id,
+            match_type: 'manual',
+            confidence: 100,
+            status: 'aprovado',
+          }).select('id').single()
+          if (eConc) throw eConc
+          if (concRow) {
+            await supabase.from('conciliacao_parcelas').insert({
+              conciliacao_id: concRow.id,
+              parcela_id: parcela.id,
+              valor_aplicado: valorPago,
+            })
+          }
+        }
       }
 
       // 5. Audit log
@@ -648,6 +679,161 @@ function PaymentModal({
           <button onClick={onClose} className="rounded-lg border px-4 py-2 text-sm hover:bg-accent">Cancelar</button>
           <button onClick={handlePay} disabled={saving} className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
             <Check className="h-4 w-4" />{saving ? 'Processando...' : 'Confirmar Pagamento'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MUTUO BAIXA MODAL — Cria mov_bancaria + conciliacao auto, igual PaymentModal
+// ═══════════════════════════════════════════════════════════════
+
+function MutuoBaixaModal({
+  parcela, mutuos, contas, companyId, onClose, onDone,
+}: {
+  parcela: Parcela
+  mutuos: any[]
+  contas: ContaBancaria[]
+  companyId: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const mutuoId = (parcela as any).mutuo_id ?? (parcela as any).raw?.mutuo_id ?? null
+  const mutuo = mutuos.find(m => m.id === mutuoId)
+  const isAdiantamentoFeito = (mutuo?.categoria || '').toLowerCase().includes('adiantamento') &&
+                              (mutuo?.categoria || '').toLowerCase().includes('feito')
+  const tipoMov: 'entrada' | 'saida' = isAdiantamentoFeito ? 'saida' : 'entrada'
+  const restante = Number(parcela.valor) - Number(parcela.valor_pago || 0)
+
+  const [form, setForm] = useState({
+    data_pagamento: new Date().toISOString().split('T')[0]!,
+    valor_pago: String(restante),
+    forma_pagamento: 'PIX',
+    conta_bancaria_id: contas.find(c => c.ativa)?.id ?? '',
+    observacoes: '',
+  })
+  const [saving, setSaving] = useState(false)
+
+  const descLabel = `Baixa mutuo: ${mutuo?.nome ?? 'MUTUO'} — Parc ${parcela.numero_parcela}`
+
+  const handleBaixar = async () => {
+    if (!form.conta_bancaria_id) {
+      toast.error('Selecione a conta bancaria')
+      return
+    }
+    setSaving(true)
+    const valorPago = parseFloat(form.valor_pago) || 0
+    try {
+      // 1) Atualiza mutuo_parcela
+      const novoPago = Number(parcela.valor_pago || 0) + valorPago
+      const { error: e1 } = await supabase.from('mutuo_parcelas').update({
+        valor_pago: novoPago,
+        status: novoPago >= Number(parcela.valor) - 0.01 ? 'paga' : 'pendente',
+        data_pagamento_real: form.data_pagamento,
+        conta_bancaria_id: form.conta_bancaria_id,
+        forma_pagamento: form.forma_pagamento,
+        observacoes: form.observacoes || null,
+      }).eq('id', parcela.id)
+      if (e1) throw e1
+
+      // 2) Cria mov_bancaria
+      const { data: movRow, error: eMov } = await supabase.from('movimentacoes_bancarias').insert({
+        company_id: companyId,
+        conta_id: form.conta_bancaria_id,
+        data: form.data_pagamento,
+        descricao: descLabel,
+        valor: valorPago,
+        tipo: tipoMov,
+      }).select('id').single()
+      if (eMov) throw eMov
+
+      // 3) Cria conciliacao aprovada + link polimorfico mutuo_parcela_id
+      const { data: concRow, error: eConc } = await supabase.from('conciliacoes').insert({
+        company_id: companyId,
+        movimentacao_id: movRow!.id,
+        match_type: 'manual',
+        confidence: 100,
+        status: 'aprovado',
+      }).select('id').single()
+      if (eConc) throw eConc
+
+      const { error: eLink } = await supabase.from('conciliacao_parcelas').insert({
+        conciliacao_id: concRow!.id,
+        mutuo_parcela_id: parcela.id,
+        valor_aplicado: valorPago,
+      })
+      if (eLink) throw eLink
+
+      toast.success('Baixa registrada')
+      onDone()
+    } catch (err) {
+      toast.error(`Erro: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl border bg-card shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b p-5">
+          <div>
+            <h3 className="font-semibold">Baixar Parcela de Mútuo</h3>
+            <p className="text-xs text-muted-foreground">{mutuo?.nome ?? 'MUTUO'} — Parcela {parcela.numero_parcela}</p>
+          </div>
+          <button onClick={onClose} className="rounded-md p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
+        </div>
+
+        <div className="space-y-4 p-5">
+          <div className="flex gap-4 rounded-lg bg-muted/30 p-3 text-xs">
+            <div><span className="text-muted-foreground">Valor:</span> <strong>{formatCurrency(parcela.valor)}</strong></div>
+            <div><span className="text-muted-foreground">Pago:</span> <strong>{formatCurrency(parcela.valor_pago)}</strong></div>
+            <div><span className="text-muted-foreground">Tipo:</span> <strong className={tipoMov === 'entrada' ? 'text-emerald-600' : 'text-red-500'}>{tipoMov === 'entrada' ? 'Entrada' : 'Saída'}</strong></div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={LABEL}>Data</label>
+              <input type="date" value={form.data_pagamento} onChange={(e) => setForm({ ...form, data_pagamento: e.target.value })} className={INPUT} />
+            </div>
+            <div>
+              <label className={LABEL}>Valor</label>
+              <input type="number" step="0.01" value={form.valor_pago} onChange={(e) => setForm({ ...form, valor_pago: e.target.value })} className={INPUT} />
+            </div>
+          </div>
+
+          <div>
+            <label className={LABEL}>Conta Bancária *</label>
+            <select value={form.conta_bancaria_id} onChange={(e) => setForm({ ...form, conta_bancaria_id: e.target.value })} className={INPUT}>
+              <option value="">Selecione...</option>
+              {contas.filter(c => c.ativa).map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className={LABEL}>Forma de Pagamento</label>
+            <select value={form.forma_pagamento} onChange={(e) => setForm({ ...form, forma_pagamento: e.target.value })} className={INPUT}>
+              <option value="PIX">PIX</option>
+              <option value="TED">TED/DOC</option>
+              <option value="Boleto">Boleto</option>
+              <option value="Cartão">Cartão</option>
+              <option value="Dinheiro">Dinheiro</option>
+              <option value="Cheque">Cheque</option>
+            </select>
+          </div>
+
+          <div>
+            <label className={LABEL}>Observações</label>
+            <textarea value={form.observacoes} onChange={(e) => setForm({ ...form, observacoes: e.target.value })} rows={2} className={INPUT} />
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 border-t p-5">
+          <button onClick={onClose} className="rounded-lg border px-4 py-2 text-sm hover:bg-muted">Cancelar</button>
+          <button onClick={handleBaixar} disabled={saving || !form.conta_bancaria_id} className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">
+            <Check className="h-4 w-4" />{saving ? 'Processando...' : 'Confirmar Baixa'}
           </button>
         </div>
       </div>

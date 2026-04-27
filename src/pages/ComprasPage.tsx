@@ -715,7 +715,21 @@ function PedidosTab({ search }: { search: string }) {
 
       const parcelasOk = Math.abs(editableParcelas.reduce((s, p) => s + parseBRL(p.valor), 0) - li.valorTotalCalc) <= 0.01
 
-      if ((condChanged || dateChanged || valorChanged || parcelasManuallyEdited) && li.valorTotalCalc > 0 && globalForm.cond_pagamento && globalForm.data_entrega_prevista) {
+      // Detecta diff real entre editableParcelas e o que esta no banco — cobre o caso
+      // do botao "Redistribuir saldo" (zera parcelasManuallyEdited) e qualquer outro
+      // fluxo que altere parcelas sem setar a flag.
+      const { data: existingParcelasCheck } = await supabase
+        .from('parcelas').select('id, numero_parcela, valor, data_vencimento, descricao, tipo')
+        .eq('pedido_id', editingPedido.id)
+      const editKey = (l: { numero_parcela: number; valor: string | number; data_vencimento: string }) =>
+        `${l.numero_parcela}|${(typeof l.valor === 'string' ? parseBRL(l.valor) : Number(l.valor)).toFixed(2)}|${l.data_vencimento}`
+      const dbKeys = new Set((existingParcelasCheck || []).map(p => editKey({ numero_parcela: p.numero_parcela, valor: p.valor as any, data_vencimento: p.data_vencimento })))
+      const editKeys = new Set(editableParcelas.map(ep => editKey(ep)))
+      const parcelasDiffer = dbKeys.size !== editKeys.size ||
+        Array.from(editKeys).some(k => !dbKeys.has(k)) ||
+        Array.from(dbKeys).some(k => !editKeys.has(k))
+
+      if ((condChanged || dateChanged || valorChanged || parcelasManuallyEdited || parcelasDiffer) && li.valorTotalCalc > 0 && globalForm.cond_pagamento && globalForm.data_entrega_prevista) {
         // Se estiver com erro na soma manual e tentou alterar as parcelas
         if (!parcelasOk) {
           toast.error('A soma das parcelas deve ser igual ao total para salvar a alteração financeira.')
