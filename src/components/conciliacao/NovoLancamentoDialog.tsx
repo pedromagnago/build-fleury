@@ -14,7 +14,7 @@ import { useContasBancarias, useParcelas } from '@/hooks/useFinanceiro'
 import { useMutuos } from '@/hooks/useMutuos'
 import { formatCurrency } from '@/lib/utils'
 
-type VinculoSel = { tipo: 'parcela' | 'mutuo'; id: string; label: string; sublabel: string; valor: number }
+type VinculoSel = { tipo: 'parcela' | 'mutuo' | 'mutuo_parcela'; id: string; label: string; sublabel: string; valor: number }
 
 interface Props {
   defaultContaId?: string
@@ -53,19 +53,34 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
       if (q && !hay.includes(q)) continue
       out.push({ tipo: 'parcela', id: p.id, label, sublabel, valor: Number(p.valor) })
     }
-    // Mútuos com saldo
+    // Mútuos: captação principal + parcelas individuais
     for (const m of mutuos as any[]) {
       const jaConc = Number(m.valor_conciliado_entrada || 0) + Number(m.valor_conciliado_saida || 0)
       const saldo = Math.max(0, Number(m.valor_captado) - jaConc)
-      if (saldo < 0.01) continue
-      const cat = String(m.categoria ?? '').toLowerCase().includes('adiantamento') ? 'Adiantamento' : 'Captação'
-      const label = `${cat}: ${m.nome}`
-      const sublabel = `Mútuo · ${m.data_captacao} · saldo ${formatCurrency(saldo)}`
-      const hay = `${label} ${m.categoria} ${m.valor_captado}`.toLowerCase()
-      if (q && !hay.includes(q)) continue
-      out.push({ tipo: 'mutuo', id: m.id, label, sublabel, valor: Number(m.valor_captado) })
+      if (saldo >= 0.01) {
+        const cat = String(m.categoria ?? '').toLowerCase().includes('adiantamento') ? 'Adiantamento' : 'Captação'
+        const label = `${cat}: ${m.nome}`
+        const sublabel = `Mútuo (principal) · ${m.data_captacao} · saldo ${formatCurrency(saldo)}`
+        const hay = `${label} ${m.categoria} ${m.valor_captado}`.toLowerCase()
+        if (!q || hay.includes(q)) {
+          out.push({ tipo: 'mutuo', id: m.id, label, sublabel, valor: Number(m.valor_captado) })
+        }
+      }
+      // Parcelas do mutuo (devolução / recebimento)
+      for (const mp of (m.parcelas ?? [] as any[])) {
+        if (mp.status === 'paga') continue
+        const valorMp = Number(mp.valor) || 0
+        const pagoMp = Number(mp.valor_pago || 0)
+        const saldoMp = valorMp - pagoMp
+        if (saldoMp < 0.01) continue
+        const label = `${m.nome} · P${mp.numero_parcela}`
+        const sublabel = `Parcela mútuo · Venc ${mp.data_vencimento} · saldo ${formatCurrency(saldoMp)}`
+        const hay = `${label} ${m.categoria ?? ''} ${valorMp} ${mp.numero_parcela}`.toLowerCase()
+        if (q && !hay.includes(q)) continue
+        out.push({ tipo: 'mutuo_parcela', id: mp.id, label, sublabel, valor: valorMp })
+      }
     }
-    return out.slice(0, 20)
+    return out.slice(0, 30)
   }, [parcelas, mutuos, search])
 
   const handleSubmit = async () => {
@@ -177,8 +192,12 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1">
                           <p className="text-xs font-medium truncate">{vinculo.label}</p>
-                          <span className={`text-[9px] rounded px-1 ${vinculo.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' : 'bg-blue-500/10 text-blue-600'}`}>
-                            {vinculo.tipo === 'mutuo' ? 'MUT' : 'PARC'}
+                          <span className={`text-[9px] rounded px-1 ${
+                            vinculo.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' :
+                            vinculo.tipo === 'mutuo_parcela' ? 'bg-violet-500/10 text-violet-600' :
+                            'bg-blue-500/10 text-blue-600'
+                          }`}>
+                            {vinculo.tipo === 'mutuo' ? 'MUT' : vinculo.tipo === 'mutuo_parcela' ? 'MUT-P' : 'PARC'}
                           </span>
                         </div>
                         <p className="text-[10px] text-muted-foreground">
@@ -204,8 +223,12 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-1">
                                   <p className="text-xs truncate">{c.label}</p>
-                                  <span className={`text-[9px] rounded px-1 ${c.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' : 'bg-blue-500/10 text-blue-600'}`}>
-                                    {c.tipo === 'mutuo' ? 'MUT' : 'PARC'}
+                                  <span className={`text-[9px] rounded px-1 ${
+                                    c.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' :
+                                    c.tipo === 'mutuo_parcela' ? 'bg-violet-500/10 text-violet-600' :
+                                    'bg-blue-500/10 text-blue-600'
+                                  }`}>
+                                    {c.tipo === 'mutuo' ? 'MUT' : c.tipo === 'mutuo_parcela' ? 'MUT-P' : 'PARC'}
                                   </span>
                                 </div>
                                 <p className="text-[10px] text-muted-foreground">{c.sublabel}</p>
