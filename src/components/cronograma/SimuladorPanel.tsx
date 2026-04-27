@@ -5,6 +5,7 @@ import { useParcelas } from '@/hooks/useFinanceiro'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useMedicoes, useDistribuicao } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
+import { useDashboardPrefs } from '@/hooks/useDashboardPrefs'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -63,7 +64,11 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editing, setEditing] = useState<Item | null>(null)
   const [inspectingBucket, setInspectingBucket] = useState<{ label: string; eventIds: string[] } | null>(null)
-  const [periodicity, setPeriodicity] = useState<Periodicity>('mes')
+  // Periodicidade persistida via useDashboardPrefs (default 'dia') —
+  // evita que o usuario tenha que reaplicar a cada visita.
+  const { prefs, update: updatePrefs } = useDashboardPrefs()
+  const periodicity = prefs.fluxoPeriodicity as Periodicity
+  const setPeriodicity = (v: Periodicity) => updatePrefs({ fluxoPeriodicity: v as any })
   const [applying, setApplying] = useState(false)
 
   const toggle = (k: string) => setExpanded(p => ({ ...p, [k]: !p[k] }))

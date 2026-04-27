@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { formatCurrency } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Area, ComposedChart, Line } from 'recharts'
 import type { FinancialViewMode } from './FinancialViewFilter'
 import FinancialViewFilter from './FinancialViewFilter'
 import { useCashFlowEvents, type CashFlowEvent } from '@/hooks/useCashFlowEvents'
+import { useDashboardPrefs } from '@/hooks/useDashboardPrefs'
 
 interface CashFlowData {
   label: string
@@ -27,7 +28,10 @@ function fmtISO(d: Date): string {
 }
 
 export default function CashFlowChart({ viewMode, onViewModeChange }: Props) {
-  const [periodicity, setPeriodicity] = useState<'dia' | 'semana' | 'mes'>('semana')
+  // Periodicidade persistida — mesma chave do Cronograma e do Dashboard.
+  const { prefs, update: updatePrefs } = useDashboardPrefs()
+  const periodicity = prefs.fluxoPeriodicity
+  const setPeriodicity = (v: 'dia' | 'semana' | 'mes') => updatePrefs({ fluxoPeriodicity: v })
   const { events, saldoInicial } = useCashFlowEvents(viewMode)
 
   const chartData = useMemo(() => {

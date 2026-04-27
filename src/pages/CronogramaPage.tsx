@@ -23,6 +23,7 @@ import CashFlowChart from '@/components/cronograma/CashFlowChart'
 import UnitCostPanel from '@/components/cronograma/UnitCostPanel'
 import MedicoesPanel from '@/components/cronograma/MedicoesPanel'
 import { type FinancialViewMode } from '@/components/cronograma/FinancialViewFilter'
+import { useDashboardPrefs } from '@/hooks/useDashboardPrefs'
 import { useSelection } from '@/hooks/useSelection'
 import { exportWBSToExcel } from '@/lib/wbsExport'
 import {
@@ -101,7 +102,12 @@ export default function CronogramaPage() {
   const selection = useSelection()
   const [searchParams] = useSearchParams()
 
-  const [viewMode, setViewMode] = useState<FinancialViewMode>('planejado')
+  // viewMode (modo Realizado/Pedidos+Real/Planejado/Completo) persistido via
+  // useDashboardPrefs.fluxoFinancialMode — assim "Pedidos + Real" (default)
+  // continua selecionado entre sessoes; usuario nao precisa reaplicar toda vez.
+  const { prefs, update: updatePrefs } = useDashboardPrefs()
+  const viewMode = prefs.fluxoFinancialMode as FinancialViewMode
+  const setViewMode = (v: FinancialViewMode) => updatePrefs({ fluxoFinancialMode: v as any })
 
   const [activeTab, setActiveTab] = useState<TabMode>((searchParams.get('tab') as TabMode) || 'wbs')
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
