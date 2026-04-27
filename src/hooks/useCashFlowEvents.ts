@@ -184,12 +184,33 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       return cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
     }
 
+    // Lookup: para cada mutuo, a data da PRIMEIRA mov bancaria vinculada (via conciliacao_parcelas.mutuo_id).
+    // Se houver, usamos essa data como verdadeira (nao a data_captacao do plano).
+    const movDateByMutuoId = new Map<string, string>()
+    for (const c of (linksMovs as any[])) {
+      const links = c.conciliacao_parcelas ?? []
+      for (const l of links) {
+        if (!l.mutuo_id) continue
+        // Busca a mov correspondente para extrair a data
+        const mov = (movs as any[]).find(m => m.id === c.movimentacao_id)
+        if (mov?.data && !movDateByMutuoId.has(l.mutuo_id)) {
+          movDateByMutuoId.set(l.mutuo_id, mov.data as string)
+        }
+      }
+    }
+
     mutuos.forEach(m => {
       if (!m.data_captacao) return
+      // Ignora mutuos lixo de dedupe ou cancelados — nao representam dinheiro real.
+      const cat = String((m as any).categoria ?? '').toUpperCase()
+      const status = String((m as any).status ?? '').toLowerCase()
+      if (cat.includes('STUB_DEDUPE') || cat === 'STUB' || status === 'cancelado') return
       // Em 'realizado' ou 'planejado': só mostra mútuos já efetivamente captados/emprestados (data passada).
       if (apenasRealizado && m.data_captacao > today) return
 
-      const date = m.data_captacao
+      // Se ha mov bancaria vinculada, usa a data dela (verdade do extrato).
+      // Senao, cai na data_captacao do plano.
+      const date = movDateByMutuoId.get(m.id) ?? m.data_captacao
       const val = Number(m.valor_captado)
       if (!(val > 0)) return
 
