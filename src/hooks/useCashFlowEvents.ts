@@ -457,13 +457,25 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // entrem no Realizado/Planejado e ajustem o saldo do fluxo.
     // ═══════════════════════════════════════════════════════════
     if (apenasRealizado || viewMode === 'completo') {
-      // IDs ja conciliados com algum item planejado (parcela / mutuo / medicao)
+      // Mutuos cujo evento foi REMOVIDO (lixo de dedupe / cancelados) — links pra
+      // esses mutuos NAO contam como "ja conciliado" (a mov volta a ser orfa).
+      const mutuosFiltradosIds = new Set<string>()
+      for (const m of (mutuos as any[])) {
+        const cat = String((m as any).categoria ?? '').toUpperCase()
+        const status = String((m as any).status ?? '').toLowerCase()
+        if (cat.includes('STUB_DEDUPE') || cat === 'STUB' || status === 'cancelado') {
+          mutuosFiltradosIds.add(m.id)
+        }
+      }
+      // IDs ja conciliados com algum item planejado QUE EFETIVAMENTE ENTRA NO FLUXO
       const movsConciliadasComPlano = new Set<string>()
       for (const c of (linksMovs as any[])) {
         const links = c.conciliacao_parcelas ?? []
-        if (links.some((l: any) => l.parcela_id || l.mutuo_parcela_id || l.mutuo_id || l.medicao_id)) {
-          movsConciliadasComPlano.add(c.movimentacao_id)
-        }
+        const temLinkValido = links.some((l: any) =>
+          l.parcela_id || l.mutuo_parcela_id || l.medicao_id ||
+          (l.mutuo_id && !mutuosFiltradosIds.has(l.mutuo_id))
+        )
+        if (temLinkValido) movsConciliadasComPlano.add(c.movimentacao_id)
       }
 
       for (const m of (movs as any[])) {
