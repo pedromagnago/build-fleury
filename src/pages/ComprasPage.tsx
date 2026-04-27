@@ -999,7 +999,18 @@ function PedidosTab({ search }: { search: string }) {
         <MiniCard label="Pedidos" value={String(new Set(filtered.map(p => p.numero_pedido)).size)} />
         <MiniCard label="Casas cobertas" value={String(totals.casas)} />
         <MiniCard label="Valor total" value={formatCurrency(totals.valor)} accent="emerald" />
-        <MiniCard label="Itens sem pedido" value={String(itens.filter((i) => !pedidos.some((p) => p.item_compra_id === i.id)).length)} accent="amber" />
+        <MiniCard label="Itens sem pedido" value={String((() => {
+          // Respeita o filtro de busca: quando ha busca, conta apenas itens cujo
+          // descricao/codigo/fornecedor/etapa case com a busca; sem busca, conta todos.
+          const s = search.toLowerCase()
+          const itensFiltrados = !s ? itens : itens.filter(i =>
+            ((i as any).descricao ?? '').toLowerCase().includes(s) ||
+            ((i as any).codigo ?? '').toLowerCase().includes(s) ||
+            ((i as any).fornecedor_nome ?? '').toLowerCase().includes(s) ||
+            ((i as any).etapa_nome ?? '').toLowerCase().includes(s)
+          )
+          return itensFiltrados.filter((i) => !pedidos.some((p) => p.item_compra_id === i.id)).length
+        })())} accent="amber" />
       </div>
 
       <div className="mb-4 flex items-center justify-between">

@@ -205,8 +205,12 @@ function ParcelasTab({ search }: { search: string }) {
   }
 
   const filtered = parcelas.filter((p) => {
-    const matchesSearch = (p.pedido_item ?? p.descricao ?? '').toLowerCase().includes(search.toLowerCase()) ||
-      p.status.includes(search.toLowerCase())
+    const q = search.toLowerCase()
+    const matchesSearch = !q ||
+      (p.pedido_item ?? p.descricao ?? '').toLowerCase().includes(q) ||
+      ((p as any).fornecedor_nome ?? '').toLowerCase().includes(q) ||
+      ((p as any).pedido_numero != null ? String((p as any).pedido_numero).includes(q) : false) ||
+      p.status.includes(q)
     if (!matchesSearch) return false
     if (typeFilter === 'pedidos') return !!p.pedido_id
     if (typeFilter === 'avulsas') return !p.pedido_id
