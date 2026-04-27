@@ -968,11 +968,19 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                             {isPedidoDistante(c) && (
                               <span className="text-[9px] bg-amber-500/15 text-amber-700 px-1 rounded font-bold" title="Pedido distante (>60 dias da data do PIX). Verifique se é o vínculo correto.">⚠ DIST</span>
                             )}
+                            {/* Chips destacados (sempre visiveis): Venc + Valor da parcela */}
+                            <span className="text-[9px] bg-slate-500/10 text-slate-700 px-1 rounded font-mono shrink-0" title={`Vencimento: ${fmtDateBr(c.data)}`}>
+                              📅 {fmtDateBr(c.data)}
+                            </span>
+                            <span className="text-[9px] bg-primary/10 text-primary px-1 rounded font-mono font-bold shrink-0" title={`Saldo da parcela: ${formatCurrency(c.saldo)} de ${formatCurrency(c.valor)}`}>
+                              {formatCurrency(c.saldo)}
+                            </span>
                           </div>
+                          {/* Linha secundaria truncavel: forn + etapa + status de pagamento */}
                           <p className="text-[10px] text-muted-foreground truncate">
-                            {c.fornecedor ? `${c.fornecedor} · ` : ''}
-                            {c.etapaNome ? `${c.etapaNome} · ` : ''}
-                            Venc {fmtDateBr(c.data)} · saldo {formatCurrency(c.saldo)}
+                            {c.fornecedor ? c.fornecedor : ''}
+                            {c.fornecedor && c.etapaNome ? ' · ' : ''}
+                            {c.etapaNome ? c.etapaNome : ''}
                             {c.valor_pago > 0 && ` · pago ${formatCurrency(c.valor_pago)}/${formatCurrency(c.valor)}`}
                           </p>
                           {/* Meta linha unica: cond + entrega + consumo do item (chips) */}
