@@ -21,6 +21,7 @@ import CronogramaPage from '@/pages/CronogramaPage'
 import ComprasPage from '@/pages/ComprasPage'
 import DespesasIndiretasPage from '@/pages/DespesasIndiretasPage'
 import ImportacaoPage from '@/pages/ImportacaoPage'
+import RecepcaoPage from '@/pages/RecepcaoPage'
 import PagamentosPage from '@/pages/PagamentosPage'
 import RecebimentosPage from '@/pages/RecebimentosPage'
 import DocumentosPage from '@/pages/DocumentosPage'
@@ -100,6 +101,7 @@ export default function App() {
                 <Route path="/simulador" element={<Navigate to="/cronograma" replace />} />
                 <Route path="/relatorios" element={<RoleGate route="/relatorios"><RelatoriosPage /></RoleGate>} />
                 <Route path="/importacao" element={<RoleGate route="/importacao"><ImportacaoPage /></RoleGate>} />
+                <Route path="/recepcao" element={<RoleGate route="/importacao"><RecepcaoPage /></RoleGate>} />
                 <Route path="/configuracoes" element={<RoleGate route="/configuracoes"><Configuracoes /></RoleGate>} />
                 <Route path="/usuarios" element={<RoleGate route="/usuarios"><GestaoUsuariosPage /></RoleGate>} />
                 <Route path="/perfil" element={<PerfilPage />} />

@@ -22,6 +22,7 @@ import {
   Users,
   ChevronRight,
   Gauge,
+  Inbox,
 } from 'lucide-react'
 
 const sections = [
@@ -56,6 +57,7 @@ const sections = [
       { to: '/auditoria', icon: Shield, label: 'Auditoria' },
       { to: '/relatorios', icon: BarChart3, label: 'Relatórios' },
       { to: '/importacao', icon: Upload, label: 'Importação' },
+      { to: '/recepcao', icon: Inbox, label: 'Recepção (NF/IA)' },
       { to: '/usuarios', icon: Users, label: 'Usuários' },
     ],
   },
