@@ -401,10 +401,11 @@ function PedidosTab({ search }: { search: string }) {
   const { data: pedidos = [], isLoading } = usePedidos()
   const { data: itens = [] } = useItensCompra()
   const { data: fornecedores = [] } = useFornecedores()
+  const { data: parcelasAll = [] } = useParcelas()
   // createPedido not used directly — bulk creation handled by createPedidoLote
   const updatePedido = useUpdatePedido()
   const deletePedido = useDeletePedido()
-  
+
   const selection = useSelection()
 
   const { data: etapas = [] } = useEtapas()
@@ -413,7 +414,9 @@ function PedidosTab({ search }: { search: string }) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [pedidoViewMode, setPedidoViewMode] = useState<'pedido' | 'etapa'>('pedido')
   const [expandedCascade, setExpandedCascade] = useState<Record<string, boolean>>({})
+  const [expandedParcelas, setExpandedParcelas] = useState<Set<string>>(new Set())
   const toggleCascade = (k: string) => setExpandedCascade(p => ({ ...p, [k]: !p[k] }))
+  const toggleParcelas = (k: string) => setExpandedParcelas(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
 
   const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'], observacoes: '' }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
@@ -1408,9 +1411,63 @@ function PedidosTab({ search }: { search: string }) {
                           <span className={`rounded-full px-2 py-0.5 font-bold ${statusColors[group.status] ?? ''}`}>{group.status === 'confirmado' ? 'Confirmado' : group.status === 'planejado' ? 'Plan.' : group.status.charAt(0).toUpperCase() + group.status.slice(1)}</span>
                        </div>
                     </td>
-                    <td className="px-3 py-2 text-right border-b text-primary tracking-tight font-bold">{formatCurrency(group.total)}</td>
+                    <td className="px-3 py-2 text-right border-b text-primary tracking-tight font-bold">
+                      <div className="flex items-center justify-end gap-2">
+                        {(() => {
+                          const groupPedidoIds = group.items.map(p => p.id)
+                          const parcs = (parcelasAll as any[]).filter(par => par.pedido_id && groupPedidoIds.includes(par.pedido_id))
+                          if (parcs.length === 0) return null
+                          const isOpen = expandedParcelas.has(group.name)
+                          return (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); toggleParcelas(group.name) }}
+                              className={`text-[9px] rounded border px-1.5 py-0.5 font-mono shrink-0 ${isOpen ? 'bg-primary/15 text-primary border-primary/40' : 'text-muted-foreground hover:bg-muted'}`}
+                              title="Ver parcelas formadas"
+                            >
+                              {isOpen ? '▾' : '▸'} {parcs.length} parc.
+                            </button>
+                          )
+                        })()}
+                        <span>{formatCurrency(group.total)}</span>
+                      </div>
+                    </td>
                     <td className="px-3 py-2 border-b" colSpan={1}></td>
                   </tr>
+
+                  {/* Linha expansivel das parcelas formadas */}
+                  {expandedParcelas.has(group.name) && (() => {
+                    const groupPedidoIds = group.items.map(p => p.id)
+                    const parcs = (parcelasAll as any[])
+                      .filter(par => par.pedido_id && groupPedidoIds.includes(par.pedido_id))
+                      .sort((a, b) => (a.numero_parcela ?? 0) - (b.numero_parcela ?? 0))
+                    if (parcs.length === 0) return null
+                    const todayStr = new Date().toISOString().split('T')[0]!
+                    return (
+                      <tr className="bg-blue-500/5 border-b">
+                        <td colSpan={8} className="px-3 py-2">
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                            <span className="font-bold text-blue-700 mr-1">Parcelas:</span>
+                            {parcs.map((par: any) => {
+                              const isPaga = par.status === 'paga' || (Number(par.valor_pago || 0) >= Number(par.valor) - 0.005 && Number(par.valor) > 0)
+                              const isParcial = !isPaga && Number(par.valor_pago || 0) > 0
+                              const isVencida = !isPaga && par.data_vencimento < todayStr
+                              const cor = isPaga ? 'bg-emerald-500/15 text-emerald-700' :
+                                          isParcial ? 'bg-blue-500/15 text-blue-700' :
+                                          isVencida ? 'bg-red-500/15 text-red-700' :
+                                          'bg-amber-500/10 text-amber-700'
+                              const tipo = par.tipo === 'adiantamento' ? 'ADI' : 'P'
+                              return (
+                                <span key={par.id} className={`rounded px-1.5 py-0.5 font-mono ${cor}`}
+                                  title={`${tipo}${par.numero_parcela} · Venc ${par.data_vencimento} · ${formatCurrency(par.valor)}${par.valor_pago > 0 ? ` (pago ${formatCurrency(par.valor_pago)})` : ''} · ${par.status}`}>
+                                  {tipo}{par.numero_parcela} {formatCurrency(par.valor)} · {localDate(par.data_vencimento).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
+                                </span>
+                              )
+                            })}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })()}
 
                   {/* Children Rows */}
                   {group.items.map(p => (
