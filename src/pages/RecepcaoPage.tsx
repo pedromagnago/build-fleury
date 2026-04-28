@@ -12,6 +12,7 @@ import { toast } from 'sonner'
 import { parseNfeXml } from '@/lib/recepcao/xmlNfeParser'
 import { extrairDoc, searchItensCompra, fileToBase64, type ItemMatchSugerido } from '@/lib/recepcao/api'
 import { indexarEmbeddingsPendentes, embedQuery } from '@/lib/recepcao/indexador'
+import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
 import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus } from 'lucide-react'
 import { useEtapas } from '@/hooks/useEtapas'
 
@@ -104,8 +105,39 @@ export default function RecepcaoPage() {
           modelo: r._meta?.modelo,
           custo_cents: r._meta?.custo_cents,
         })
+      } else if (ext === 'pdf') {
+        // PDF: render cada pagina como imagem e processa em paralelo
+        toast.info('Convertendo PDF em imagens…')
+        const paginas = await pdfFileToImages(file)
+        if (paginas.length === 0) {
+          toast.error('PDF sem páginas')
+          return
+        }
+        toast.info(`Extraindo ${paginas.length} página(s) com IA…`)
+        // Chama IA em paralelo (1 chamada por página). Para 1 página, eh equivalente.
+        const resultados = await Promise.all(paginas.map(p => extrairDoc({
+          kind: 'imagem',
+          content: p.base64,
+          prompt_extra: paginas.length > 1 ? `Esta eh a pagina ${p.pagina} de ${paginas.length} de uma NF.` : undefined,
+        })))
+        // Consolida: usa fornecedor/documento da primeira pagina, junta TODOS os itens
+        const r0 = resultados[0]!
+        const itensConsolidados = resultados.flatMap((r, idx) =>
+          (r.itens ?? []).map((it, j) => ({ ...it, ordem: idx * 1000 + (it.ordem ?? j + 1) }))
+        )
+        // Soma custo
+        const custoTotalCents = resultados.reduce((s, r) => s + (r._meta?.custo_cents ?? 0), 0)
+        await iniciarRevisao({
+          fornecedor: r0.fornecedor,
+          documento: r0.documento,
+          itens: itensConsolidados,
+          observacoes: r0.observacoes,
+          origem: 'imagem',
+          modelo: r0._meta?.modelo,
+          custo_cents: custoTotalCents,
+        })
       } else {
-        toast.error(`Formato nao suportado (${ext}). Use XML, JPG, PNG ou WEBP. PDF: tire foto/screenshot.`)
+        toast.error(`Formato nao suportado (${ext}). Use XML, PDF, JPG, PNG ou WEBP.`)
       }
     } catch (err) {
       toast.error('Erro ao extrair: ' + (err instanceof Error ? err.message : String(err)))
@@ -282,6 +314,7 @@ export default function RecepcaoPage() {
     accept: {
       'text/xml': ['.xml'],
       'application/xml': ['.xml'],
+      'application/pdf': ['.pdf'],
       'image/*': ['.jpg', '.jpeg', '.png', '.webp'],
     },
     maxFiles: 1,
@@ -322,9 +355,9 @@ export default function RecepcaoPage() {
                   <FileText className="h-8 w-8 text-muted-foreground" />
                   <ImageIcon className="h-8 w-8 text-muted-foreground" />
                 </div>
-                <p className="text-sm font-semibold">Arraste o XML da NF-e ou foto da nota</p>
-                <p className="text-xs text-muted-foreground">Formatos: .xml (deterministico) · .jpg/.png/.webp (IA Vision)</p>
-                <p className="text-[10px] text-muted-foreground">PDF não suportado — tire screenshot ou converta. Em breve.</p>
+                <p className="text-sm font-semibold">Arraste o XML da NF-e, PDF ou foto da nota</p>
+                <p className="text-xs text-muted-foreground">Formatos: .xml (deterministico) · .pdf (multi-pagina) · .jpg/.png/.webp (IA Vision)</p>
+                <p className="text-[10px] text-muted-foreground">PDFs com varias paginas geram 1 chamada de IA por pagina (paralelo).</p>
               </div>
             )}
           </div>
