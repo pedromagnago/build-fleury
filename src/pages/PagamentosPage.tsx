@@ -26,10 +26,11 @@ import {
   Wallet, Plus, X, Check, AlertTriangle, Clock,
   CheckCircle2, CreditCard, Search, CalendarClock,
   Calendar, Users, Upload, Paperclip, ChevronDown, ChevronRight, Trash2,
-  Pencil, Package, Power, PowerOff, Link as LinkIcon,
+  Pencil, Package, Power, PowerOff, Link as LinkIcon, Inbox,
 } from 'lucide-react'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
+import RecepcaoPage from '@/pages/RecepcaoPage'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,7 +46,7 @@ const statusConfig: Record<string, { label: string; color: string; icon: typeof 
   parcialmente_paga: { label: 'Parcial', color: 'bg-blue-500/10 text-blue-500', icon: CreditCard },
 }
 
-type Tab = 'parcelas' | 'agenda' | 'por_fornecedor' | 'contas'
+type Tab = 'parcelas' | 'agenda' | 'por_fornecedor' | 'recepcao'
 
 // ---------------------------------------------------------------------------
 // Main
@@ -61,12 +62,12 @@ export default function PagamentosPage() {
     { key: 'parcelas', label: 'Parcelas', icon: CalendarClock },
     { key: 'agenda', label: 'Agenda', icon: Calendar },
     { key: 'por_fornecedor', label: 'Por Fornecedor', icon: Users },
-    { key: 'contas', label: 'Contas Bancárias', icon: CreditCard },
+    { key: 'recepcao', label: 'Recepção (NF/IA)', icon: Inbox },
   ]
 
   return (
     <div>
-      <PageHeader title="Pagamentos" description="Parcelas, agenda e contas bancárias" icon={Wallet} onHelp={restartTour} />
+      <PageHeader title="Pagamentos" description="Parcelas, agenda, recepção de notas" icon={Wallet} onHelp={restartTour} />
 
       <div id="tour-pag-filters" className="mb-5 flex gap-1 overflow-x-auto rounded-lg border bg-card p-1">
         {TABS.map((t) => (
@@ -83,7 +84,7 @@ export default function PagamentosPage() {
         ))}
       </div>
 
-      {(tab === 'parcelas' || tab === 'contas') && (
+      {tab === 'parcelas' && (
         <div className="mb-4 relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar..." className={`${INPUT} pl-9`} />
@@ -98,7 +99,7 @@ export default function PagamentosPage() {
         setTab('parcelas')
       }} />}
       {tab === 'por_fornecedor' && <PorFornecedorTab />}
-      {tab === 'contas' && <ContasTab search={search} />}
+      {tab === 'recepcao' && <RecepcaoPage />}
     </div>
   )
 }
@@ -1499,7 +1500,7 @@ function BatchPaymentModal({
 // CONTAS BANCÁRIAS TAB
 // ═══════════════════════════════════════════════════════════════
 
-function ContasTab({ search }: { search: string }) {
+export function ContasTab({ search }: { search: string }) {
   const { data: contas = [], isLoading } = useContasBancarias()
   const createConta = useCreateContaBancaria()
   const updateConta = useUpdateContaBancaria()

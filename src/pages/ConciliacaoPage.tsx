@@ -26,8 +26,10 @@ import {
 import { ExtratosManager } from '@/components/conciliacao/ExtratosManager'
 import { SaldoComposicao } from '@/components/conciliacao/SaldoComposicao'
 import { ExtratoContaView } from '@/components/conciliacao/ExtratoContaView'
+import { ContasTab } from '@/pages/PagamentosPage'
+import { CreditCard } from 'lucide-react'
 
-type TabKey = 'extrato' | 'saldo'
+type TabKey = 'extrato' | 'saldo' | 'contas'
 
 // ─── Formatters ──────────────────────────────────────────────
 
@@ -422,6 +424,7 @@ export default function ConciliacaoPage() {
         {[
           { key: 'extrato' as TabKey, label: 'Extrato da Conta', icon: ListOrdered },
           { key: 'saldo' as TabKey, label: 'Composição do Saldo', icon: Scale },
+          { key: 'contas' as TabKey, label: 'Contas Bancárias', icon: CreditCard },
         ].map(t => (
           <button key={t.key} onClick={() => setActiveTab(t.key)}
             className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-colors ${
@@ -437,6 +440,9 @@ export default function ConciliacaoPage() {
 
       {/* Tab: Saldo */}
       {activeTab === 'saldo' && <SaldoComposicao />}
+
+      {/* Tab: Contas Bancárias (CRUD) */}
+      {activeTab === 'contas' && <ContasTab search="" />}
 
       {/* Upload Panel — visible across tabs when toggled */}
       {(showUploadPanel || step === 'upload' && health.totalMovs === 0) && (
