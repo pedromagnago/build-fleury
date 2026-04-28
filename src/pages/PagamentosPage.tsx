@@ -91,7 +91,12 @@ export default function PagamentosPage() {
       )}
 
       {tab === 'parcelas' && <ParcelasTab search={search} />}
-      {tab === 'agenda' && <AgendaTab />}
+      {tab === 'agenda' && <AgendaTab onPickDay={(isoDate: string) => {
+        // Converte ISO p/ formato BR e abre Parcelas filtrado por data de vencimento
+        const [y, m, d] = isoDate.split('-')
+        setSearch(`${d}/${m}/${y}`)
+        setTab('parcelas')
+      }} />}
       {tab === 'por_fornecedor' && <PorFornecedorTab />}
       {tab === 'contas' && <ContasTab search={search} />}
     </div>
@@ -181,8 +186,28 @@ function ParcelasTab({ search }: { search: string }) {
   // Quick selection helpers
   const today = new Date().toISOString().split('T')[0]!
   const weekEnd = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]!
-  const selectVencidas = () => selection.selectAll(filtered.filter(p => p.status !== 'paga' && p.data_vencimento < today).map(p => p.id))
-  const selectSemana = () => selection.selectAll(filtered.filter(p => p.status !== 'paga' && p.data_vencimento >= today && p.data_vencimento <= weekEnd).map(p => p.id))
+  const scrollToRow = (id: string) => {
+    setTimeout(() => {
+      const el = document.querySelector(`[data-parcela-id="${id}"]`) as HTMLElement | null
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('ring-2', 'ring-primary/40')
+        setTimeout(() => el.classList.remove('ring-2', 'ring-primary/40'), 1500)
+      }
+    }, 50)
+  }
+  const selectVencidas = () => {
+    const ids = filtered.filter(p => p.status !== 'paga' && p.data_vencimento < today).map(p => p.id)
+    selection.selectAll(ids)
+    if (ids.length === 0) toast.info('Nenhuma parcela vencida')
+    else { toast.success(`${ids.length} parcela(s) vencida(s) selecionada(s)`); scrollToRow(ids[0]!) }
+  }
+  const selectSemana = () => {
+    const ids = filtered.filter(p => p.status !== 'paga' && p.data_vencimento >= today && p.data_vencimento <= weekEnd).map(p => p.id)
+    selection.selectAll(ids)
+    if (ids.length === 0) toast.info('Nenhuma parcela vence esta semana')
+    else { toast.success(`${ids.length} parcela(s) desta semana selecionada(s)`); scrollToRow(ids[0]!) }
+  }
 
   const [form, setForm] = useState({
     pedido_id: '', numero_parcela: '1', valor: '', data_vencimento: '',
@@ -205,12 +230,27 @@ function ParcelasTab({ search }: { search: string }) {
   }
 
   const filtered = parcelas.filter((p) => {
-    const q = search.toLowerCase()
+    const q = search.toLowerCase().trim()
+    // Aceita data em formato BR (DD/MM/YYYY ou DD/MM) e converte para ISO p/ casar com data_vencimento/pagamento
+    let isoFromQuery = ''
+    const brFull = q.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+    const brShort = q.match(/^(\d{2})\/(\d{2})$/)
+    if (brFull) isoFromQuery = `${brFull[3]}-${brFull[2]}-${brFull[1]}`
+    else if (brShort) isoFromQuery = `-${brShort[2]}-${brShort[1]}` // partial match para qualquer ano
     const matchesSearch = !q ||
       (p.pedido_item ?? p.descricao ?? '').toLowerCase().includes(q) ||
       ((p as any).fornecedor_nome ?? '').toLowerCase().includes(q) ||
       ((p as any).pedido_numero != null ? String((p as any).pedido_numero).includes(q) : false) ||
-      p.status.includes(q)
+      p.status.includes(q) ||
+      (isoFromQuery && (
+        (p.data_vencimento ?? '').includes(isoFromQuery) ||
+        (p.data_pagamento_real ?? '').includes(isoFromQuery)
+      )) ||
+      // ISO direto (YYYY-MM-DD)
+      (q.match(/^\d{4}-\d{2}-\d{2}$/) && (
+        (p.data_vencimento ?? '').includes(q) ||
+        (p.data_pagamento_real ?? '').includes(q)
+      ))
     if (!matchesSearch) return false
     if (typeFilter === 'pedidos') return !!p.pedido_id
     if (typeFilter === 'avulsas') return !p.pedido_id
@@ -359,7 +399,7 @@ function ParcelasTab({ search }: { search: string }) {
                 const isMutuo = (p as any)._source === 'mutuo'
                 const isEditingRow = editingParcela?.id === p.id || payingParcela?.id === p.id
                 return (
-                  <tr key={p.id} className={`group transition-colors ${isEditingRow ? 'row-editing' : 'hover:bg-muted/20'}`}>
+                  <tr key={p.id} data-parcela-id={p.id} className={`group transition-colors ${isEditingRow ? 'row-editing' : 'hover:bg-muted/20'}`}>
                     <td className="px-2 py-2.5 text-center">
                       <input type="checkbox" checked={selection.isSelected(p.id)}
                         onChange={() => selection.toggle(p.id)}
@@ -924,7 +964,7 @@ function MutuoBaixaModal({
 // AGENDA TAB — Weekly/Monthly calendar view
 // ═══════════════════════════════════════════════════════════════
 
-function AgendaTab() {
+function AgendaTab({ onPickDay }: { onPickDay?: (isoDate: string) => void }) {
   const { data: parcelas = [], isLoading } = useParcelas()
   const { data: pedidos = [] } = usePedidos()
   const { data: contas = [] } = useContasBancarias()
@@ -1035,9 +1075,11 @@ function AgendaTab() {
           return (
             <div
               key={day}
+              onClick={() => { if (ps.length > 0 && onPickDay) onPickDay(day) }}
               className={`min-h-[80px] rounded-lg border p-2 text-xs transition-colors ${
                 isToday ? 'border-primary/50 bg-primary/5' : 'bg-card hover:bg-muted/20'
-              } ${view === 'semana' ? '' : 'min-h-[70px]'}`}
+              } ${view === 'semana' ? '' : 'min-h-[70px]'} ${ps.length > 0 ? 'cursor-pointer hover:border-primary/40' : ''}`}
+              title={ps.length > 0 ? `Clique para ver as ${ps.length} parcela(s) de ${d.toLocaleDateString('pt-BR')}` : undefined}
             >
               <div className="mb-1 flex items-center justify-between">
                 <span className={`text-[10px] font-semibold ${isToday ? 'text-primary' : 'text-muted-foreground'}`}>
