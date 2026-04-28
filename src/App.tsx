@@ -101,7 +101,7 @@ export default function App() {
                 <Route path="/simulador" element={<Navigate to="/cronograma" replace />} />
                 <Route path="/relatorios" element={<RoleGate route="/relatorios"><RelatoriosPage /></RoleGate>} />
                 <Route path="/importacao" element={<RoleGate route="/importacao"><ImportacaoPage /></RoleGate>} />
-                <Route path="/recepcao" element={<RoleGate route="/importacao"><RecepcaoPage /></RoleGate>} />
+                <Route path="/recepcao" element={<RoleGate route="/recepcao"><RecepcaoPage /></RoleGate>} />
                 <Route path="/configuracoes" element={<RoleGate route="/configuracoes"><Configuracoes /></RoleGate>} />
                 <Route path="/usuarios" element={<RoleGate route="/usuarios"><GestaoUsuariosPage /></RoleGate>} />
                 <Route path="/perfil" element={<PerfilPage />} />
