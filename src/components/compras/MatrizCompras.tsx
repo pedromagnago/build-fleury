@@ -104,7 +104,16 @@ export function MatrizCompras({ search }: { search: string }) {
   const [showNCasas, setShowNCasas] = useState(false)
   const [etapaFilter, setEtapaFilter] = useState<string>('')
   const [onlyWithoutPedido, setOnlyWithoutPedido] = useState(false)
-  const [lockDatePerEtapa, setLockDatePerEtapa] = useState(true)
+  // Default INDIVIDUAL: editar data muda so a linha clicada. Quem quiser propagar
+  // para todos os pedidos da etapa ativa o toggle "Data vinculada". Persistido em
+  // localStorage para nao reverter entre sessoes.
+  const LOCK_KEY = 'bf:matriz:lockDatePerEtapa'
+  const [lockDatePerEtapa, setLockDatePerEtapa] = useState<boolean>(() => {
+    try { return localStorage.getItem(LOCK_KEY) === '1' } catch { return false }
+  })
+  useEffect(() => {
+    try { localStorage.setItem(LOCK_KEY, lockDatePerEtapa ? '1' : '0') } catch { /* noop */ }
+  }, [lockDatePerEtapa])
 
   // Aglutinação — TUDO COLAPSADO por default (etapas e pedidos)
   const [expandedEtapas, setExpandedEtapas] = useState<Set<string>>(new Set())
