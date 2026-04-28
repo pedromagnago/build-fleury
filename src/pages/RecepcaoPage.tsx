@@ -11,7 +11,9 @@ import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
 import { parseNfeXml } from '@/lib/recepcao/xmlNfeParser'
 import { extrairDoc, searchItensCompra, fileToBase64, type ItemMatchSugerido } from '@/lib/recepcao/api'
-import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2 } from 'lucide-react'
+import { indexarEmbeddingsPendentes, embedQuery } from '@/lib/recepcao/indexador'
+import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus } from 'lucide-react'
+import { useEtapas } from '@/hooks/useEtapas'
 
 type Acao = 'substituir_pedido' | 'criar_pedido' | 'criar_item' | 'ignorar'
 
@@ -48,12 +50,32 @@ export default function RecepcaoPage() {
   const { data: itens = [] } = useItensCompra()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: pedidos = [] } = usePedidos()
+  const { data: etapas = [] } = useEtapas()
   const createPedidoLote = useCreatePedidoLote()
 
   const [extracao, setExtracao] = useState<Extracao | null>(null)
   const [extraindo, setExtraindo] = useState(false)
   const [aplicando, setAplicando] = useState(false)
   const [textoColado, setTextoColado] = useState('')
+  const [indexando, setIndexando] = useState(false)
+  const [criandoItemIdx, setCriandoItemIdx] = useState<number | null>(null)
+  const [criandoFornecedor, setCriandoFornecedor] = useState(false)
+  const [novoItemForm, setNovoItemForm] = useState({ descricao: '', etapa_id: '', categoria: 'MATERIAL', valor_orcado: '' })
+  const [novoFornForm, setNovoFornForm] = useState({ nome: '', cnpj: '' })
+
+  const handleIndexar = async () => {
+    if (!currentCompany) return
+    setIndexando(true)
+    try {
+      const r = await indexarEmbeddingsPendentes(currentCompany.id)
+      if (r.indexados === 0) toast.success(`Já indexado: ${r.total} itens.`)
+      else toast.success(`Indexados ${r.indexados} de ${r.total} itens · custo R$ ${(r.custoCents / 100).toFixed(4)}`)
+    } catch (err) {
+      toast.error('Erro ao indexar: ' + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setIndexando(false)
+    }
+  }
 
   const onDrop = async (files: File[]) => {
     const file = files[0]
@@ -118,10 +140,13 @@ export default function RecepcaoPage() {
     const linhas: LinhaExtraida[] = e.itens.map((i: any) => ({ ...i, carregandoSugestoes: true }))
     setExtracao({ ...e, itens: linhas } as Extracao)
     if (!currentCompany) return
-    // Carrega sugestões em paralelo (sem embedding por enquanto — só trigram)
+    // Carrega sugestões em paralelo (com embedding do query — match semantico)
     Promise.all(linhas.map(async (l, idx) => {
       try {
-        const sugs = await searchItensCompra({ company_id: currentCompany.id, query: l.descricao, limit: 3 })
+        // Tenta gerar embedding do query (se falhar, cai pra so trigram)
+        let queryEmb: number[] | undefined
+        try { queryEmb = await embedQuery(l.descricao) } catch { /* ignora */ }
+        const sugs = await searchItensCompra({ company_id: currentCompany.id, query: l.descricao, query_embedding: queryEmb, limit: 3 })
         setExtracao(prev => {
           if (!prev) return prev
           const novas = [...prev.itens]
@@ -268,6 +293,18 @@ export default function RecepcaoPage() {
 
       {!extracao && (
         <>
+          {/* Acoes globais */}
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={handleIndexar}
+              disabled={indexando}
+              className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+              title="Gera embeddings dos itens pra match semantico (1x, ~R$0,001 por 100 itens)"
+            >
+              {indexando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Database className="h-3.5 w-3.5" />}
+              {indexando ? 'Indexando…' : 'Indexar embeddings'}
+            </button>
+          </div>
           {/* Dropzone */}
           <div
             {...getRootProps()}
@@ -314,6 +351,127 @@ export default function RecepcaoPage() {
         </>
       )}
 
+      {/* Modal: Criar item rapido */}
+      {criandoItemIdx !== null && extracao && currentCompany && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setCriandoItemIdx(null)}>
+          <div className="w-full max-w-md rounded-xl border bg-card shadow-2xl p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-bold mb-2">Criar item de orcamento rapido</h3>
+            <p className="text-[11px] text-muted-foreground mb-3">Cria um novo item_compra para vincular a esta linha da nota. Voce pode ajustar depois em Compras &gt; Itens.</p>
+            <div className="space-y-2">
+              <div>
+                <label className="text-[10px] uppercase text-muted-foreground">Descricao</label>
+                <input value={novoItemForm.descricao} onChange={e => setNovoItemForm({ ...novoItemForm, descricao: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm" />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] uppercase text-muted-foreground">Etapa</label>
+                  <select value={novoItemForm.etapa_id} onChange={e => setNovoItemForm({ ...novoItemForm, etapa_id: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm">
+                    <option value="">— escolher —</option>
+                    {(etapas as any[]).map(et => <option key={et.id} value={et.id}>{et.nome}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase text-muted-foreground">Tipo</label>
+                  <select value={novoItemForm.categoria} onChange={e => setNovoItemForm({ ...novoItemForm, categoria: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm">
+                    <option value="MATERIAL">Material</option>
+                    <option value="MAO_DE_OBRA">Mão de Obra</option>
+                    <option value="EQUIPAMENTO">Equipamento</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase text-muted-foreground">Valor unitario orcado (R$)</label>
+                <input type="number" step="0.01" value={novoItemForm.valor_orcado} onChange={e => setNovoItemForm({ ...novoItemForm, valor_orcado: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm font-mono text-right" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setCriandoItemIdx(null)} className="rounded border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
+              <button
+                onClick={async () => {
+                  if (!novoItemForm.descricao.trim() || !novoItemForm.etapa_id) {
+                    toast.error('Preencha descricao e etapa')
+                    return
+                  }
+                  try {
+                    const valorNum = parseFloat(novoItemForm.valor_orcado.replace(',', '.')) || 0
+                    const { data: novo, error: errIns } = await supabase.from('itens_compra').insert({
+                      company_id: currentCompany.id,
+                      etapa_id: novoItemForm.etapa_id,
+                      descricao: novoItemForm.descricao.trim(),
+                      tipo: novoItemForm.categoria,
+                      categoria: novoItemForm.categoria,
+                      custo_unitario_orcado: valorNum,
+                      valor_total_orcado: valorNum,
+                    }).select('id').single()
+                    if (errIns) throw errIns
+                    if (novo) {
+                      const idxLocal = criandoItemIdx
+                      setExtracao(prev => prev ? {
+                        ...prev,
+                        itens: prev.itens.map((l, i) => i === idxLocal ? { ...l, item_compra_id: novo.id, acao: 'criar_pedido' } : l)
+                      } : prev)
+                      toast.success('Item criado e vinculado a esta linha')
+                    }
+                    setCriandoItemIdx(null)
+                  } catch (err) {
+                    toast.error('Erro ao criar item: ' + (err instanceof Error ? err.message : String(err)))
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700"
+              >
+                <Plus className="h-3.5 w-3.5" /> Criar item
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Criar fornecedor rapido */}
+      {criandoFornecedor && currentCompany && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setCriandoFornecedor(false)}>
+          <div className="w-full max-w-md rounded-xl border bg-card shadow-2xl p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-bold mb-2">Criar fornecedor rapido</h3>
+            <div className="space-y-2">
+              <div>
+                <label className="text-[10px] uppercase text-muted-foreground">Nome</label>
+                <input value={novoFornForm.nome} onChange={e => setNovoFornForm({ ...novoFornForm, nome: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm" />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase text-muted-foreground">CNPJ (opcional)</label>
+                <input value={novoFornForm.cnpj} onChange={e => setNovoFornForm({ ...novoFornForm, cnpj: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm font-mono" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setCriandoFornecedor(false)} className="rounded border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
+              <button
+                onClick={async () => {
+                  if (!novoFornForm.nome.trim()) { toast.error('Informe o nome'); return }
+                  try {
+                    const { data: novo, error: errIns } = await supabase.from('fornecedores').insert({
+                      company_id: currentCompany.id,
+                      nome: novoFornForm.nome.trim(),
+                      cnpj: novoFornForm.cnpj?.replace(/\D/g, '') || null,
+                    }).select('id').single()
+                    if (errIns) throw errIns
+                    if (novo && extracao) {
+                      // Atualiza header da extracao com novo fornecedor
+                      setExtracao({ ...extracao, fornecedor: { ...extracao.fornecedor, nome: novoFornForm.nome.trim(), cnpj: novoFornForm.cnpj || extracao.fornecedor.cnpj } })
+                    }
+                    toast.success('Fornecedor criado')
+                    setCriandoFornecedor(false)
+                  } catch (err) {
+                    toast.error('Erro: ' + (err instanceof Error ? err.message : String(err)))
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700"
+              >
+                <Plus className="h-3.5 w-3.5" /> Criar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TELA DE REVISÃO */}
       {extracao && (
         <div className="space-y-3">
@@ -321,7 +479,28 @@ export default function RecepcaoPage() {
           <div className="rounded-xl border bg-card p-4">
             <div className="flex items-start justify-between mb-3">
               <div>
-                <h3 className="text-base font-bold">{extracao.fornecedor.nome ?? 'Fornecedor desconhecido'}</h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold">{extracao.fornecedor.nome ?? 'Fornecedor desconhecido'}</h3>
+                  {(() => {
+                    const cnpjClean = extracao.fornecedor.cnpj?.replace(/\D/g, '')
+                    const fornExiste = (fornecedores as any[]).some(f =>
+                      (cnpjClean && f.cnpj?.replace(/\D/g, '') === cnpjClean) ||
+                      (extracao.fornecedor.nome && f.nome.toLowerCase() === extracao.fornecedor.nome.toLowerCase())
+                    )
+                    if (fornExiste) return <span className="text-[10px] rounded bg-emerald-500/15 text-emerald-700 px-1.5 py-0.5">cadastrado</span>
+                    return (
+                      <button
+                        onClick={() => {
+                          setNovoFornForm({ nome: extracao.fornecedor.nome ?? '', cnpj: extracao.fornecedor.cnpj ?? '' })
+                          setCriandoFornecedor(true)
+                        }}
+                        className="text-[10px] rounded border border-blue-500/40 text-blue-700 hover:bg-blue-500/10 px-1.5 py-0.5 inline-flex items-center gap-1"
+                      >
+                        <Plus className="h-3 w-3" /> Cadastrar fornecedor
+                      </button>
+                    )
+                  })()}
+                </div>
                 <p className="text-xs text-muted-foreground">
                   {extracao.fornecedor.cnpj ? `CNPJ ${extracao.fornecedor.cnpj} · ` : ''}
                   NF {extracao.documento.numero ?? '—'} {extracao.documento.serie ? `Série ${extracao.documento.serie}` : ''}
@@ -439,7 +618,19 @@ export default function RecepcaoPage() {
                             ))}
                           </select>
                         ) : (
-                          <span className="text-[10px] text-muted-foreground italic">Sem match — criar item</span>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[10px] text-muted-foreground italic">Sem match no orcamento</span>
+                            <button
+                              onClick={() => {
+                                setCriandoItemIdx(idx)
+                                const valor = linha.valor_unitario ?? linha.valor_total ?? 0
+                                setNovoItemForm({ descricao: linha.descricao, etapa_id: '', categoria: 'MATERIAL', valor_orcado: String(valor) })
+                              }}
+                              className="text-[9px] inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-blue-700 hover:bg-blue-500/10 self-start"
+                            >
+                              <Plus className="h-3 w-3" /> Criar item rapido
+                            </button>
+                          </div>
                         )}
                       </td>
                       <td className="px-3 py-2">
