@@ -46,7 +46,7 @@ const statusConfig: Record<string, { label: string; color: string; icon: typeof 
   parcialmente_paga: { label: 'Parcial', color: 'bg-blue-500/10 text-blue-500', icon: CreditCard },
 }
 
-type Tab = 'parcelas' | 'agenda' | 'por_fornecedor' | 'recepcao'
+type Tab = 'parcelas' | 'agenda' | 'por_pedido' | 'por_fornecedor' | 'recepcao'
 
 // ---------------------------------------------------------------------------
 // Main
@@ -61,6 +61,7 @@ export default function PagamentosPage() {
   const TABS: Array<{ key: Tab; label: string; icon: typeof Clock }> = [
     { key: 'parcelas', label: 'Parcelas', icon: CalendarClock },
     { key: 'agenda', label: 'Agenda', icon: Calendar },
+    { key: 'por_pedido', label: 'Por Pedido', icon: Package },
     { key: 'por_fornecedor', label: 'Por Fornecedor', icon: Users },
     { key: 'recepcao', label: 'Recepção (NF/IA)', icon: Inbox },
   ]
@@ -98,6 +99,7 @@ export default function PagamentosPage() {
         setSearch(`${d}/${m}/${y}`)
         setTab('parcelas')
       }} />}
+      {tab === 'por_pedido' && <PorPedidoTab />}
       {tab === 'por_fornecedor' && <PorFornecedorTab />}
       {tab === 'recepcao' && <RecepcaoPage />}
     </div>
@@ -109,6 +111,7 @@ export default function PagamentosPage() {
 // ═══════════════════════════════════════════════════════════════
 
 type TypeFilter = 'todos' | 'pedidos' | 'mutuos' | 'avulsas'
+type DueFilter = 'todas' | 'hoje' | 'semana' | 'mes' | 'vencidas' | 'pagas'
 
 // Estorno unificado: limpa conciliacao + mov + zera parcela/mutuo_parcela.
 async function estornarParcela(p: Parcela, isMutuo: boolean, qc: ReturnType<typeof useQueryClient>) {
@@ -170,6 +173,7 @@ function ParcelasTab({ search }: { search: string }) {
   const [editingParcela, setEditingParcela] = useState<Parcela | null>(null)
   const [viewingVinculos, setViewingVinculos] = useState<Parcela | null>(null)
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('todos')
+  const [dueFilter, setDueFilter] = useState<DueFilter>('todas')
   const selection = useSelection()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: mutuos = [] } = useMutuos()
@@ -230,6 +234,12 @@ function ParcelasTab({ search }: { search: string }) {
     setForm({ pedido_id: '', numero_parcela: '1', valor: '', data_vencimento: '', forma_pagamento: '', status: 'futura', descricao: '' })
   }
 
+  // Janelas de tempo para o filtro de vencimento
+  const monthEnd = (() => {
+    const d = new Date()
+    return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split('T')[0]!
+  })()
+
   const filtered = parcelas.filter((p) => {
     const q = search.toLowerCase().trim()
     // Aceita data em formato BR (DD/MM/YYYY ou DD/MM) e converte para ISO p/ casar com data_vencimento/pagamento
@@ -253,9 +263,17 @@ function ParcelasTab({ search }: { search: string }) {
         (p.data_pagamento_real ?? '').includes(q)
       ))
     if (!matchesSearch) return false
-    if (typeFilter === 'pedidos') return !!p.pedido_id
-    if (typeFilter === 'avulsas') return !p.pedido_id
-    return true // 'todos' and 'mutuos' handled separately
+    if (typeFilter === 'pedidos' && !p.pedido_id) return false
+    if (typeFilter === 'avulsas' && p.pedido_id) return false
+    // Filtro de vencimento — pagas só aparecem se 'todas' ou 'pagas'
+    const venc = p.data_vencimento ?? ''
+    if (dueFilter === 'pagas') return p.status === 'paga'
+    if (p.status === 'paga') return dueFilter === 'todas'
+    if (dueFilter === 'hoje') return venc === today
+    if (dueFilter === 'semana') return venc >= today && venc <= weekEnd
+    if (dueFilter === 'mes') return venc >= today && venc <= monthEnd
+    if (dueFilter === 'vencidas') return venc < today
+    return true // 'todas'
   })
 
   // Merge mutuo parcelas into the list — APENAS de captação (parcelas = devolução = SAÍDA).
@@ -318,19 +336,93 @@ function ParcelasTab({ search }: { search: string }) {
     { total: 0, pago: 0, pendente: 0 }
   )
 
+  // Contadores rápidos (sobre todas as parcelas, não só o filtro atual — para o usuário enxergar prioridades mesmo navegando)
+  const allParcelasCombined = useMemo(() => [
+    ...parcelas,
+    ...mutuoParcelas,
+  ], [parcelas, mutuoParcelas])
+  const counters = useMemo(() => {
+    let vencidas = 0, vencidasValor = 0
+    let hoje = 0, hojeValor = 0
+    let semana = 0, semanaValor = 0
+    allParcelasCombined.forEach((p) => {
+      if (p.status === 'paga') return
+      const v = p.data_vencimento ?? ''
+      const restante = Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0))
+      if (v && v < today) { vencidas++; vencidasValor += restante }
+      else if (v === today) { hoje++; hojeValor += restante }
+      else if (v > today && v <= weekEnd) { semana++; semanaValor += restante }
+    })
+    return { vencidas, vencidasValor, hoje, hojeValor, semana, semanaValor }
+  }, [allParcelasCombined, today, weekEnd])
+
   return (
     <>
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <MiniCard label="Total Parcelas" value={formatCurrency(totals.total)} />
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+        <MiniCard label="Total" value={formatCurrency(totals.total)} />
         <MiniCard label="Pago" value={formatCurrency(totals.pago)} accent="emerald" />
         <MiniCard label="Pendente" value={formatCurrency(totals.pendente)} accent="amber" />
-        <MiniCard label="Qtd." value={`${filtered.length} + ${mutuoParcelas.length} mút.`} />
+        <button
+          type="button"
+          onClick={() => setDueFilter('vencidas')}
+          className={`rounded-xl border bg-card p-3 text-left transition-colors hover:border-red-500/40 ${dueFilter === 'vencidas' ? 'border-red-500/60 bg-red-500/5' : ''}`}
+        >
+          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Vencidas</p>
+          <p className="mt-1 text-lg font-bold text-red-500">{counters.vencidas}</p>
+          <p className="text-[10px] text-muted-foreground">{formatCurrency(counters.vencidasValor)}</p>
+        </button>
+        <button
+          type="button"
+          onClick={() => setDueFilter('hoje')}
+          className={`rounded-xl border bg-card p-3 text-left transition-colors hover:border-amber-500/40 ${dueFilter === 'hoje' ? 'border-amber-500/60 bg-amber-500/5' : ''}`}
+        >
+          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Hoje</p>
+          <p className="mt-1 text-lg font-bold text-amber-600">{counters.hoje}</p>
+          <p className="text-[10px] text-muted-foreground">{formatCurrency(counters.hojeValor)}</p>
+        </button>
+        <button
+          type="button"
+          onClick={() => setDueFilter('semana')}
+          className={`rounded-xl border bg-card p-3 text-left transition-colors hover:border-amber-400/40 ${dueFilter === 'semana' ? 'border-amber-500/60 bg-amber-500/5' : ''}`}
+        >
+          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Esta semana</p>
+          <p className="mt-1 text-lg font-bold text-amber-500">{counters.semana}</p>
+          <p className="text-[10px] text-muted-foreground">{formatCurrency(counters.semanaValor)}</p>
+        </button>
       </div>
 
       <div className="mb-4 flex items-center gap-2 flex-wrap">
         <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
           <Plus className="h-4 w-4" /> Nova Parcela
         </button>
+        {/* Quick filter — Vencimento */}
+        <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
+          {([
+            ['todas', 'Todas'],
+            ['vencidas', 'Vencidas'],
+            ['hoje', 'Hoje'],
+            ['semana', 'Esta semana'],
+            ['mes', 'Este mês'],
+            ['pagas', 'Pagas'],
+          ] as const).map(([k, label]) => {
+            const tone =
+              k === 'vencidas' ? 'data-[on=true]:text-red-600' :
+              k === 'hoje' ? 'data-[on=true]:text-amber-600' :
+              k === 'pagas' ? 'data-[on=true]:text-emerald-600' : ''
+            return (
+              <button
+                key={k}
+                onClick={() => setDueFilter(k)}
+                data-on={dueFilter === k}
+                className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${tone} ${
+                  dueFilter === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
         {/* Type Filter Chips */}
         <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
           {([['todos', 'Todas'], ['pedidos', 'Pedidos'], ['mutuos', 'Mútuos'], ['avulsas', 'Avulsas']] as const).map(([k, label]) => (
@@ -340,8 +432,8 @@ function ParcelasTab({ search }: { search: string }) {
           ))}
         </div>
         <div className="ml-auto flex gap-1.5">
-          <button onClick={selectVencidas} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-red-500 hover:bg-red-500/10">Vencidas</button>
-          <button onClick={selectSemana} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-amber-600 hover:bg-amber-500/10">Esta semana</button>
+          <button onClick={selectVencidas} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-red-500 hover:bg-red-500/10" title="Selecionar parcelas vencidas">Sel. vencidas</button>
+          <button onClick={selectSemana} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-amber-600 hover:bg-amber-500/10" title="Selecionar parcelas desta semana">Sel. semana</button>
         </div>
       </div>
 
@@ -384,10 +476,12 @@ function ParcelasTab({ search }: { search: string }) {
                     onChange={() => selection.toggleAll(allFiltered.map(p => p.id))}
                     className="h-3.5 w-3.5 rounded accent-primary" />
                 </th>
-                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item</th>
-                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">#</th>
-                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Valor</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Vencimento</th>
+                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Parcela</th>
+                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pedido</th>
+                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fornecedor</th>
+                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Descrição</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Valor</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pagamento</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Status</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-8"></th>
@@ -399,6 +493,12 @@ function ParcelasTab({ search }: { search: string }) {
                 const cfg = statusConfig[p.status] ?? statusConfig['futura']!
                 const isMutuo = (p as any)._source === 'mutuo'
                 const isEditingRow = editingParcela?.id === p.id || payingParcela?.id === p.id
+                const venc = p.data_vencimento ?? ''
+                const isVencida = p.status !== 'paga' && venc && venc < today
+                const isHoje = p.status !== 'paga' && venc === today
+                const isSemana = p.status !== 'paga' && venc > today && venc <= weekEnd
+                const pedidoNumero = (p as any).pedido_numero as number | null | undefined
+                const fornecedorNome = (p as any).fornecedor_nome as string | null | undefined
                 return (
                   <tr key={p.id} data-parcela-id={p.id} className={`group transition-colors ${isEditingRow ? 'row-editing' : 'hover:bg-muted/20'}`}>
                     <td className="px-2 py-2.5 text-center">
@@ -406,15 +506,34 @@ function ParcelasTab({ search }: { search: string }) {
                         onChange={() => selection.toggle(p.id)}
                         className="h-3.5 w-3.5 rounded accent-primary" />
                     </td>
-                    <td className="px-3 py-2.5 text-xs font-medium">
-                      <div className="flex items-center gap-1.5">
-                        {isMutuo && <span className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[8px] font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">MÚTUO</span>}
-                        {p.pedido_item ?? p.descricao ?? 'Avulsa'}
+                    <td className={`px-3 py-2.5 text-center text-xs font-medium ${
+                      isVencida ? 'text-red-600' : isHoje ? 'text-amber-600' : isSemana ? 'text-amber-500' : ''
+                    }`}>
+                      <div className="flex items-center justify-center gap-1">
+                        {localDate(p.data_vencimento).toLocaleDateString('pt-BR')}
+                        {isVencida && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[8px] font-bold text-red-600">VENC</span>}
+                        {isHoje && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[8px] font-bold text-amber-600">HOJE</span>}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-center text-xs text-muted-foreground">{p.numero_parcela}</td>
+                    <td className="px-3 py-2.5 text-center text-xs text-muted-foreground">
+                      {p.numero_parcela}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs">
+                      {isMutuo ? (
+                        <span className="rounded bg-amber-100 px-1 py-0.5 text-[8px] font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">MÚTUO</span>
+                      ) : pedidoNumero != null ? (
+                        <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">PED #{pedidoNumero}</span>
+                      ) : (
+                        <span className="text-muted-foreground text-[10px]">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs text-muted-foreground truncate max-w-[180px]" title={fornecedorNome ?? ''}>
+                      {fornecedorNome ?? '—'}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs font-medium truncate max-w-[260px]" title={p.pedido_item ?? p.descricao ?? ''}>
+                      {p.pedido_item ?? p.descricao ?? 'Avulsa'}
+                    </td>
                     <td className="px-3 py-2.5 text-right text-xs font-medium">{formatCurrency(p.valor)}</td>
-                    <td className="px-3 py-2.5 text-center text-xs">{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</td>
                     <td className="px-3 py-2.5 text-center text-xs">{p.data_pagamento_real ? localDate(p.data_pagamento_real).toLocaleDateString('pt-BR') : '—'}</td>
                     <td className="px-3 py-2.5 text-center">
                       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-semibold ${cfg.color}`}>
@@ -1112,6 +1231,465 @@ function AgendaTab({ onPickDay }: { onPickDay?: (isoDate: string) => void }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// POR PEDIDO TAB — master/detail (pedido → parcelas)
+// ═══════════════════════════════════════════════════════════════
+
+type PorPedidoStatus = 'todos' | 'pendente' | 'atrasado' | 'pago'
+
+function PorPedidoTab() {
+  const { currentCompany } = useProject()
+  const qc = useQueryClient()
+  const { data: parcelas = [], isLoading } = useParcelas()
+  const { data: pedidos = [] } = usePedidos()
+  const { data: fornecedores = [] } = useFornecedores()
+  const { data: contas = [] } = useContasBancarias()
+
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<PorPedidoStatus>('todos')
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [batchModal, setBatchModal] = useState(false)
+  const [payingParcela, setPayingParcela] = useState<Parcela | null>(null)
+  const [editingParcela, setEditingParcela] = useState<Parcela | null>(null)
+  const [viewingVinculos, setViewingVinculos] = useState<Parcela | null>(null)
+
+  const today = new Date().toISOString().split('T')[0]!
+
+  // Agrupa parcelas (que tenham pedido_id) por pedido_id
+  const groups = useMemo(() => {
+    const map = new Map<string, { pedido: Pedido | null; parcelas: Parcela[] }>()
+    parcelas.forEach((p) => {
+      if (!p.pedido_id) return
+      if (!map.has(p.pedido_id)) {
+        const ped = pedidos.find((pd) => pd.id === p.pedido_id) ?? null
+        map.set(p.pedido_id, { pedido: ped, parcelas: [] })
+      }
+      map.get(p.pedido_id)!.parcelas.push(p)
+    })
+
+    return [...map.entries()].map(([pid, g]) => {
+      const sorted = [...g.parcelas].sort((a, b) => a.numero_parcela - b.numero_parcela)
+      const total = sorted.reduce((s, p) => s + Number(p.valor || 0), 0)
+      const pago = sorted.reduce((s, p) => s + Number(p.valor_pago || 0), 0)
+      const pendente = sorted.reduce(
+        (s, p) => (p.status !== 'paga' ? s + (Number(p.valor || 0) - Number(p.valor_pago || 0)) : s),
+        0
+      )
+      const totalCount = sorted.length
+      const pagasCount = sorted.filter((p) => p.status === 'paga').length
+      const vencidaCount = sorted.filter((p) => p.status !== 'paga' && p.data_vencimento < today).length
+      const proxNaoVencida = sorted
+        .filter((p) => p.status !== 'paga' && p.data_vencimento >= today)
+        .sort((a, b) => a.data_vencimento.localeCompare(b.data_vencimento))[0]
+      const proxVencida = sorted
+        .filter((p) => p.status !== 'paga' && p.data_vencimento < today)
+        .sort((a, b) => a.data_vencimento.localeCompare(b.data_vencimento))[0]
+      const fornecedor = fornecedores.find((f) => f.id === g.pedido?.fornecedor_id) ?? null
+
+      let aggStatus: 'pago' | 'atrasado' | 'pendente' = 'pendente'
+      if (pagasCount === totalCount) aggStatus = 'pago'
+      else if (vencidaCount > 0) aggStatus = 'atrasado'
+
+      return {
+        id: pid,
+        pedido: g.pedido,
+        fornecedor,
+        parcelas: sorted,
+        total,
+        pago,
+        pendente,
+        totalCount,
+        pagasCount,
+        vencidaCount,
+        proxVenc: proxNaoVencida?.data_vencimento ?? null,
+        proxVencida: proxVencida?.data_vencimento ?? null,
+        aggStatus,
+      }
+    })
+  }, [parcelas, pedidos, fornecedores, today])
+
+  const filteredGroups = useMemo(() => {
+    const order: Record<string, number> = { atrasado: 0, pendente: 1, pago: 2 }
+    return groups
+      .filter((g) => {
+        if (statusFilter !== 'todos' && g.aggStatus !== statusFilter) return false
+        if (search) {
+          const q = search.toLowerCase().trim()
+          const numeroPedido = String(g.pedido?.numero_pedido ?? '')
+          const itemDesc = (g.pedido?.item_descricao ?? g.parcelas[0]?.pedido_item ?? '').toLowerCase()
+          const fornNome = (g.fornecedor?.nome ?? '').toLowerCase()
+          if (!numeroPedido.includes(q) && !itemDesc.includes(q) && !fornNome.includes(q)) return false
+        }
+        return true
+      })
+      .sort((a, b) => {
+        if (a.aggStatus !== b.aggStatus) return (order[a.aggStatus] ?? 9) - (order[b.aggStatus] ?? 9)
+        const av = a.proxVencida ?? a.proxVenc ?? '9999-99-99'
+        const bv = b.proxVencida ?? b.proxVenc ?? '9999-99-99'
+        return av.localeCompare(bv)
+      })
+  }, [groups, statusFilter, search])
+
+  const totals = useMemo(
+    () =>
+      filteredGroups.reduce(
+        (acc, g) => ({
+          total: acc.total + g.total,
+          pago: acc.pago + g.pago,
+          pendente: acc.pendente + g.pendente,
+          vencidas: acc.vencidas + g.vencidaCount,
+        }),
+        { total: 0, pago: 0, pendente: 0, vencidas: 0 }
+      ),
+    [filteredGroups]
+  )
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectPedido = (g: (typeof filteredGroups)[number]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      const pendentes = g.parcelas.filter((p) => p.status !== 'paga')
+      const allSel = pendentes.length > 0 && pendentes.every((p) => next.has(p.id))
+      pendentes.forEach((p) => (allSel ? next.delete(p.id) : next.add(p.id)))
+      return next
+    })
+  }
+
+  const totalSelected = useMemo(
+    () =>
+      parcelas
+        .filter((p) => selectedIds.has(p.id))
+        .reduce((s, p) => s + Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0)), 0),
+    [selectedIds, parcelas]
+  )
+
+  if (isLoading) return <Spinner />
+
+  return (
+    <>
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <MiniCard label="Pedidos" value={String(filteredGroups.length)} />
+        <MiniCard label="Total" value={formatCurrency(totals.total)} />
+        <MiniCard label="Pago" value={formatCurrency(totals.pago)} accent="emerald" />
+        <MiniCard label="A pagar" value={formatCurrency(totals.pendente)} accent="amber" />
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[240px] flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar por nº pedido, fornecedor, item..."
+            className={`${INPUT} pl-9`}
+          />
+        </div>
+        <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
+          {([
+            ['todos', 'Todos'],
+            ['pendente', 'Pendentes'],
+            ['atrasado', 'Atrasados'],
+            ['pago', 'Pagos'],
+          ] as const).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setStatusFilter(k)}
+              className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${
+                statusFilter === k
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {selectedIds.size > 0 && (
+        <div className="mb-4 flex items-center justify-between rounded-xl border border-primary/30 bg-primary/5 p-3">
+          <p className="text-xs font-medium">
+            <strong>{selectedIds.size}</strong> parcela(s) selecionada(s) — Total:{' '}
+            <strong>{formatCurrency(totalSelected)}</strong>
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="rounded-lg border px-3 py-1.5 text-xs hover:bg-muted"
+            >
+              Limpar
+            </button>
+            <button
+              onClick={() => setBatchModal(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+            >
+              <Check className="h-3.5 w-3.5" /> Pagar selecionadas
+            </button>
+          </div>
+        </div>
+      )}
+
+      {filteredGroups.length === 0 ? (
+        <EmptyState msg="Nenhum pedido com parcelas encontrado" />
+      ) : (
+        <div className="space-y-3">
+          {filteredGroups.map((g) => {
+            const aggCfg =
+              g.aggStatus === 'pago'
+                ? statusConfig['paga']!
+                : g.aggStatus === 'atrasado'
+                ? statusConfig['vencida']!
+                : statusConfig['a_vencer']!
+            const itemDesc = g.pedido?.item_descricao ?? g.parcelas[0]?.pedido_item ?? '—'
+            const proxLabel = g.proxVencida ?? g.proxVenc
+            const isExpanded = expandedId === g.id
+            return (
+              <div key={g.id} className="rounded-xl border bg-card transition-shadow hover:shadow-sm">
+                <button
+                  onClick={() => setExpandedId(isExpanded ? null : g.id)}
+                  className="flex w-full items-center gap-3 p-4 text-left"
+                >
+                  {isExpanded ? (
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">
+                        PED #{g.pedido?.numero_pedido ?? '—'}
+                      </span>
+                      <h4 className="truncate text-sm font-semibold">{g.fornecedor?.nome ?? 'Sem fornecedor'}</h4>
+                    </div>
+                    <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{itemDesc}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground">
+                      <span>
+                        {g.pagasCount} de {g.totalCount} pagas
+                      </span>
+                      {g.vencidaCount > 0 && (
+                        <span className="font-semibold text-red-500">{g.vencidaCount} vencida(s)</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="hidden items-center gap-4 text-xs md:flex">
+                    <div className="text-right">
+                      <p className="text-[10px] text-muted-foreground">Total</p>
+                      <p className="font-semibold">{formatCurrency(g.total)}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[10px] text-muted-foreground">Pago</p>
+                      <p className="font-semibold text-emerald-500">{formatCurrency(g.pago)}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[10px] text-muted-foreground">A pagar</p>
+                      <p className="font-semibold text-amber-500">{formatCurrency(g.pendente)}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[10px] text-muted-foreground">Próx. venc.</p>
+                      <p className="flex items-center justify-end gap-1 font-semibold">
+                        {proxLabel ? localDate(proxLabel).toLocaleDateString('pt-BR') : '—'}
+                      </p>
+                    </div>
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-semibold ${aggCfg.color}`}
+                    >
+                      <aggCfg.icon className="h-2.5 w-2.5" />
+                      {aggCfg.label}
+                    </span>
+                  </div>
+                </button>
+
+                {isExpanded && (
+                  <div className="border-t px-4 pb-3 pt-2">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Parcelas{' '}
+                        {g.pedido?.cond_pagamento ? (
+                          <span className="ml-1 normal-case text-muted-foreground/70">
+                            (cond. {g.pedido.cond_pagamento})
+                          </span>
+                        ) : null}
+                      </p>
+                      {g.parcelas.some((p) => p.status !== 'paga') && (
+                        <button
+                          onClick={() => toggleSelectPedido(g)}
+                          className="text-[10px] text-primary hover:underline"
+                        >
+                          Selecionar todas pendentes
+                        </button>
+                      )}
+                    </div>
+                    <table className="tbl-bf w-full text-xs">
+                      <thead>
+                        <tr className="text-[9px] uppercase text-muted-foreground">
+                          <th className="w-8 py-1"></th>
+                          <th className="py-1 text-center">#</th>
+                          <th className="py-1 text-right">Valor</th>
+                          <th className="py-1 text-right">Pago</th>
+                          <th className="py-1 text-center">Vencimento</th>
+                          <th className="py-1 text-center">Pagamento</th>
+                          <th className="py-1 text-center">Status</th>
+                          <th className="py-1 text-center">Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/30">
+                        {g.parcelas.map((p) => {
+                          const cfg = statusConfig[p.status] ?? statusConfig['futura']!
+                          return (
+                            <tr key={p.id} className="hover:bg-muted/10">
+                              <td className="py-1.5 text-center">
+                                {p.status !== 'paga' && (
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedIds.has(p.id)}
+                                    onChange={() => toggleSelect(p.id)}
+                                    className="h-3.5 w-3.5 rounded accent-primary"
+                                  />
+                                )}
+                              </td>
+                              <td className="py-1.5 text-center text-muted-foreground">{p.numero_parcela}</td>
+                              <td className="py-1.5 text-right font-medium">{formatCurrency(p.valor)}</td>
+                              <td className="py-1.5 text-right text-muted-foreground">
+                                {formatCurrency(p.valor_pago)}
+                              </td>
+                              <td className="py-1.5 text-center">
+                                {localDate(p.data_vencimento).toLocaleDateString('pt-BR')}
+                              </td>
+                              <td className="py-1.5 text-center text-muted-foreground">
+                                {p.data_pagamento_real
+                                  ? localDate(p.data_pagamento_real).toLocaleDateString('pt-BR')
+                                  : '—'}
+                              </td>
+                              <td className="py-1.5 text-center">
+                                <span
+                                  className={`rounded-full px-1.5 py-0.5 text-[8px] font-semibold ${cfg.color}`}
+                                >
+                                  {cfg.label}
+                                </span>
+                              </td>
+                              <td className="py-1.5 text-center">
+                                <div className="flex items-center justify-center gap-1">
+                                  <button
+                                    onClick={() => setViewingVinculos(p)}
+                                    title="Ver movimentos vinculados"
+                                    className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-primary"
+                                  >
+                                    <LinkIcon className="h-3 w-3" />
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingParcela(p)}
+                                    title="Editar"
+                                    className="rounded-md bg-primary/10 p-1.5 text-primary hover:bg-primary/20"
+                                  >
+                                    <Pencil className="h-3 w-3" />
+                                  </button>
+                                  {p.status !== 'paga' && (
+                                    <button
+                                      onClick={() => setPayingParcela(p)}
+                                      className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20"
+                                    >
+                                      Pagar
+                                    </button>
+                                  )}
+                                  {(p.status === 'paga' || p.status === 'parcialmente_paga') && (
+                                    <button
+                                      onClick={() => estornarParcela(p, false, qc)}
+                                      title="Estornar baixa"
+                                      className="rounded-md bg-amber-500/10 px-2.5 py-1 text-[10px] font-semibold text-amber-600 hover:bg-amber-500/20"
+                                    >
+                                      Estornar
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {batchModal && currentCompany && (
+        <BatchPaymentModal
+          parcelaIds={[...selectedIds]}
+          parcelas={parcelas}
+          pedidos={pedidos}
+          contas={contas}
+          companyId={currentCompany.id}
+          onClose={() => setBatchModal(false)}
+          onDone={() => {
+            setBatchModal(false)
+            setSelectedIds(new Set())
+            qc.invalidateQueries({ queryKey: ['parcelas'] })
+            qc.invalidateQueries({ queryKey: ['itens_compra'] })
+            qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+            qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+          }}
+        />
+      )}
+
+      {payingParcela && currentCompany && (
+        <PaymentModal
+          parcela={payingParcela}
+          pedidos={pedidos}
+          contas={contas}
+          companyId={currentCompany.id}
+          onClose={() => setPayingParcela(null)}
+          onDone={() => {
+            setPayingParcela(null)
+            qc.invalidateQueries({ queryKey: ['parcelas'] })
+            qc.invalidateQueries({ queryKey: ['itens_compra'] })
+            qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+            qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+          }}
+        />
+      )}
+
+      {editingParcela && (
+        <EditParcelaModal
+          parcela={editingParcela}
+          onClose={() => setEditingParcela(null)}
+          onDone={() => {
+            setEditingParcela(null)
+            qc.invalidateQueries({ queryKey: ['parcelas'] })
+            qc.invalidateQueries({ queryKey: ['itens_compra'] })
+            qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+            qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+          }}
+        />
+      )}
+
+      {viewingVinculos && (
+        <VinculosMovsPanel
+          origem="parcela"
+          origemId={viewingVinculos.id}
+          titulo={viewingVinculos.pedido_item ?? viewingVinculos.descricao ?? 'Parcela'}
+          subtitulo={`Venc ${localDate(viewingVinculos.data_vencimento).toLocaleDateString('pt-BR')} · Parcela ${viewingVinculos.numero_parcela}`}
+          valor={Number(viewingVinculos.valor)}
+          valorPago={Number(viewingVinculos.valor_pago || 0)}
+          onClose={() => setViewingVinculos(null)}
+        />
+      )}
+    </>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // POR FORNECEDOR TAB — with batch payment
 // ═══════════════════════════════════════════════════════════════
 
@@ -1260,43 +1838,97 @@ function PorFornecedorTab() {
             </button>
 
             {expandedId === g.id && (
-              <div className="border-t px-4 pb-3 pt-2">
-                <table className="tbl-bf w-full text-xs">
-                  <thead>
-                    <tr className="text-[9px] uppercase text-muted-foreground">
-                      <th className="py-1 w-8"></th>
-                      <th className="py-1 text-left">Item</th>
-                      <th className="py-1 text-center">#</th>
-                      <th className="py-1 text-right">Valor</th>
-                      <th className="py-1 text-center">Vencimento</th>
-                      <th className="py-1 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/30">
-                    {g.pendentes.map((p) => {
-                      const cfg = statusConfig[p.status]!
-                      return (
-                        <tr key={p.id} className="hover:bg-muted/10">
-                          <td className="py-1.5 text-center">
-                            <input
-                              type="checkbox"
-                              checked={selectedIds.has(p.id)}
-                              onChange={() => toggleSelect(p.id)}
-                              className="h-3.5 w-3.5 rounded border-border"
-                            />
-                          </td>
-                          <td className="py-1.5">{p.pedido_item ?? p.descricao ?? 'Avulsa'}</td>
-                          <td className="py-1.5 text-center text-muted-foreground">{p.numero_parcela}</td>
-                          <td className="py-1.5 text-right font-medium">{formatCurrency(p.valor - p.valor_pago)}</td>
-                          <td className="py-1.5 text-center">{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</td>
-                          <td className="py-1.5 text-center">
-                            <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-semibold ${cfg.color}`}>{cfg.label}</span>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+              <div className="border-t px-4 pb-3 pt-2 space-y-3">
+                {(() => {
+                  // Sub-agrupa parcelas pendentes deste fornecedor por pedido
+                  const byPedido = new Map<string, { pedido?: Pedido; itemDesc: string; parcelas: typeof g.pendentes }>()
+                  g.pendentes.forEach((p) => {
+                    const key = p.pedido_id ?? `__avulsa__${p.id}`
+                    const ped = p.pedido
+                    const itemDesc = p.pedido_item ?? p.descricao ?? 'Avulsa'
+                    if (!byPedido.has(key)) byPedido.set(key, { pedido: ped, itemDesc, parcelas: [] })
+                    byPedido.get(key)!.parcelas.push(p)
+                  })
+                  const subgrupos = [...byPedido.values()].sort((a, b) => {
+                    const an = a.pedido?.numero_pedido ?? Number.MAX_SAFE_INTEGER
+                    const bn = b.pedido?.numero_pedido ?? Number.MAX_SAFE_INTEGER
+                    return an - bn
+                  })
+                  return subgrupos.map((sub, idx) => {
+                    const subTotal = sub.parcelas.reduce((s, p) => s + (p.valor - p.valor_pago), 0)
+                    const subPendentes = sub.parcelas.filter((p) => p.status !== 'paga')
+                    const allSelected =
+                      subPendentes.length > 0 && subPendentes.every((p) => selectedIds.has(p.id))
+                    const toggleSubSelect = () => {
+                      setSelectedIds((prev) => {
+                        const next = new Set(prev)
+                        subPendentes.forEach((p) => (allSelected ? next.delete(p.id) : next.add(p.id)))
+                        return next
+                      })
+                    }
+                    return (
+                      <div key={sub.pedido?.id ?? idx} className="rounded-lg border border-border/50 bg-muted/10">
+                        <div className="flex items-center justify-between border-b border-border/40 px-3 py-1.5">
+                          <div className="flex min-w-0 items-center gap-2">
+                            {sub.pedido?.numero_pedido != null && (
+                              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold text-primary">
+                                PED #{sub.pedido.numero_pedido}
+                              </span>
+                            )}
+                            <span className="truncate text-[11px] font-medium">{sub.itemDesc}</span>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-3">
+                            <span className="text-[10px] text-muted-foreground">
+                              {sub.parcelas.length} parc. · {formatCurrency(subTotal)}
+                            </span>
+                            {subPendentes.length > 0 && (
+                              <button
+                                onClick={toggleSubSelect}
+                                className="text-[10px] text-primary hover:underline"
+                              >
+                                {allSelected ? 'Desmarcar' : 'Selecionar pendentes'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <table className="tbl-bf w-full text-xs">
+                          <thead>
+                            <tr className="text-[9px] uppercase text-muted-foreground">
+                              <th className="w-8 py-1"></th>
+                              <th className="py-1 text-center">#</th>
+                              <th className="py-1 text-right">Valor</th>
+                              <th className="py-1 text-center">Vencimento</th>
+                              <th className="py-1 text-center">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border/30">
+                            {sub.parcelas.map((p) => {
+                              const cfg = statusConfig[p.status]!
+                              return (
+                                <tr key={p.id} className="hover:bg-muted/10">
+                                  <td className="py-1.5 text-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedIds.has(p.id)}
+                                      onChange={() => toggleSelect(p.id)}
+                                      className="h-3.5 w-3.5 rounded border-border"
+                                    />
+                                  </td>
+                                  <td className="py-1.5 text-center text-muted-foreground">{p.numero_parcela}</td>
+                                  <td className="py-1.5 text-right font-medium">{formatCurrency(p.valor - p.valor_pago)}</td>
+                                  <td className="py-1.5 text-center">{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</td>
+                                  <td className="py-1.5 text-center">
+                                    <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-semibold ${cfg.color}`}>{cfg.label}</span>
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )
+                  })
+                })()}
               </div>
             )}
           </div>
