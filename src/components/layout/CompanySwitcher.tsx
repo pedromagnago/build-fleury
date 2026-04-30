@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useProject } from '@/contexts/ProjectContext'
-import { ChevronDown, Building2 } from 'lucide-react'
+import { ChevronDown, Building2, Settings } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 
 export function CompanySwitcher() {
@@ -63,6 +63,16 @@ export function CompanySwitcher() {
             ))}
           </div>
           <div className="border-t border-sidebar-border p-1">
+            <button
+              onClick={() => {
+                setOpen(false)
+                navigate('/projetos')
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs text-sidebar-foreground/80 hover:bg-sidebar-accent/50"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              Gerenciar projetos
+            </button>
             <button
               onClick={() => {
                 setOpen(false)
