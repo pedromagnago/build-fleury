@@ -5,12 +5,16 @@ import { useItensCompra, usePedidos, useFornecedores } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
 import { useDistribuicao } from '@/hooks/useOperacional'
+import { useParcelas } from '@/hooks/useFinanceiro'
 import { supabase } from '@/lib/supabase'
 import { useAuditLogs } from '@/hooks/useOperacional'
 import { parsearCondicao, gerarParcelas, localDate } from '@/lib/parcelas'
 import { formatCurrency } from '@/lib/utils'
 import { downloadFilledTemplate, dateSuffix } from '@/lib/exportExcel'
 import { exportWBSToExcel } from '@/lib/wbsExport'
+import { exportComercialToExcel } from '@/lib/comercialExport'
+import { parseComercialImport, buildComercialPreview, type ComercialPreview } from '@/lib/comercialImport'
+import ComercialImportPreviewModal from '@/components/cronograma/ComercialImportPreviewModal'
 import * as XLSX from 'xlsx'
 import {
   Upload, FileSpreadsheet, AlertCircle, CheckCircle2, X, Download,
@@ -221,7 +225,7 @@ function formatError(err: unknown): string {
 // ═══════════════════════════════════════════════════════════════
 // Main page
 // ═══════════════════════════════════════════════════════════════
-type Tab = 'wbs' | 'dados' | 'pedidos' | 'indiretos' | 'medicoes' | 'distribuicao' | 'logs' | 'pagamentos'
+type Tab = 'wbs' | 'comercial' | 'dados' | 'pedidos' | 'indiretos' | 'medicoes' | 'distribuicao' | 'logs' | 'pagamentos'
 
 export default function ImportacaoPage() {
   const { restartTour } = useTour('importacao', pageTours.importacao)
@@ -230,6 +234,7 @@ export default function ImportacaoPage() {
 
   const tabs: { key: Tab; label: string; icon: typeof Upload }[] = [
     { key: 'wbs', label: 'WBS Completa (Excel)', icon: FileSpreadsheet },
+    { key: 'comercial', label: 'Pacote Comercial', icon: ShoppingCart },
     { key: 'dados', label: 'Dados Base', icon: FileSpreadsheet },
     { key: 'pedidos', label: 'Pedidos', icon: ShoppingCart },
     { key: 'indiretos', label: 'Custos Indiretos', icon: BarChart3 },
@@ -259,6 +264,7 @@ export default function ImportacaoPage() {
       </div>
 
       {tab === 'wbs' && <WBSTab />}
+      {tab === 'comercial' && <ComercialTab />}
       {tab === 'dados' && <DadosBaseTab />}
       {tab === 'pedidos' && <PedidosTab />}
       {tab === 'indiretos' && <CustosIndiretosTab />}
@@ -576,6 +582,7 @@ function PedidosTab() {
   const { data: itens = [] } = useItensCompra()
   const { data: projectEtapas = [] } = useEtapas()
   const { data: pedidosData = [] } = usePedidos()
+  const { data: parcelasData = [] } = useParcelas()
   const qc = useQueryClient()
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [importing, setImporting] = useState(false)
@@ -588,25 +595,70 @@ function PedidosTab() {
       return
     }
     const itensById = new Map((itens as any[]).map(i => [i.id, i]))
+    const etapasById = new Map((projectEtapas as any[]).map(e => [e.id, e]))
+    const parcelasByPedido = new Map<string, any[]>()
+    for (const p of (parcelasData as any[])) {
+      if (!p.pedido_id) continue
+      const arr = parcelasByPedido.get(p.pedido_id) ?? []
+      arr.push(p)
+      parcelasByPedido.set(p.pedido_id, arr)
+    }
+    // Cabeçalhos enriquecidos: importador ignora silenciosamente colunas extras (read-only).
+    // As colunas que o parser realmente lê estão em PEDIDOS_HEADERS; demais são contexto humano.
+    const headers = [
+      'etapa_codigo', 'etapa_nome',         // contexto/lookup
+      'item_codigo', 'item_descricao',       // contexto
+      'numero_pedido', 'casas_lote', 'qtd_lote',
+      'fornecedor_nome', 'cond_pagamento',
+      'data_entrega_prevista', 'data_entrega_real',
+      'valor_unitario_real', 'valor_total_real',
+      'status', 'observacoes',
+      // resumo de parcelas (read-only — só pra você ver)
+      'parcelas_count', 'parcelas_valor_total',
+      'parcelas_pagas', 'parcelas_em_aberto',
+      'parcelas_proximo_vencimento',
+    ] as const
     const rows = (pedidosData as any[]).map(p => {
       const item = itensById.get(p.item_compra_id)
+      const etapa = item ? etapasById.get(item.etapa_id) : undefined
+      const parcs = parcelasByPedido.get(p.id) ?? []
+      const parcsValorTotal = parcs.reduce((s, x) => s + Number(x.valor || 0), 0)
+      const parcsPagas = parcs.filter(x => x.status === 'paga').length
+      const parcsEmAberto = parcs.filter(x => x.status !== 'paga' && x.status !== 'cancelada').length
+      const proxVenc = parcs
+        .filter(x => x.status !== 'paga' && x.status !== 'cancelada' && x.data_vencimento)
+        .map(x => x.data_vencimento)
+        .sort()[0] ?? ''
       return {
+        etapa_codigo: etapa?.codigo ?? '',
+        etapa_nome: etapa?.nome ?? '',
         item_codigo: item?.codigo ?? '',
+        item_descricao: item?.descricao ?? '',
         numero_pedido: p.numero_pedido ?? '',
         casas_lote: p.casas_lote ?? '',
+        qtd_lote: p.qtd_lote ?? '',
         fornecedor_nome: p.fornecedor_nome ?? '',
         cond_pagamento: p.cond_pagamento ?? '',
         data_entrega_prevista: p.data_entrega_prevista ?? '',
+        data_entrega_real: p.data_entrega_real ?? '',
         valor_unitario_real: p.valor_unitario_real ?? '',
+        valor_total_real: p.valor_total_real ?? '',
+        status: p.status ?? '',
+        observacoes: p.observacoes ?? '',
+        parcelas_count: parcs.length,
+        parcelas_valor_total: parcsValorTotal.toFixed(2),
+        parcelas_pagas: parcsPagas,
+        parcelas_em_aberto: parcsEmAberto,
+        parcelas_proximo_vencimento: proxVenc,
       }
     })
     downloadFilledTemplate({
       filename: `pedidos_atuais_${dateSuffix()}`,
       sheetName: 'Template',
-      headers: PEDIDOS_HEADERS,
+      headers,
       rows,
     })
-    toast.success(`${rows.length} pedido(s) exportado(s)`)
+    toast.success(`${rows.length} pedido(s) exportado(s) com contexto + resumo de parcelas`)
   }
 
   const handleFile = useCallback((p: ImportPreview) => {
@@ -845,6 +897,7 @@ function normalizeIndiretosRows(raw: ParsedRow[]): ParsedRow[] {
 function CustosIndiretosTab() {
   const { currentCompany } = useProject()
   const { despesas: despesasData = [] } = useDespesasIndiretas()
+  const { data: parcelasData = [] } = useParcelas()
   const qc = useQueryClient()
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [importing, setImporting] = useState(false)
@@ -856,21 +909,56 @@ function CustosIndiretosTab() {
       toast.info('Sem custos indiretos para exportar — use "Template" para um modelo vazio.')
       return
     }
-    const rows = (despesasData as any[]).map(d => ({
-      descricao: d.descricao,
-      categoria: d.categoria ?? '',
-      fornecedor_nome: d.fornecedor_nome ?? '',
-      cond_pagamento: d.cond_pagamento ?? '',
-      data_inicio: d.data_inicio ?? '',
-      valor_orcado: d.valor_orcado ?? '',
-    }))
+    const parcelasByDesp = new Map<string, any[]>()
+    for (const p of (parcelasData as any[])) {
+      if (!p.despesa_indireta_id) continue
+      const arr = parcelasByDesp.get(p.despesa_indireta_id) ?? []
+      arr.push(p)
+      parcelasByDesp.set(p.despesa_indireta_id, arr)
+    }
+    const headers = [
+      'descricao', 'categoria', 'fornecedor_nome',
+      'cond_pagamento', 'data_inicio', 'data_fim',
+      'valor_orcado', 'recorrente', 'frequencia', 'ativo',
+      'observacoes',
+      // read-only — contexto
+      'valor_consumido', 'parcelas_count',
+      'parcelas_pagas', 'parcelas_em_aberto', 'parcelas_proximo_vencimento',
+    ] as const
+    const rows = (despesasData as any[]).map(d => {
+      const parcs = parcelasByDesp.get(d.id) ?? []
+      const parcsPagas = parcs.filter(x => x.status === 'paga').length
+      const parcsEmAberto = parcs.filter(x => x.status !== 'paga' && x.status !== 'cancelada').length
+      const proxVenc = parcs
+        .filter(x => x.status !== 'paga' && x.status !== 'cancelada' && x.data_vencimento)
+        .map(x => x.data_vencimento)
+        .sort()[0] ?? ''
+      return {
+        descricao: d.descricao,
+        categoria: d.categoria ?? '',
+        fornecedor_nome: d.fornecedor_nome ?? '',
+        cond_pagamento: d.cond_pagamento ?? '',
+        data_inicio: d.data_inicio ?? '',
+        data_fim: d.data_fim ?? '',
+        valor_orcado: d.valor_orcado ?? '',
+        recorrente: d.recorrente ? 'sim' : 'nao',
+        frequencia: d.frequencia ?? '',
+        ativo: d.ativo ? 'sim' : 'nao',
+        observacoes: d.observacoes ?? '',
+        valor_consumido: d.valor_consumido ?? 0,
+        parcelas_count: parcs.length,
+        parcelas_pagas: parcsPagas,
+        parcelas_em_aberto: parcsEmAberto,
+        parcelas_proximo_vencimento: proxVenc,
+      }
+    })
     downloadFilledTemplate({
       filename: `custos_indiretos_atuais_${dateSuffix()}`,
       sheetName: 'Template',
-      headers: INDIRETOS_HEADERS,
+      headers,
       rows,
     })
-    toast.success(`${rows.length} custo(s) indireto(s) exportado(s)`)
+    toast.success(`${rows.length} custo(s) indireto(s) exportado(s) com resumo de parcelas`)
   }
 
   const handleFile = useCallback((p: ImportPreview) => {
@@ -2240,6 +2328,107 @@ function WBSTab() {
 
 
 
+
+// ═══════════════════════════════════════════════════════════════
+// Tab: Pacote Comercial (multi-aba: Pedidos+Parcelas+Custos+Fornecedores)
+// ═══════════════════════════════════════════════════════════════
+function ComercialTab() {
+  const { currentCompany } = useProject()
+  const queryClient = useQueryClient()
+  const { data: etapasData = [] } = useEtapas()
+  const { data: itensData = [] } = useItensCompra()
+  const { data: pedidosData = [] } = usePedidos()
+  const { data: parcelasData = [] } = useParcelas()
+  const { despesas: despesasData = [] } = useDespesasIndiretas()
+  const { data: fornecedoresData = [] } = useFornecedores()
+
+  const [importPreview, setImportPreview] = useState<ComercialPreview | null>(null)
+  const [isProcessing, setIsProcessing] = useState(false)
+
+  const handleExport = () => {
+    if (pedidosData.length === 0 && despesasData.length === 0 && parcelasData.length === 0) {
+      toast.info('Sem dados comerciais para exportar.')
+      return
+    }
+    exportComercialToExcel({
+      etapas: etapasData as any,
+      itensCompra: itensData as any,
+      pedidos: pedidosData as any,
+      parcelas: parcelasData as any,
+      despesas: despesasData as any,
+      fornecedores: fornecedoresData as any,
+    })
+    toast.success(`Exportado: ${pedidosData.length} pedidos, ${parcelasData.length} parcelas, ${despesasData.length} custos, ${fornecedoresData.length} fornecedores`)
+  }
+
+  const handleFile = async (file: File) => {
+    if (!currentCompany) return
+    setIsProcessing(true)
+    try {
+      const buffer = await file.arrayBuffer()
+      const rows = parseComercialImport(buffer)
+      if (rows.pedidoRows.length === 0 && rows.parcelaRows.length === 0 && rows.despesaRows.length === 0 && rows.fornecedorRows.length === 0) {
+        toast.error('Nenhuma das abas esperadas foi encontrada (Pedidos, Parcelas, Custos Indiretos, Fornecedores).')
+        return
+      }
+      const prev = await buildComercialPreview(rows, currentCompany.id)
+      setImportPreview(prev)
+    } catch (err) {
+      toast.error('Erro ao processar arquivo: ' + (err as Error).message)
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="mb-4 rounded-xl border bg-card p-4">
+        <h3 className="mb-1 text-sm font-semibold">Pacote Comercial — pedidos, parcelas, custos e fornecedores</h3>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Baixa <strong>tudo</strong> num único arquivo Excel com 4 abas (Pedidos, Parcelas, Custos Indiretos, Fornecedores).
+          Cada linha tem um <strong>ID estável</strong> na primeira coluna — edite à vontade no Excel e re-importe sem perder
+          identidade. Ideal para reprogramação pesada do projeto.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={handleExport}
+            className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:opacity-90"
+            title="Baixa o pacote comercial completo do projeto.">
+            <Download className="h-3.5 w-3.5" /> Baixar Pacote Comercial
+          </button>
+        </div>
+        <div className="mt-3 rounded-lg bg-blue-500/5 p-3 text-[10px] text-muted-foreground">
+          <p className="font-medium text-blue-600 dark:text-blue-400">ℹ Como funciona</p>
+          <ul className="mt-0.5 space-y-0.5 list-disc pl-4">
+            <li>Linha com <code>*_id</code> preenchido → atualizar registro existente</li>
+            <li>Linha com <code>*_id</code> vazio → criar novo registro</li>
+            <li>Registro do banco que sumiu da planilha → preview pergunta linha-a-linha (ignorar / apagar)</li>
+            <li>Σ parcelas ≠ valor_total_real do pedido → aparece warning amarelo (não bloqueia)</li>
+            <li>Colunas com <code>[colchete]</code> são read-only (contexto humano, importador ignora)</li>
+          </ul>
+        </div>
+      </div>
+
+      <DropZone onFile={handleFile} />
+
+      {isProcessing && <div className="mt-4 flex max-w-sm items-center gap-2 text-sm text-muted-foreground"><Spinner /> Processando arquivo e comparando com o banco...</div>}
+
+      {importPreview && currentCompany && (
+        <ComercialImportPreviewModal
+          preview={importPreview}
+          companyId={currentCompany.id}
+          onClose={() => setImportPreview(null)}
+          onDone={() => {
+            setImportPreview(null)
+            queryClient.invalidateQueries({ queryKey: ['pedidos'] })
+            queryClient.invalidateQueries({ queryKey: ['parcelas'] })
+            queryClient.invalidateQueries({ queryKey: ['despesas_indiretas'] })
+            queryClient.invalidateQueries({ queryKey: ['fornecedores'] })
+          }}
+        />
+      )}
+    </>
+  )
+}
 
 // ═══════════════════════════════════════════════════════════════
 // Tab: Pagamentos Realizados (Nova)
