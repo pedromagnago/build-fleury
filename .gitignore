@@ -41,3 +41,41 @@ tmp/
 
 # Excel data files (not source code)
 *.xlsx
+
+# Sensitive data exports (clientes, extratos bancários, áudios, PDFs internos)
+*.ofx
+*.opus
+*.pdf
+Extrato*.json
+exemplo_*.json
+import_debug.json
+itens_lookup.json
+
+# Ad-hoc scripts e patches que não são código de produção
+patch_*.cjs
+patch_*.mjs
+check_*.cjs
+check_*.mjs
+debug_*.mjs
+debug-*.ts
+fix_*.sql
+fix_*.ts
+analyze_*.cjs
+import_*.cjs
+read_*.cjs
+read_*.js
+scan_*.mjs
+count_*.cjs
+export_*.py
+check_*.py
+
+# Diretórios de trabalho de agents/IDE/Supabase
+.claude/
+supabase/.temp/
+src\ 2/
+
+# Logs e dumps de import
+import_wbs_log_*.txt
+diff_output.txt
+excel_*.txt
+excel_*.json

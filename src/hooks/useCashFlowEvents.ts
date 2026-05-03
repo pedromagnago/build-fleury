@@ -133,7 +133,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       // Realizado ou Planejado: só inclui medição paga (firme é coisa de pedido, não de planejado).
       if (apenasRealizado && m.status !== 'paga') return
 
-      let baseDate = m.data_liberacao || m.data_prevista
+      // Recebimento = data fim da medição + prazo configurado.
+      // Sem distribuições, "data fim" = data_prevista da medição (marco de conclusão).
+      let baseDate = m.data_prevista
       if (baseDate) {
         baseDate = addDaysISO(baseDate, prazoRecebimento)
       }
@@ -153,10 +155,10 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           }
           if (val <= 0) return
 
-          let evDate = dist.data_fim || dist.data_inicio || m.data_liberacao || m.data_prevista
-          if (evDate) {
-            evDate = addDaysISO(evDate, prazoRecebimento)
-          }
+          // Recebimento = data fim (da distribuição/serviço) + prazo configurado.
+          const baseEv = dist.data_fim || m.data_prevista || dist.data_inicio
+          if (!baseEv) return
+          let evDate = addDaysISO(baseEv, prazoRecebimento)
 
           if (m.status !== 'paga' && evDate < today && !apenasRealizado) {
             evDate = amanha

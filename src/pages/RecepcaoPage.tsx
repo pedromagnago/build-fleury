@@ -178,7 +178,7 @@ export default function RecepcaoPage() {
         // Tenta gerar embedding do query (se falhar, cai pra so trigram)
         let queryEmb: number[] | undefined
         try { queryEmb = await embedQuery(l.descricao) } catch { /* ignora */ }
-        const sugs = await searchItensCompra({ company_id: currentCompany.id, query: l.descricao, query_embedding: queryEmb, limit: 3 })
+        const sugs = await searchItensCompra({ company_id: currentCompany.id, query: l.descricao, query_embedding: queryEmb, limit: 10 })
         setExtracao(prev => {
           if (!prev) return prev
           const novas = [...prev.itens]
@@ -622,9 +622,16 @@ export default function RecepcaoPage() {
                             <select
                               value={linha.item_compra_id ?? ''}
                               onChange={e => {
+                                const novoItemId = e.target.value || null
+                                const pedidoExistente = novoItemId ? pedidos.find(p => p.item_compra_id === novoItemId && p.status === 'planejado') : undefined
                                 setExtracao(prev => prev ? {
                                   ...prev,
-                                  itens: prev.itens.map((l, i) => i === idx ? { ...l, item_compra_id: e.target.value || null } : l)
+                                  itens: prev.itens.map((l, i) => i === idx ? {
+                                    ...l,
+                                    item_compra_id: novoItemId,
+                                    pedido_substituido_id: pedidoExistente?.id ?? null,
+                                    acao: pedidoExistente ? 'substituir_pedido' : (l.acao === 'substituir_pedido' ? 'criar_pedido' : l.acao),
+                                  } : l)
                                 } : prev)
                               }}
                               className="mt-1 w-full rounded border bg-background px-1 py-0.5 text-[10px]"
@@ -638,9 +645,16 @@ export default function RecepcaoPage() {
                           <select
                             value={''}
                             onChange={e => {
+                              const novoItemId = e.target.value
+                              const pedidoExistente = novoItemId ? pedidos.find(p => p.item_compra_id === novoItemId && p.status === 'planejado') : undefined
                               setExtracao(prev => prev ? {
                                 ...prev,
-                                itens: prev.itens.map((l, i) => i === idx ? { ...l, item_compra_id: e.target.value, acao: 'criar_pedido' } : l)
+                                itens: prev.itens.map((l, i) => i === idx ? {
+                                  ...l,
+                                  item_compra_id: novoItemId,
+                                  pedido_substituido_id: pedidoExistente?.id ?? null,
+                                  acao: pedidoExistente ? 'substituir_pedido' : 'criar_pedido',
+                                } : l)
                               } : prev)
                             }}
                             className="w-full rounded border bg-background px-1 py-0.5 text-[10px]"

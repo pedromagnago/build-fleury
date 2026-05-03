@@ -58,8 +58,12 @@ export interface ImportResult {
   avisos: number
 }
 
+// ─── Constants ────────────────────────────────────────────
+/** Default casas count when sheet doesn't specify. Project-wide assumption. */
+export const DEFAULT_CASAS = 64
+
 // ─── Excel serial date → ISO string ───────────────────────
-function toDateISO(value: unknown): string | null {
+export function toDateISO(value: unknown): string | null {
   if (value === null || value === undefined || value === '') return null
   const str = String(value).trim()
   if (!str) return null
@@ -96,7 +100,7 @@ function stripForMatch(s: string): string {
 }
 
 // Helper to find a column by fuzzy matching possible names
-function findCol(row: Record<string, unknown>, possibilities: string[]) {
+export function findCol(row: Record<string, unknown>, possibilities: string[]) {
   const keys = Object.keys(row)
   const cleanKeys = keys.map(k => stripForMatch(k))
   const cleanPoss = possibilities.map(p => stripForMatch(p))
@@ -192,25 +196,26 @@ export async function buildImportPreview(
 
   // ─── Etapas preview ───
   const etapasChanges: EtapaChange[] = etapaRows.map(row => {
-    const codigo = String(row['Código'] ?? '')
+    const codigo = String(findCol(row, ['Código', 'Codigo', 'Cod', 'Código Etapa', 'Codigo Etapa']) ?? '').trim()
     const existing = etapasByCod.get(codigo)
+    const nome = String(findCol(row, ['Nome', 'Nome Etapa', 'Descrição', 'Descricao']) ?? '')
 
     if (!existing) {
-      return { tipo: 'criar', codigo, nome: String(row['Nome'] ?? ''), campos: [], rowData: row }
+      return { tipo: 'criar', codigo, nome, campos: [], rowData: row }
     }
 
     const campos: { campo: string; antigo: string; novo: string }[] = []
     const checks: [string, string, unknown][] = [
-      ['Nome', 'nome', row['Nome']],
-      ['Status', 'status', row['Status']],
-      ['Casas', 'casas_total', parseNumber(row['Casas']) || 64],
-      ['Receita CEF', 'faturamento_valor_total', parseNumber(row['Receita CEF'])],
-      ['Preço Unitário (Serv)', 'faturamento_preco_unitario', parseNumber(row['Preço Unitário (Serv)'])],
-      ['Qtd/Casa (Serv)', 'faturamento_quantidade_unitaria', parseNumber(row['Qtd/Casa (Serv)'])],
-      ['Unidade (Serv)', 'faturamento_unidade', row['Unidade (Serv)']],
-      ['Data Início Plan', 'data_inicio_plan', toDateISO(row['Data Início Plan'])],
-      ['Data Fim Plan', 'data_fim_plan', toDateISO(row['Data Fim Plan'])],
-      ['Observações', 'observacoes', row['Observações']],
+      ['Nome', 'nome', nome],
+      ['Status', 'status', findCol(row, ['Status', 'Situação', 'Situacao'])],
+      ['Casas', 'casas_total', parseNumber(findCol(row, ['Casas', 'Qtd Casas', 'Quantidade Casas', 'Nº Casas', 'No Casas', 'Casas Total'])) || DEFAULT_CASAS],
+      ['Receita CEF', 'faturamento_valor_total', parseNumber(findCol(row, ['Receita CEF', 'Receita', 'Faturamento CEF', 'Faturamento Total']))],
+      ['Preço Unitário (Serv)', 'faturamento_preco_unitario', parseNumber(findCol(row, ['Preço Unitário (Serv)', 'Preco Unitario Serv', 'Preço Unitário Serviço', 'Preço Unit Serv']))],
+      ['Qtd/Casa (Serv)', 'faturamento_quantidade_unitaria', parseNumber(findCol(row, ['Qtd/Casa (Serv)', 'Qtd Casa Serv', 'Qtd/Casa Serviço']))],
+      ['Unidade (Serv)', 'faturamento_unidade', findCol(row, ['Unidade (Serv)', 'Unidade Serv', 'Unidade Serviço'])],
+      ['Data Início Plan', 'data_inicio_plan', toDateISO(findCol(row, ['Data Início Plan', 'Data Inicio Plan', 'Início Plan', 'Data Início']))],
+      ['Data Fim Plan', 'data_fim_plan', toDateISO(findCol(row, ['Data Fim Plan', 'Fim Plan', 'Data Fim']))],
+      ['Observações', 'observacoes', findCol(row, ['Observações', 'Observacoes', 'Obs', 'Observacao'])],
     ]
 
     checks.forEach(([label, dbKey, newVal]) => {
@@ -262,7 +267,7 @@ export async function buildImportPreview(
     
     // Fetch casas from the etapa to calculate totals when missing
     const etapaData = etapasByCod.get(etapaCod)
-    const casasEtapa = etapaData?.casas_total ?? 64
+    const casasEtapa = etapaData?.casas_total ?? DEFAULT_CASAS
     
     // Compute derived values when sheet doesn't provide them
     const effectiveQtdTotal = parsedQtdTotal > 0 ? parsedQtdTotal : (parsedQtdCasa > 0 ? parsedQtdCasa * casasEtapa : 0)
@@ -360,7 +365,7 @@ function formatDbError(error: { code?: string; message?: string; details?: strin
   return error.message || 'Erro desconhecido no banco de dados'
 }
 
-function sanitizeStatus(val: any): string {
+export function sanitizeStatus(val: any): string {
   if (!val) return 'futuro'
   const s = String(val).toLowerCase().trim()
   if (['concluido', 'concluída', 'concluído', 'finalizado'].includes(s)) return 'concluido'
@@ -456,20 +461,21 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
       }
     } else if (change.tipo === 'criar') {
       const maxOrder = (currentEtapas ?? []).length + etapasCriadas + 1
+      const codigoVal = String(findCol(row, ['Código', 'Codigo', 'Cod', 'Código Etapa', 'Codigo Etapa']) ?? '').trim() || `NEW-${Date.now()}`
       const insertData = {
         company_id: companyId,
-        codigo: String(row['Código'] ?? `NEW-${Date.now()}`),
-        nome: String(row['Nome'] ?? 'Nova Etapa'),
-        status: sanitizeStatus(row['Status']),
-        casas_total: Number(row['Casas']) || 64,
+        codigo: codigoVal,
+        nome: String(findCol(row, ['Nome', 'Nome Etapa', 'Descrição', 'Descricao']) ?? 'Nova Etapa'),
+        status: sanitizeStatus(findCol(row, ['Status', 'Situação', 'Situacao'])),
+        casas_total: parseNumber(findCol(row, ['Casas', 'Qtd Casas', 'Quantidade Casas', 'Nº Casas', 'No Casas', 'Casas Total'])) || DEFAULT_CASAS,
         ordem: maxOrder,
-        faturamento_valor_total: Number(row['Receita CEF']) || null,
-        faturamento_preco_unitario: Number(row['Preço Unitário (Serv)']) || null,
-        faturamento_quantidade_unitaria: Number(row['Qtd/Casa (Serv)']) || null,
-        faturamento_unidade: String(row['Unidade (Serv)'] ?? '') || null,
-        data_inicio_plan: toDateISO(row['Data Início Plan']),
-        data_fim_plan: toDateISO(row['Data Fim Plan']),
-        observacoes: String(row['Observações'] ?? '') || null,
+        faturamento_valor_total: parseNumber(findCol(row, ['Receita CEF', 'Receita', 'Faturamento CEF', 'Faturamento Total'])) || null,
+        faturamento_preco_unitario: parseNumber(findCol(row, ['Preço Unitário (Serv)', 'Preco Unitario Serv', 'Preço Unitário Serviço', 'Preço Unit Serv'])) || null,
+        faturamento_quantidade_unitaria: parseNumber(findCol(row, ['Qtd/Casa (Serv)', 'Qtd Casa Serv', 'Qtd/Casa Serviço'])) || null,
+        faturamento_unidade: String(findCol(row, ['Unidade (Serv)', 'Unidade Serv', 'Unidade Serviço']) ?? '') || null,
+        data_inicio_plan: toDateISO(findCol(row, ['Data Início Plan', 'Data Inicio Plan', 'Início Plan', 'Data Início'])),
+        data_fim_plan: toDateISO(findCol(row, ['Data Fim Plan', 'Fim Plan', 'Data Fim'])),
+        observacoes: String(findCol(row, ['Observações', 'Observacoes', 'Obs', 'Observacao']) ?? '') || null,
         valor_total_orcado: 0,
       }
 
@@ -503,7 +509,7 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
   // Quick fix for existing suppliers that didn't get their payment conditions
   const fornecedoresPatchMap = new Map<string, string>()
   for (const c of preview.itens) {
-    const fn = String(c.rowData['Fornecedor'] ?? '').trim().toUpperCase()
+    const fn = String(findCol(c.rowData, ['Fornecedor', 'Fornecedores', 'Nome do Fornecedor']) ?? '').trim().replace(/\s+/g, ' ').toUpperCase()
     const cond = String(findCol(c.rowData, ['Cond. Pagamento', 'Condição de Pagamento', 'Cond Pagamento', 'Pagamento', 'Cond. Pgto']) ?? '').trim()
     if (fn && cond) fornecedoresPatchMap.set(fn, cond)
   }
@@ -526,7 +532,7 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
     
     // Auto-create Fornecedor if not exists
     let fornecedorId: string | null = null
-    const fornecedorStr = String(row['Fornecedor'] ?? '').trim()
+    const fornecedorStr = String(findCol(row, ['Fornecedor', 'Fornecedores', 'Nome do Fornecedor']) ?? '').trim().replace(/\s+/g, ' ')
     if (fornecedorStr) {
       const existingFid = fornecedoresMap.get(fornecedorStr.toUpperCase())
       if (existingFid) {
@@ -591,7 +597,7 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
         
         const qtdCasa = updates.qtd_por_casa !== undefined ? Number(updates.qtd_por_casa) : rowQtdCasa
         const custoUnit = updates.custo_unitario_orcado !== undefined ? Number(updates.custo_unitario_orcado) : rowCustoUnit
-        const casasEtapa = etapaInfo.casas_total || 64
+        const casasEtapa = etapaInfo.casas_total || DEFAULT_CASAS
         const qtdTotal = updates.qtd_total !== undefined 
           ? Number(updates.qtd_total) 
           : (rowQtdTotal > 0 ? rowQtdTotal : (qtdCasa > 0 ? qtdCasa * casasEtapa : 0))
@@ -625,7 +631,7 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
         continue
       }
 
-      const casasEtapa = etapaInfo.casas_total ?? 64
+      const casasEtapa = etapaInfo.casas_total ?? DEFAULT_CASAS
       
       const qtdCasa = parseNumber(findCol(row, ['Qtd/Casa', 'Qtd Casa', 'Quantidade por Casa', 'Qtd. Casa', 'Qtd. por Casa', 'Qtd/Casa (Mat)']))
       const qtdTotalFromSheet = parseNumber(findCol(row, ['Qtd Total', 'Quantidade Total', 'Qtd. Total', 'Total Qtd']))

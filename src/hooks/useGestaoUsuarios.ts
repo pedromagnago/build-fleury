@@ -190,7 +190,22 @@ export function useGestaoUsuarios(): UseGestaoUsuariosReturn {
         return { ok: false, message: res.message }
       }
 
-      // Send magic link via Supabase Auth
+      if (res.status === 'linked' || res.status === 'reactivated') {
+        await writeAuditLog({
+          companyId,
+          tabela: 'user_roles',
+          acao: res.status === 'reactivated' ? 'UPDATE' : 'INSERT',
+          dadosDepois: { email: trimmed, role },
+          resumo: res.status === 'reactivated'
+            ? `Reativou ${trimmed} como ${role}`
+            : `Vinculou ${trimmed} ao projeto como ${role}`,
+        })
+        await fetchInvites()
+        await fetchMembers()
+        setInviting(false)
+        return { ok: true, message: res.message }
+      }
+
       const { error: otpError } = await supabase.auth.signInWithOtp({
         email: trimmed,
         options: {
@@ -213,7 +228,7 @@ export function useGestaoUsuarios(): UseGestaoUsuariosReturn {
       setInviting(false)
 
       if (otpError) {
-        return { ok: true, message: 'Vinculado ao projeto, mas e-mail pode não ter sido enviado.' }
+        return { ok: false, message: `Convite registrado mas falha ao enviar e-mail: ${otpError.message}` }
       }
       return { ok: true, message: `Convite enviado para ${trimmed}!` }
     } catch {

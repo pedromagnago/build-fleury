@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { HardHat, Eye, EyeOff, Mail, ArrowLeft } from 'lucide-react'
@@ -189,10 +189,7 @@ export default function Login() {
               </form>
 
               <p className="mt-6 text-center text-xs text-white/40">
-                Não tem conta?{' '}
-                <Link to="/register" className="text-primary hover:underline">
-                  Criar conta
-                </Link>
+                Acesso restrito a usuários convidados.
               </p>
             </>
           )}

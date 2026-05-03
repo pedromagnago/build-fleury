@@ -212,8 +212,8 @@ export default function Configuracoes() {
               <input type="number" step="0.01" value={form.saldo_inicial_caixa} onChange={(e) => updateField('saldo_inicial_caixa', e.target.value)} disabled={!isAdmin} className={inputCls} />
             </div>
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Prazo Rec. Obras (dias)</label>
-              <input type="number" value={form.prazo_recebimento_dias} onChange={(e) => updateField('prazo_recebimento_dias', e.target.value)} disabled={!isAdmin} className={inputCls} />
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground" title="Dias entre a data fim da medição e o recebimento efetivo. Aplicado em todas as medições e no fluxo de caixa.">Prazo Recebimento Medições (dias)</label>
+              <input type="number" min="0" value={form.prazo_recebimento_dias} onChange={(e) => updateField('prazo_recebimento_dias', e.target.value)} disabled={!isAdmin} className={inputCls} />
             </div>
           </div>
         </div>

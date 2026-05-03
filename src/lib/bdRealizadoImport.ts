@@ -73,24 +73,29 @@ export function parseDate(v: any): string {
     return d.toISOString().split('T')[0]!
   }
   
-  // Tenta formato ISO (YYYY-MM-DD) ou com erros tipo "202-04-30"
-  const isoMatch = s.match(/^(\d{3,4})[/.-](\d{1,2})[/.-](\d{1,2})/)
+  // Tenta formato ISO (YYYY-MM-DD)
+  const isoMatch = s.match(/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})/)
   if (isoMatch) {
-    let y = isoMatch[1]!
-    if (y.length === 3 && y.startsWith('202')) y = '2024' // Corrige erro de digitação comum
+    const y = isoMatch[1]!
     const m = isoMatch[2]!.padStart(2, '0')
     const d = isoMatch[3]!.padStart(2, '0')
     return `${y}-${m}-${d}`
   }
 
-  // Tenta formato BR (DD/MM/YYYY) com possíveis erros
-  const brMatch = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{3,4})/)
+  // Tenta formato BR (DD/MM/YYYY)
+  const brMatch = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/)
   if (brMatch) {
     const d = brMatch[1]!.padStart(2, '0')
     const m = brMatch[2]!.padStart(2, '0')
-    let y = brMatch[3]!
-    if (y.length === 3 && y.startsWith('202')) y = '2024'
+    const y = brMatch[3]!
     return `${y}-${m}-${d}`
+  }
+
+  // Ano com 3 dígitos (ex: "202-04-30") → não inferir, retorna string vazia
+  // para que o caller rejeite a linha em vez de gravar lixo no banco.
+  if (/^\d{3}[/.-]\d{1,2}[/.-]\d{1,2}/.test(s) || /^\d{1,2}[/.-]\d{1,2}[/.-]\d{3}([^\d]|$)/.test(s)) {
+    console.warn(`[parseDate] ano com 3 dígitos rejeitado: "${s}"`)
+    return ''
   }
 
   return s.slice(0, 10)
@@ -135,14 +140,24 @@ const CATS_MUTUO_ENTRADA = new Set([
   'ENTRADA DE TRANSFERENCIA',
 ])
 
-/** (Desativado) Categorias que são movimentações financeiras (saídas) — agora importadas como despesa 
-// const CATS_FINANCEIRO_SAIDA = new Set([
-//   'PAGAMENTO DE EMPRESTIMOS',
-//   'EMPRESTIMOS BANCARIOS',
-//   'DISTRIBUICAO DE LUCROS',
-//   'SAIDA DE TRANSFERENCIA',
-// ])
-*/
+/**
+ * Categorias que são movimentações financeiras puras (saídas).
+ * NÃO devem virar Despesa Indireta — só registram a movimentação bancária.
+ * Comportamento controlado por CLASSIFICAR_FINANCEIRO_COMO_DESPESA abaixo.
+ */
+const CATS_FINANCEIRO_SAIDA = new Set([
+  'PAGAMENTO DE EMPRESTIMOS',
+  'EMPRESTIMOS BANCARIOS',
+  'DISTRIBUICAO DE LUCROS',
+  'SAIDA DE TRANSFERENCIA',
+])
+
+/**
+ * Quando true, saídas de categoria financeira viram Despesa Indireta como qualquer
+ * outra (comportamento legado, polui WBS). Quando false, viram skip com label
+ * informativo — só a movimentação bancária é registrada (recomendado).
+ */
+const CLASSIFICAR_FINANCEIRO_COMO_DESPESA = false
 
 // ─── Column Detection ───────────────────────────────────────
 
@@ -303,10 +318,17 @@ export function parseBdRealizado(
       // ═══ SAÍDA (valor negativo) ═══
       valorSaidas += absValor
 
-      // Por pedido do usuário, movimentações financeiras também sobem como Custo Indireto ("despesa") para depois serem deletadas se necessário
-      row.importPath = 'despesa'
-      row.importLabel = `📋 Despesa · ${depto || cat || 'Geral'}`
-      despCount++
+      if (!CLASSIFICAR_FINANCEIRO_COMO_DESPESA && CATS_FINANCEIRO_SAIDA.has(normCat)) {
+        // Movimentação financeira pura — só vai para movimentações_bancarias
+        row.importPath = 'skip'
+        row.importLabel = `🏦 Mov. financeira · ${cat}`
+        row.autoSkipReason = `Categoria "${cat}" é movimentação financeira (não vira despesa)`
+        skipCount++
+      } else {
+        row.importPath = 'despesa'
+        row.importLabel = `📋 Despesa · ${depto || cat || 'Geral'}`
+        despCount++
+      }
     }
 
     rows.push(row)

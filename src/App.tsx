@@ -11,7 +11,6 @@ import { Toaster } from 'sonner'
 import '@/lib/tours/tour.css'
 
 import Login from '@/pages/Login'
-import Register from '@/pages/Register'
 import ResetSenhaPage from '@/pages/ResetSenhaPage'
 import Onboarding from '@/pages/Onboarding'
 import ProjectSelector from '@/pages/ProjectSelector'
@@ -54,7 +53,6 @@ export default function App() {
             <Routes>
               {/* Public routes */}
               <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<Register />} />
               <Route path="/reset-senha" element={<ResetSenhaPage />} />
 
               {/* Protected: Onboarding (no project needed) */}

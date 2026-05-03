@@ -346,6 +346,9 @@ export default function MedicoesPanel() {
                   const firstDist = distribuicoes.find(d => d.medicao_numero === med.numero)
                   const dataInicio = firstDist?.data_inicio ?? prevMed?.data_prevista ?? null
                   const dataFim = firstDist?.data_fim ?? med.data_prevista ?? null
+                  const prazoRecDias = currentCompany?.prazo_recebimento_dias ?? 30
+                  const baseRecISO = dataFim || med.data_prevista
+                  const previsaoRecebISO = baseRecISO ? addDaysISO(baseRecISO, prazoRecDias) : null
                   return (
                     <th key={med.id} colSpan={2} className="border-r px-2 py-1.5 text-center min-w-[160px] relative">
                       {isEditingThis ? (
@@ -461,12 +464,17 @@ export default function MedicoesPanel() {
                             <Pencil className="h-2.5 w-2.5 text-muted-foreground" />
                           </button>
                         </div>
-                        {med.observacoes && (
-                          <span className="text-[9px] text-muted-foreground font-medium">Nº {String(med.numero).padStart(2, '0')}</span>
-                        )}
                         {(dataInicio || dataFim) && (
                           <span className="text-[9px] text-muted-foreground tabular-nums" title={`Início: ${dataInicio ? fmtDate(dataInicio) : '—'} · Fim: ${dataFim ? fmtDate(dataFim) : '—'}`}>
                             {dataInicio ? fmtDate(dataInicio) : '—'} → {dataFim ? fmtDate(dataFim) : '—'}
+                          </span>
+                        )}
+                        {previsaoRecebISO && (
+                          <span
+                            className="text-[9px] text-emerald-600 dark:text-emerald-500 tabular-nums font-medium"
+                            title={`Previsão de recebimento (${prazoRecDias} dias após ${dataFim ? 'data fim' : 'data prevista'})`}
+                          >
+                            Recebimento: {fmtDate(previsaoRecebISO)}
                           </span>
                         )}
                         <span className={`rounded-full px-2 py-0.5 text-[8px] font-semibold ${cfg.cls}`}>{cfg.label}</span>
@@ -697,4 +705,12 @@ function fmtDate(iso: string): string {
   if (!iso) return '—'
   const [y, m, d] = iso.split('-')
   return `${d}/${m}/${y}`
+}
+
+function addDaysISO(baseIso: string, days: number): string {
+  if (!baseIso) return baseIso
+  const d = new Date(baseIso)
+  d.setUTCHours(12)
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
 }

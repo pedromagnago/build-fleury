@@ -1,12 +1,16 @@
 import { useState, useCallback, useMemo } from 'react'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useProject } from '@/contexts/ProjectContext'
-import { useItensCompra } from '@/hooks/useCompras'
+import { useItensCompra, usePedidos, useFornecedores } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
+import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
+import { useDistribuicao } from '@/hooks/useOperacional'
 import { supabase } from '@/lib/supabase'
 import { useAuditLogs } from '@/hooks/useOperacional'
 import { parsearCondicao, gerarParcelas, localDate } from '@/lib/parcelas'
 import { formatCurrency } from '@/lib/utils'
+import { downloadFilledTemplate, dateSuffix } from '@/lib/exportExcel'
+import { exportWBSToExcel } from '@/lib/wbsExport'
 import * as XLSX from 'xlsx'
 import {
   Upload, FileSpreadsheet, AlertCircle, CheckCircle2, X, Download,
@@ -16,7 +20,7 @@ import { toast } from 'sonner'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
 import { useQueryClient } from '@tanstack/react-query'
-import { parseWBSImport, buildImportPreview } from '@/lib/wbsImport'
+import { parseWBSImport, buildImportPreview, toDateISO, sanitizeStatus, sanitizeTipo } from '@/lib/wbsImport'
 import ImportPreviewModal from '@/components/cronograma/ImportPreviewModal'
 
 // ═══════════════════════════════════════════════════════════════
@@ -31,6 +35,11 @@ function normalizeHeader(h: string): string {
     .replace(/\s+/g, '_')
 }
 
+/** Trim + squash de espa\u00e7os internos. Mant\u00e9m case original (UI exibe assim). */
+function normFornecedorNome(s: string): string {
+  return String(s ?? '').trim().replace(/\s+/g, ' ')
+}
+
 /**
  * Parse a number from a sheet cell that may include currency symbols, thousand
  * separators (pt-BR or US), or decimal separators of either style.
@@ -40,9 +49,13 @@ function normalizeHeader(h: string): string {
 function parseNumberCell(v: unknown): number {
   if (v == null || v === '') return 0
   if (typeof v === 'number') return isFinite(v) ? v : 0
-  let s = String(v).trim()
-  if (!s) return 0
-  s = s.replace(/[R$\s\u00a0]/gi, '')
+  const original = String(v).trim()
+  if (!original) return 0
+  let s = original.replace(/[R$\s\u00a0]/gi, '')
+  if (s === '-' || s === '' || s === 'N/D' || /^[a-zA-Z]/.test(s)) {
+    console.warn(`[parseNumberCell] valor n\u00e3o-num\u00e9rico ignorado: "${original}"`)
+    return 0
+  }
   const lastComma = s.lastIndexOf(',')
   const lastDot = s.lastIndexOf('.')
   if (lastComma >= 0 && lastDot >= 0) {
@@ -55,7 +68,11 @@ function parseNumberCell(v: unknown): number {
     if (parts.length > 2) s = s.replace(/\./g, '')
   }
   const n = parseFloat(s)
-  return isNaN(n) ? 0 : n
+  if (isNaN(n)) {
+    console.warn(`[parseNumberCell] n\u00e3o consegui parsear: "${original}"`)
+    return 0
+  }
+  return n
 }
 
 function parseSheetToRows(worksheet: XLSX.WorkSheet): { headers: string[]; rows: ParsedRow[] } {
@@ -262,7 +279,7 @@ const TABLE_MAPPINGS: Record<TargetTable, { label: string; required: string[]; o
   etapas: {
     label: 'Etapas do Cronograma',
     required: ['codigo', 'nome'],
-    optional: ['ordem', 'data_inicio_plan', 'data_fim_plan', 'casas_total', 'valor_total_orcado', 'status', 'observacoes'],
+    optional: ['ordem', 'data_inicio_plan', 'data_fim_plan', 'casas_total', 'valor_total_orcado', 'status', 'observacoes', 'receita_cef', 'preco_unitario_serv', 'qtd_casa_serv', 'unidade_serv'],
   },
   itens_compra: {
     label: 'Itens de Compra',
@@ -278,6 +295,9 @@ const TABLE_MAPPINGS: Record<TargetTable, { label: string; required: string[]; o
 
 function DadosBaseTab() {
   const { currentCompany } = useProject()
+  const { data: etapasData = [] } = useEtapas()
+  const { data: itensData = [] } = useItensCompra()
+  const { data: fornecedoresData = [] } = useFornecedores()
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [targetTable, setTargetTable] = useState<TargetTable>('etapas')
   const [importing, setImporting] = useState(false)
@@ -311,15 +331,23 @@ function DadosBaseTab() {
           const { error } = await supabase.from('etapas').insert({
             company_id: currentCompany.id, codigo: row['codigo'], nome: row['nome'],
             ordem: row['ordem'] ? parseInt(row['ordem']) : i + 1,
-            data_inicio_plan: row['data_inicio_plan'] || null, data_fim_plan: row['data_fim_plan'] || null,
+            data_inicio_plan: toDateISO(row['data_inicio_plan']),
+            data_fim_plan: toDateISO(row['data_fim_plan']),
             casas_total: row['casas_total'] ? parseInt(row['casas_total']) : 0,
-            valor_total_orcado: row['valor_total_orcado'] ? parseFloat(row['valor_total_orcado'].replace(',', '.')) : 0,
-            status: row['status'] || 'futuro', observacoes: row['observacoes'] || null,
+            valor_total_orcado: row['valor_total_orcado'] ? parseNumberCell(row['valor_total_orcado']) : 0,
+            status: sanitizeStatus(row['status']),
+            observacoes: row['observacoes'] || null,
+            faturamento_valor_total: row['receita_cef'] ? parseNumberCell(row['receita_cef']) : null,
+            faturamento_preco_unitario: row['preco_unitario_serv'] ? parseNumberCell(row['preco_unitario_serv']) : null,
+            faturamento_quantidade_unitaria: row['qtd_casa_serv'] ? parseNumberCell(row['qtd_casa_serv']) : null,
+            faturamento_unidade: row['unidade_serv'] || null,
           })
           if (error) throw error
         } else if (targetTable === 'fornecedores') {
+          const nomeNorm = normFornecedorNome(row['nome'] ?? '')
+          if (!nomeNorm) { errors.push(`Linha ${i + 2}: nome do fornecedor vazio`); continue }
           const { error } = await supabase.from('fornecedores').insert({
-            company_id: currentCompany.id, nome: row['nome'],
+            company_id: currentCompany.id, nome: nomeNorm,
             cnpj: row['cnpj'] || null, contato: row['contato'] || null,
             cond_pagamento_padrao: row['cond_pagamento_padrao'] || null, observacoes: row['observacoes'] || null,
           })
@@ -334,12 +362,13 @@ function DadosBaseTab() {
           }
           const { error } = await supabase.from('itens_compra').insert({
             company_id: currentCompany.id, etapa_id: etapa.id, codigo: row['codigo'], descricao: row['descricao'],
-            tipo: row['tipo']?.toUpperCase() || 'MATERIAL', categoria: row['categoria'] || null,
+            tipo: sanitizeTipo(row['tipo']),
+            categoria: row['categoria'] || null,
             unidade: row['unidade'] || null,
-            qtd_por_casa: row['qtd_por_casa'] ? parseFloat(row['qtd_por_casa'].replace(',', '.')) : null,
-            qtd_total: row['qtd_total'] ? parseFloat(row['qtd_total'].replace(',', '.')) : null,
-            custo_unitario_orcado: row['custo_unitario_orcado'] ? parseFloat(row['custo_unitario_orcado'].replace(',', '.')) : 0,
-            valor_total_orcado: row['valor_total_orcado'] ? parseFloat(row['valor_total_orcado'].replace(',', '.')) : 0,
+            qtd_por_casa: row['qtd_por_casa'] ? parseNumberCell(row['qtd_por_casa']) : null,
+            qtd_total: row['qtd_total'] ? parseNumberCell(row['qtd_total']) : null,
+            custo_unitario_orcado: row['custo_unitario_orcado'] ? parseNumberCell(row['custo_unitario_orcado']) : 0,
+            valor_total_orcado: row['valor_total_orcado'] ? parseNumberCell(row['valor_total_orcado']) : 0,
             fornecedor_id: fornecedorId, cond_pagamento: row['cond_pagamento'] || null,
           })
           if (error) throw error
@@ -376,6 +405,64 @@ function DadosBaseTab() {
     downloadTemplate(targetTable, allHeaders, example)
   }
 
+  const doDownloadAtual = () => {
+    const mapping = TABLE_MAPPINGS[targetTable]
+    const headers = [...mapping.required, ...mapping.optional]
+    const etapaById = new Map((etapasData as any[]).map(e => [e.id, e]))
+    let rows: Record<string, unknown>[] = []
+    if (targetTable === 'etapas') {
+      rows = (etapasData as any[]).map(e => ({
+        codigo: e.codigo,
+        nome: e.nome,
+        ordem: e.ordem,
+        data_inicio_plan: e.data_inicio_plan ?? '',
+        data_fim_plan: e.data_fim_plan ?? '',
+        casas_total: e.casas_total ?? '',
+        valor_total_orcado: e.valor_total_orcado ?? '',
+        status: e.status ?? '',
+        observacoes: e.observacoes ?? '',
+        receita_cef: e.faturamento_valor_total ?? '',
+        preco_unitario_serv: e.faturamento_preco_unitario ?? '',
+        qtd_casa_serv: e.faturamento_quantidade_unitaria ?? '',
+        unidade_serv: e.faturamento_unidade ?? '',
+      }))
+    } else if (targetTable === 'itens_compra') {
+      rows = (itensData as any[]).map(i => ({
+        codigo: i.codigo,
+        descricao: i.descricao,
+        tipo: i.tipo,
+        etapa_codigo: etapaById.get(i.etapa_id)?.codigo ?? '',
+        categoria: i.categoria ?? '',
+        unidade: i.unidade ?? '',
+        qtd_por_casa: i.qtd_por_casa ?? '',
+        qtd_total: i.qtd_total ?? '',
+        custo_unitario_orcado: i.custo_unitario_orcado ?? '',
+        valor_total_orcado: i.valor_total_orcado ?? '',
+        fornecedor_nome: i.fornecedor_nome ?? '',
+        cond_pagamento: i.cond_pagamento ?? '',
+      }))
+    } else if (targetTable === 'fornecedores') {
+      rows = (fornecedoresData as any[]).map(f => ({
+        nome: f.nome,
+        cnpj: f.cnpj ?? '',
+        contato: f.contato ?? '',
+        cond_pagamento_padrao: f.cond_pagamento_padrao ?? '',
+        observacoes: f.observacoes ?? '',
+      }))
+    }
+    if (rows.length === 0) {
+      toast.info(`Sem dados para exportar em ${mapping.label}. Use "Baixar template" para um modelo vazio.`)
+      return
+    }
+    downloadFilledTemplate({
+      filename: `${targetTable}_atual_${dateSuffix()}`,
+      sheetName: 'Template',
+      headers,
+      rows,
+    })
+    toast.success(`${rows.length} linha(s) exportadas em ${mapping.label}`)
+  }
+
   return (
     <>
       <div className="mb-5 grid gap-3 md:grid-cols-3">
@@ -388,9 +475,14 @@ function DadosBaseTab() {
         ))}
       </div>
 
-      <div className="mb-5">
-        <button onClick={doDownload} className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2.5 text-sm font-medium hover:bg-accent">
-          <Download className="h-4 w-4 text-primary" />Baixar template — {TABLE_MAPPINGS[targetTable].label}
+      <div className="mb-5 flex flex-wrap gap-2">
+        <button onClick={doDownloadAtual} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+          title="Baixa os dados atuais já preenchidos no formato do template — edite no Excel e re-importe.">
+          <Download className="h-4 w-4" />Baixar atuais — {TABLE_MAPPINGS[targetTable].label}
+        </button>
+        <button onClick={doDownload} className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2.5 text-sm font-medium hover:bg-accent"
+          title="Template em branco com 1 linha de exemplo.">
+          <Download className="h-4 w-4 text-primary" />Baixar template (vazio)
         </button>
       </div>
 
@@ -414,7 +506,7 @@ function DadosBaseTab() {
 // ═══════════════════════════════════════════════════════════════
 // Tab: Pedidos — aceita formato real da planilha de compras
 // ═══════════════════════════════════════════════════════════════
-const PEDIDOS_HEADERS = ['item_codigo', 'numero_pedido', 'casas_lote', 'fornecedor_nome', 'cond_pagamento', 'data_entrega_prevista', 'valor_unitario_real']
+const PEDIDOS_HEADERS = ['item_codigo', 'numero_pedido', 'casas_lote', 'fornecedor_nome', 'cond_pagamento', 'data_entrega_prevista', 'valor_unitario_real'] as const
 
 function findPedCol(row: ParsedRow, candidates: string[]): string {
   for (const c of candidates) {
@@ -462,11 +554,12 @@ function normalizePedidoRows(raw: ParsedRow[], headers: string[]): ParsedRow[] {
     const valorTotal = findPedCol(row, ['valor_total_1', 'VALOR TOTAL_1', 'VALOR TOTAL'])
     const qtdEntrega = findPedCol(row, ['quant._2', 'QUANT._2'])
     const dataEntrega = findPedCol(row, ['DATA DA ENTREGA', 'data_da_entrega', 'data_entrega_prevista', 'DATA ENTREGA'])
+    const numeroPedido = findPedCol(row, ['NUMERO PEDIDO', 'NÚMERO PEDIDO', 'Nº Pedido', 'No Pedido', 'PEDIDO', 'numero_pedido', 'num_pedido'])
     return {
       'item_codigo': itemCodigo ?? '',
       '_item_descricao': itemDesc,
       '_etapa_nome': etapaNome,
-      'numero_pedido': '',
+      'numero_pedido': numeroPedido,
       'casas_lote': casas,
       'fornecedor_nome': fornecedor,
       'cond_pagamento': condPag,
@@ -482,11 +575,39 @@ function PedidosTab() {
   const { currentCompany } = useProject()
   const { data: itens = [] } = useItensCompra()
   const { data: projectEtapas = [] } = useEtapas()
+  const { data: pedidosData = [] } = usePedidos()
   const qc = useQueryClient()
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [importing, setImporting] = useState(false)
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<{ success: number; parcelas: number; errors: string[] } | null>(null)
+
+  const downloadPedidosAtuais = () => {
+    if (pedidosData.length === 0) {
+      toast.info('Sem pedidos para exportar — use "Baixar template" para um modelo vazio.')
+      return
+    }
+    const itensById = new Map((itens as any[]).map(i => [i.id, i]))
+    const rows = (pedidosData as any[]).map(p => {
+      const item = itensById.get(p.item_compra_id)
+      return {
+        item_codigo: item?.codigo ?? '',
+        numero_pedido: p.numero_pedido ?? '',
+        casas_lote: p.casas_lote ?? '',
+        fornecedor_nome: p.fornecedor_nome ?? '',
+        cond_pagamento: p.cond_pagamento ?? '',
+        data_entrega_prevista: p.data_entrega_prevista ?? '',
+        valor_unitario_real: p.valor_unitario_real ?? '',
+      }
+    })
+    downloadFilledTemplate({
+      filename: `pedidos_atuais_${dateSuffix()}`,
+      sheetName: 'Template',
+      headers: PEDIDOS_HEADERS,
+      rows,
+    })
+    toast.success(`${rows.length} pedido(s) exportado(s)`)
+  }
 
   const handleFile = useCallback((p: ImportPreview) => {
     const normalized = normalizePedidoRows(p.rows, p.headers)
@@ -547,11 +668,12 @@ function PedidosTab() {
       try {
         let fornecedorId: string | null = null
         let fornCond: string | null = null
-        if (row['fornecedor_nome']) {
-          const { data: forn } = await supabase.from('fornecedores').select('id, cond_pagamento_padrao').eq('company_id', currentCompany.id).ilike('nome', row['fornecedor_nome']).limit(1).single()
+        const fornNomeNorm = normFornecedorNome(row['fornecedor_nome'] ?? '')
+        if (fornNomeNorm) {
+          const { data: forn } = await supabase.from('fornecedores').select('id, cond_pagamento_padrao').eq('company_id', currentCompany.id).ilike('nome', fornNomeNorm).limit(1).single()
           if (forn) { fornecedorId = forn.id; fornCond = forn.cond_pagamento_padrao }
           else {
-            const newFornData: any = { company_id: currentCompany.id, nome: row['fornecedor_nome'] }
+            const newFornData: any = { company_id: currentCompany.id, nome: fornNomeNorm }
             if (row['cond_pagamento']) newFornData.cond_pagamento_padrao = row['cond_pagamento']
             const { data: newForn } = await supabase.from('fornecedores').insert(newFornData).select('id').single()
             fornecedorId = newForn?.id ?? null
@@ -612,10 +734,18 @@ function PedidosTab() {
           <br/>Ou template: {PEDIDOS_HEADERS.join(' | ')}
           <br/><span className="text-blue-500">📌 Itens vinculados por nome + etapa. Fornecedores criados automaticamente.</span>
         </p>
-        <button onClick={() => downloadTemplate('pedidos', PEDIDOS_HEADERS, ['EX-01', '1', '16', 'Fornecedor ABC', '30/60', '2026-05-01', ''])}
-          className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs font-medium hover:bg-accent">
-          <Download className="h-3.5 w-3.5 text-primary" />Baixar template
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={downloadPedidosAtuais}
+            className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:opacity-90"
+            title="Baixa os pedidos atuais do projeto já preenchidos — edite no Excel e re-importe.">
+            <Download className="h-3.5 w-3.5" />Baixar pedidos atuais
+          </button>
+          <button onClick={() => downloadTemplate('pedidos', [...PEDIDOS_HEADERS], ['EX-01', '1', '16', 'Fornecedor ABC', '30/60', '2026-05-01', '450.00'])}
+            className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs font-medium hover:bg-accent"
+            title="Template em branco com 1 linha de exemplo.">
+            <Download className="h-3.5 w-3.5 text-primary" />Baixar template (vazio)
+          </button>
+        </div>
       </div>
       <DropZone onFile={(f) => processFile(f, handleFile, 'pedido')} />
       {preview && (
@@ -714,11 +844,34 @@ function normalizeIndiretosRows(raw: ParsedRow[]): ParsedRow[] {
 
 function CustosIndiretosTab() {
   const { currentCompany } = useProject()
+  const { despesas: despesasData = [] } = useDespesasIndiretas()
   const qc = useQueryClient()
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [importing, setImporting] = useState(false)
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<{ success: number; parcelas: number; total: number; errors: string[] } | null>(null)
+
+  const downloadCustosAtuais = () => {
+    if (despesasData.length === 0) {
+      toast.info('Sem custos indiretos para exportar — use "Template" para um modelo vazio.')
+      return
+    }
+    const rows = (despesasData as any[]).map(d => ({
+      descricao: d.descricao,
+      categoria: d.categoria ?? '',
+      fornecedor_nome: d.fornecedor_nome ?? '',
+      cond_pagamento: d.cond_pagamento ?? '',
+      data_inicio: d.data_inicio ?? '',
+      valor_orcado: d.valor_orcado ?? '',
+    }))
+    downloadFilledTemplate({
+      filename: `custos_indiretos_atuais_${dateSuffix()}`,
+      sheetName: 'Template',
+      headers: INDIRETOS_HEADERS,
+      rows,
+    })
+    toast.success(`${rows.length} custo(s) indireto(s) exportado(s)`)
+  }
 
   const handleFile = useCallback((p: ImportPreview) => {
     const normalized = normalizeIndiretosRows(p.rows)
@@ -766,13 +919,14 @@ function CustosIndiretosTab() {
       const row = enrichedRows[i]!
       try {
         let fornecedorId: string | null = null
-        if (row['fornecedor_nome']) {
+        const fornNomeNorm = normFornecedorNome(row['fornecedor_nome'] ?? '')
+        if (fornNomeNorm) {
           const { data: forn } = await supabase.from('fornecedores').select('id')
-            .eq('company_id', currentCompany.id).ilike('nome', row['fornecedor_nome']).limit(1).single()
+            .eq('company_id', currentCompany.id).ilike('nome', fornNomeNorm).limit(1).single()
           if (forn) fornecedorId = forn.id
           else {
             const { data: newForn } = await supabase.from('fornecedores').insert({
-              company_id: currentCompany.id, nome: row['fornecedor_nome']!,
+              company_id: currentCompany.id, nome: fornNomeNorm,
             }).select('id').single()
             fornecedorId = newForn?.id ?? null
           }
@@ -830,11 +984,18 @@ function CustosIndiretosTab() {
       <div className="rounded-xl border bg-muted/30 p-4 text-xs text-muted-foreground">
         Aceita a aba <strong>06_Custos_Indiretos</strong> do arquivo completo (auto-detecta).
         <br/>Colunas esperadas: <code>Descrição</code>, <code>Categoria</code>, <code>Fornecedor</code>, <code>Cond. Pagamento</code>, <code>Data Início</code>, <code>Valor Orçado</code>.
-        <button onClick={() => downloadTemplate('custos_indiretos', INDIRETOS_HEADERS,
-          ['Aluguel container', 'Indireto', 'Fornecedor ABC', '30/60/90', '2026-03-28', '3000'])}
-          className="ml-2 inline-flex items-center gap-1 text-primary hover:underline">
-          <Download className="h-3 w-3" />Template
-        </button>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button onClick={downloadCustosAtuais}
+            className="inline-flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1.5 text-[11px] font-medium text-primary-foreground hover:opacity-90"
+            title="Baixa os custos indiretos atuais já preenchidos — edite no Excel e re-importe.">
+            <Download className="h-3 w-3" />Baixar custos atuais
+          </button>
+          <button onClick={() => downloadTemplate('custos_indiretos', INDIRETOS_HEADERS,
+            ['Aluguel container', 'Indireto', 'Fornecedor ABC', '30/60/90', '2026-03-28', '3000'])}
+            className="inline-flex items-center gap-1 text-primary hover:underline">
+            <Download className="h-3 w-3" />Template (vazio)
+          </button>
+        </div>
       </div>
 
       <DropZone onFile={(f) => processFile(f, handleFile, 'indireto')} />
@@ -1095,15 +1256,37 @@ function MedicoesTab() {
 // ═══════════════════════════════════════════════════════════════
 // Tab: Distribuição Cronograma (NEW)
 // ═══════════════════════════════════════════════════════════════
-const DIST_HEADERS = ['etapa_codigo', 'medicao_numero', 'data', 'casas']
+const DIST_HEADERS = ['etapa_codigo', 'medicao_numero', 'data', 'casas'] as const
 
 function DistribuicaoTab() {
   const { currentCompany } = useProject()
   const { data: etapas = [] } = useEtapas()
+  const { data: distribuicoesData = [] } = useDistribuicao()
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [importing, setImporting] = useState(false)
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<{ success: number; errors: string[] } | null>(null)
+
+  const downloadDistAtual = () => {
+    if (distribuicoesData.length === 0) {
+      toast.info('Sem distribuições para exportar — use "Baixar template" para um modelo vazio.')
+      return
+    }
+    const etapaById = new Map((etapas as any[]).map(e => [e.id, e]))
+    const rows = (distribuicoesData as any[]).map(d => ({
+      etapa_codigo: etapaById.get(d.etapa_id)?.codigo ?? '',
+      medicao_numero: d.medicao_numero ?? '',
+      data: d.data_inicio ?? '',
+      casas: d.casas_planejadas ?? '',
+    }))
+    downloadFilledTemplate({
+      filename: `distribuicao_atual_${dateSuffix()}`,
+      sheetName: 'Template',
+      headers: DIST_HEADERS,
+      rows,
+    })
+    toast.success(`${rows.length} distribuição(ões) exportada(s)`)
+  }
 
   type EnrichedDist = Record<string, any> & { etapaExists: boolean; etapaNome: string }
   const enriched = useMemo((): EnrichedDist[] => {
@@ -1184,10 +1367,18 @@ function DistribuicaoTab() {
           Define quantas casas são executadas em cada data para cada etapa. Usado pelo Gantt para os blocos de casas.
         </p>
         <p className="mb-3 text-[10px] text-muted-foreground">Template: {DIST_HEADERS.join(' | ')} — Exemplo: 7, 1, 2026-03-16, 16</p>
-        <button onClick={() => downloadTemplate('distribuicao', DIST_HEADERS, ['7', '1', '2026-03-16', '16'])}
-          className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs font-medium hover:bg-accent">
-          <Download className="h-3.5 w-3.5 text-primary" />Baixar template
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={downloadDistAtual}
+            className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:opacity-90"
+            title="Baixa as distribuições atuais já preenchidas — edite no Excel e re-importe.">
+            <Download className="h-3.5 w-3.5" />Baixar distribuição atual
+          </button>
+          <button onClick={() => downloadTemplate('distribuicao', [...DIST_HEADERS], ['7', '1', '2026-03-16', '16'])}
+            className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs font-medium hover:bg-accent"
+            title="Template em branco com 1 linha de exemplo.">
+            <Download className="h-3.5 w-3.5 text-primary" />Baixar template (vazio)
+          </button>
+        </div>
       </div>
 
       <DropZone onFile={(f) => processFile(f, (p) => { setPreview(p); setResult(null) })} />
@@ -1955,8 +2146,20 @@ function downloadWBSTemplate() {
 function WBSTab() {
   const { currentCompany } = useProject()
   const queryClient = useQueryClient()
+  const { data: etapas = [] } = useEtapas()
+  const { data: itens = [] } = useItensCompra()
+  const { data: distribuicoes = [] } = useDistribuicao()
   const [importPreview, setImportPreview] = useState<any | null>(null)
   const [isWbsImporting, setIsWbsImporting] = useState(false)
+
+  const downloadWBSAtual = () => {
+    if (etapas.length === 0) {
+      toast.info('Sem dados para exportar — cadastre etapas primeiro ou use "Baixar Template WBS (vazio)".')
+      return
+    }
+    exportWBSToExcel(etapas as any, itens as any, distribuicoes as any)
+    toast.success(`WBS atual exportada: ${etapas.length} etapas, ${itens.length} itens, ${distribuicoes.length} distribuições`)
+  }
 
   const handleWbsImport = async (file: File) => {
     if (!file || !currentCompany) return
@@ -1994,9 +2197,15 @@ function WBSTab() {
           O template é idêntico ao formato de exportação — você pode exportar, editar no Excel e reimportar.
         </p>
         <div className="flex flex-wrap gap-2">
+          <button onClick={downloadWBSAtual}
+            className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:opacity-90"
+            title="Baixa o WBS atual do projeto (Etapas + Itens + Distribuição) já preenchido — edite no Excel e re-importe.">
+            <Download className="h-3.5 w-3.5" /> Baixar WBS com dados atuais
+          </button>
           <button onClick={downloadWBSTemplate}
-            className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs font-medium hover:bg-accent">
-            <Download className="h-3.5 w-3.5 text-primary" /> Baixar Template WBS (3 abas)
+            className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs font-medium hover:bg-accent"
+            title="Template em branco com 2 linhas de exemplo.">
+            <Download className="h-3.5 w-3.5 text-primary" /> Baixar Template WBS (vazio)
           </button>
         </div>
         <div className="mt-3 rounded-lg bg-blue-500/5 p-3">
@@ -2264,13 +2473,14 @@ function PagamentosRealizadosTab() {
 
         // Helpers para Fornecedor
         let fornecedorId = null
-        if (row.fornecedor && row.fornecedor !== 'Não informado' && row.fornecedor !== 'N/D') {
+        const fornNomeNorm = normFornecedorNome(row.fornecedor)
+        if (fornNomeNorm && fornNomeNorm !== 'Não informado' && fornNomeNorm !== 'N/D') {
           const { data: existingForn } = await supabase
             .from('fornecedores').select('id').eq('company_id', currentCompany.id)
-            .ilike('nome', row.fornecedor).limit(1)
+            .ilike('nome', fornNomeNorm).limit(1)
           if (existingForn && existingForn.length > 0) fornecedorId = existingForn[0]!.id
           else {
-            const { data: newForn } = await supabase.from('fornecedores').insert({ company_id: currentCompany.id, nome: row.fornecedor }).select('id').single()
+            const { data: newForn } = await supabase.from('fornecedores').insert({ company_id: currentCompany.id, nome: fornNomeNorm }).select('id').single()
             if (newForn) fornecedorId = newForn.id
           }
         }
@@ -2510,8 +2720,11 @@ function PagamentosRealizadosTab() {
           </div>
           <div className="flex-1">
             <h3 className="mb-1 text-lg font-semibold">Importar Pagamentos Realizados</h3>
-            <p className="mb-4 text-sm text-muted-foreground">
+            <p className="mb-2 text-sm text-muted-foreground">
               Suba a planilha <strong>BD REALIZADO - CONSTRUTORA</strong> para registrar todos os pagamentos como despesas a nível de etapa. O sistema classifica automaticamente saídas (despesas), entradas (créditos) e empréstimos (mútuos).
+            </p>
+            <p className="mb-4 rounded-lg bg-blue-500/5 p-2 text-[11px] text-blue-700 dark:text-blue-400">
+              ℹ️ Esta aba não tem "Baixar dados atuais" — o BD Realizado é uma planilha gerada pela <strong>construtora</strong> (sistema externo), não pelo Build Fleury. Use os relatórios de Pagamentos / Conciliação para ver o que já foi registrado.
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <label className="flex cursor-pointer items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm">
