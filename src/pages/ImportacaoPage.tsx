@@ -605,6 +605,7 @@ function PedidosTab() {
     }
     // Cabeçalhos enriquecidos: importador ignora silenciosamente colunas extras (read-only).
     // As colunas que o parser realmente lê estão em PEDIDOS_HEADERS; demais são contexto humano.
+    // Convenção: nomes terminados em _count = contagem de linhas; em _valor = soma em R$.
     const headers = [
       'etapa_codigo', 'etapa_nome',         // contexto/lookup
       'item_codigo', 'item_descricao',       // contexto
@@ -613,20 +614,28 @@ function PedidosTab() {
       'data_entrega_prevista', 'data_entrega_real',
       'valor_unitario_real', 'valor_total_real',
       'status', 'observacoes',
-      // resumo de parcelas (read-only — só pra você ver)
-      'parcelas_count', 'parcelas_valor_total',
-      'parcelas_pagas', 'parcelas_em_aberto',
+      // resumo de parcelas — read-only (só pra você ver)
+      'parcelas_count',                    // contagem total de parcelas (inclui adiantamentos)
+      'parcelas_count_contratuais',        // contagem só das tipo='contratual'
+      'parcelas_valor_total',              // Σ valor (todas — pode incluir adiantamentos!)
+      'parcelas_valor_contratuais',        // Σ valor só das tipo='contratual' (= valor_total_real esperado)
+      'parcelas_pagas_count', 'parcelas_pagas_valor',
+      'parcelas_em_aberto_count', 'parcelas_saldo_aberto',
       'parcelas_proximo_vencimento',
     ] as const
     const rows = (pedidosData as any[]).map(p => {
       const item = itensById.get(p.item_compra_id)
       const etapa = item ? etapasById.get(item.etapa_id) : undefined
       const parcs = parcelasByPedido.get(p.id) ?? []
+      const parcsContratuais = parcs.filter(x => (x.tipo ?? 'contratual') === 'contratual')
       const parcsValorTotal = parcs.reduce((s, x) => s + Number(x.valor || 0), 0)
-      const parcsPagas = parcs.filter(x => x.status === 'paga').length
-      const parcsEmAberto = parcs.filter(x => x.status !== 'paga' && x.status !== 'cancelada').length
-      const proxVenc = parcs
-        .filter(x => x.status !== 'paga' && x.status !== 'cancelada' && x.data_vencimento)
+      const parcsValorContratuais = parcsContratuais.reduce((s, x) => s + Number(x.valor || 0), 0)
+      const parcsPagas = parcs.filter(x => x.status === 'paga')
+      const parcsPagasValor = parcs.reduce((s, x) => s + Number(x.valor_pago || 0), 0)
+      const parcsAbertas = parcs.filter(x => x.status !== 'paga' && x.status !== 'cancelada')
+      const parcsSaldoAberto = parcsAbertas.reduce((s, x) => s + (Number(x.valor || 0) - Number(x.valor_pago || 0)), 0)
+      const proxVenc = parcsAbertas
+        .filter(x => x.data_vencimento)
         .map(x => x.data_vencimento)
         .sort()[0] ?? ''
       return {
@@ -646,9 +655,13 @@ function PedidosTab() {
         status: p.status ?? '',
         observacoes: p.observacoes ?? '',
         parcelas_count: parcs.length,
+        parcelas_count_contratuais: parcsContratuais.length,
         parcelas_valor_total: parcsValorTotal.toFixed(2),
-        parcelas_pagas: parcsPagas,
-        parcelas_em_aberto: parcsEmAberto,
+        parcelas_valor_contratuais: parcsValorContratuais.toFixed(2),
+        parcelas_pagas_count: parcsPagas.length,
+        parcelas_pagas_valor: parcsPagasValor.toFixed(2),
+        parcelas_em_aberto_count: parcsAbertas.length,
+        parcelas_saldo_aberto: parcsSaldoAberto.toFixed(2),
         parcelas_proximo_vencimento: proxVenc,
       }
     })
@@ -922,15 +935,21 @@ function CustosIndiretosTab() {
       'valor_orcado', 'recorrente', 'frequencia', 'ativo',
       'observacoes',
       // read-only — contexto
-      'valor_consumido', 'parcelas_count',
-      'parcelas_pagas', 'parcelas_em_aberto', 'parcelas_proximo_vencimento',
+      'valor_consumido',
+      'parcelas_count', 'parcelas_valor_total',
+      'parcelas_pagas_count', 'parcelas_pagas_valor',
+      'parcelas_em_aberto_count', 'parcelas_saldo_aberto',
+      'parcelas_proximo_vencimento',
     ] as const
     const rows = (despesasData as any[]).map(d => {
       const parcs = parcelasByDesp.get(d.id) ?? []
-      const parcsPagas = parcs.filter(x => x.status === 'paga').length
-      const parcsEmAberto = parcs.filter(x => x.status !== 'paga' && x.status !== 'cancelada').length
-      const proxVenc = parcs
-        .filter(x => x.status !== 'paga' && x.status !== 'cancelada' && x.data_vencimento)
+      const parcsValorTotal = parcs.reduce((s, x) => s + Number(x.valor || 0), 0)
+      const parcsPagas = parcs.filter(x => x.status === 'paga')
+      const parcsPagasValor = parcs.reduce((s, x) => s + Number(x.valor_pago || 0), 0)
+      const parcsAbertas = parcs.filter(x => x.status !== 'paga' && x.status !== 'cancelada')
+      const parcsSaldoAberto = parcsAbertas.reduce((s, x) => s + (Number(x.valor || 0) - Number(x.valor_pago || 0)), 0)
+      const proxVenc = parcsAbertas
+        .filter(x => x.data_vencimento)
         .map(x => x.data_vencimento)
         .sort()[0] ?? ''
       return {
@@ -947,8 +966,11 @@ function CustosIndiretosTab() {
         observacoes: d.observacoes ?? '',
         valor_consumido: d.valor_consumido ?? 0,
         parcelas_count: parcs.length,
-        parcelas_pagas: parcsPagas,
-        parcelas_em_aberto: parcsEmAberto,
+        parcelas_valor_total: parcsValorTotal.toFixed(2),
+        parcelas_pagas_count: parcsPagas.length,
+        parcelas_pagas_valor: parcsPagasValor.toFixed(2),
+        parcelas_em_aberto_count: parcsAbertas.length,
+        parcelas_saldo_aberto: parcsSaldoAberto.toFixed(2),
         parcelas_proximo_vencimento: proxVenc,
       }
     })

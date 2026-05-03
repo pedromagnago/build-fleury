@@ -35,12 +35,20 @@ export function exportComercialToExcel(input: ExportInput) {
   const wb = XLSX.utils.book_new()
 
   // ── Aba 1: Pedidos ─────────────────────────────────────
+  // Diff esperado entre Σ parcelas e valor_total_real:
+  //  - Σ parcelas TOTAL pode incluir adiantamentos (tipo='adiantamento') → soma cresce
+  //  - Σ parcelas CONTRATUAIS deve bater com valor_total_real do pedido (tolerância R$ 0,01)
   const pedidoRows = pedidos.map(p => {
     const item = p.item_compra_id ? itemById.get(p.item_compra_id) : undefined
     const etapa = item ? etapaById.get(item.etapa_id) : undefined
     const forn = p.fornecedor_id ? fornById.get(p.fornecedor_id) : undefined
     const parcsDoPedido = parcelas.filter(parc => parc.pedido_id === p.id)
-    const somaParcs = parcsDoPedido.reduce((s, parc) => s + Number(parc.valor || 0), 0)
+    const parcsContratuais = parcsDoPedido.filter(x => (x.tipo ?? 'contratual') === 'contratual')
+    const parcsAdiantamentos = parcsDoPedido.filter(x => x.tipo === 'adiantamento')
+    const somaTodas = parcsDoPedido.reduce((s, parc) => s + Number(parc.valor || 0), 0)
+    const somaContratuais = parcsContratuais.reduce((s, x) => s + Number(x.valor || 0), 0)
+    const somaPagas = parcsDoPedido.reduce((s, x) => s + Number(x.valor_pago || 0), 0)
+    const valorTotal = Number(p.valor_total_real ?? 0)
     return {
       'pedido_id': p.id,
       'etapa_codigo': etapa?.codigo ?? '',
@@ -59,13 +67,17 @@ export function exportComercialToExcel(input: ExportInput) {
       // Read-only — para visualização. Importador ignora.
       '[etapa_nome]': etapa?.nome ?? '',
       '[item_descricao]': item?.descricao ?? '',
-      '[parcelas_count]': parcsDoPedido.length,
-      '[parcelas_soma]': somaParcs.toFixed(2),
-      '[diff_soma_vs_total]': ((Number(p.valor_total_real ?? 0)) - somaParcs).toFixed(2),
+      '[parcelas_count_total]': parcsDoPedido.length,
+      '[parcelas_count_contratuais]': parcsContratuais.length,
+      '[parcelas_count_adiantamentos]': parcsAdiantamentos.length,
+      '[parcelas_soma_todas]': somaTodas.toFixed(2),
+      '[parcelas_soma_contratuais]': somaContratuais.toFixed(2),
+      '[parcelas_soma_pagas]': somaPagas.toFixed(2),
+      '[diff_contratuais_vs_total]': (valorTotal - somaContratuais).toFixed(2),
     }
   })
   const wsPedidos = XLSX.utils.json_to_sheet(pedidoRows)
-  setColumnWidths(wsPedidos, [38, 12, 14, 14, 24, 10, 10, 14, 14, 16, 14, 14, 14, 30, 24, 30, 12, 14, 14])
+  setColumnWidths(wsPedidos, [38, 12, 14, 14, 24, 10, 10, 14, 14, 16, 14, 14, 14, 30, 24, 30, 12, 12, 12, 14, 14, 14, 14])
   XLSX.utils.book_append_sheet(wb, wsPedidos, 'Pedidos')
 
   // ── Aba 2: Parcelas ────────────────────────────────────
@@ -175,11 +187,21 @@ export function exportComercialToExcel(input: ExportInput) {
     ['não "[parcelas_soma]").'],
     [''],
     ['VALIDAÇÕES NO PREVIEW'],
-    ['- Σ parcelas vs valor_total_real do pedido: se diferir > R$ 0,01, aparece'],
-    ['  warning amarelo. Você pode corrigir e re-subir, ou seguir mesmo assim.'],
+    ['- Σ parcelas CONTRATUAIS vs valor_total_real do pedido: se diferir > R$ 0,01,'],
+    ['  aparece warning amarelo. Você pode corrigir e re-subir, ou seguir mesmo assim.'],
     ['- Mudou cond_pagamento de pedido sem editar suas parcelas → preview'],
     ['  pergunta "regenerar parcelas?".'],
     ['- Mudou data_entrega_prevista → só parcelas não-pagas serão regeneradas.'],
+    [''],
+    ['LEITURA DAS COLUNAS [parcelas_*] na aba Pedidos'],
+    ['- [parcelas_soma_todas]:        Σ valor de TODAS as parcelas do pedido'],
+    ['                                (inclui adiantamentos — pode ser MAIOR que o total!)'],
+    ['- [parcelas_soma_contratuais]:  Σ valor só das parcelas tipo=contratual'],
+    ['                                (deve bater com valor_total_real, ± R$ 0,01)'],
+    ['- [parcelas_soma_pagas]:        Σ valor_pago de todas as parcelas'],
+    ['                                (representa o que já saiu do caixa)'],
+    ['- [diff_contratuais_vs_total]:  valor_total_real − soma_contratuais'],
+    ['                                (zero = ok; ≠ zero = parcelas precisam ajuste)'],
     [''],
     ['LOOKUP'],
     ['- etapa_codigo / item_codigo: se o código não existir, linha rejeitada.'],

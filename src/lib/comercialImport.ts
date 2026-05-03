@@ -269,10 +269,13 @@ export async function buildComercialPreview(
     ]
     const campos = checks.filter((c): c is FieldChange => c !== null)
 
-    // Soma das parcelas atuais (do banco) vs valor_total nova
+    // Soma das parcelas CONTRATUAIS (do banco) vs valor_total nova.
+    // Adiantamentos (tipo='adiantamento') não entram porque são desembolsos extras
+    // que não fazem parte do cond_pagamento original do pedido.
     const parcsAtuais = dbParcelas.filter(p => p.pedido_id === id)
-    const somaAtual = parcsAtuais.reduce((s, p) => s + Number(p.valor || 0), 0)
-    const diffCent = Math.round((valorTotal - somaAtual) * 100)
+    const parcsContratuais = parcsAtuais.filter(p => (p.tipo ?? 'contratual') === 'contratual')
+    const somaContratuais = parcsContratuais.reduce((s, p) => s + Number(p.valor || 0), 0)
+    const diffCent = Math.round((valorTotal - somaContratuais) * 100)
     const condChanged = campos.some(c => c.campo === 'cond_pagamento')
 
     pedidoChanges.push({
@@ -284,11 +287,11 @@ export async function buildComercialPreview(
       fornecedor_nome: fornNome,
       campos,
       rowData: row,
-      parcelas_soma: somaAtual,
+      parcelas_soma: somaContratuais,
       valor_total: valorTotal,
       diff_centavos: diffCent,
       warning_soma: Math.abs(diffCent) > 1
-        ? `Σ parcelas (R$ ${somaAtual.toFixed(2)}) ≠ valor_total_real (R$ ${valorTotal.toFixed(2)}). Diff R$ ${(diffCent / 100).toFixed(2)}.`
+        ? `Σ parcelas contratuais (R$ ${somaContratuais.toFixed(2)}) ≠ valor_total_real (R$ ${valorTotal.toFixed(2)}). Diff R$ ${(diffCent / 100).toFixed(2)}. (Adiantamentos não contam aqui.)`
         : undefined,
       cond_changed_but_parcelas_same: condChanged,
     })
