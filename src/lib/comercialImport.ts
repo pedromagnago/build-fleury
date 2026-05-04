@@ -11,7 +11,24 @@
  */
 import * as XLSX from 'xlsx'
 import { supabase } from '@/lib/supabase'
-import { toDateISO, sanitizeStatus, findCol } from '@/lib/wbsImport'
+import { toDateISO, findCol } from '@/lib/wbsImport'
+
+// CHECK constraint do banco: pedidos.status IN ('planejado','pedido_enviado','entregue','parcialmente_pago','pago','cancelado')
+// (ver supabase/migrations/20260425130000_consolidate_pedido_status.sql)
+// NÃO usar sanitizeStatus do wbsImport — aquele é para etapas (futuro|em_andamento|concluido|atrasado).
+const PEDIDO_STATUS_VALIDOS = new Set([
+  'planejado', 'pedido_enviado', 'entregue', 'parcialmente_pago', 'pago', 'cancelado',
+])
+function sanitizePedidoStatus(val: unknown): string {
+  if (!val) return 'planejado'
+  const s = String(val).toLowerCase().trim().replace(/\s+/g, '_').replace(/-/g, '_')
+  if (PEDIDO_STATUS_VALIDOS.has(s)) return s
+  // sinônimos comuns
+  if (s === 'pedido' || s === 'enviado' || s === 'pedido_enviado') return 'pedido_enviado'
+  if (s === 'parcial' || s === 'parcialmente_pago' || s === 'parcialmente') return 'parcialmente_pago'
+  if (s === 'cancelado' || s === 'cancelada') return 'cancelado'
+  return 'planejado'
+}
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -231,10 +248,12 @@ export async function buildComercialPreview(
 
     const existing = dbPedidosById.get(id)
     if (!existing) {
-      // ID na planilha mas não no banco — tratar como CREATE com id explícito
+      // ID na planilha mas não no banco. ANTES: criava com ID inventado (gerava fantasmas
+      // quando o usuário baixava o pacote da Original e tentava subir na Cópia).
+      // AGORA: sinaliza erro e NÃO cria — força usuário a confirmar a operação.
       pedidoChanges.push({
         action: 'create',
-        pedido_id: id,
+        pedido_id: null, // descarta o ID — se confirmar create, gera novo
         numero_pedido: numeroPed ? Number(numeroPed) : null,
         etapa_codigo: etapaCod,
         item_codigo: itemCod,
@@ -244,7 +263,7 @@ export async function buildComercialPreview(
         parcelas_soma: 0,
         valor_total: valorTotal,
         diff_centavos: 0,
-        warning_soma: `Pedido_id "${id}" não existe no banco — será criado com este ID.`,
+        warning_soma: `⚠ pedido_id "${id.slice(0, 8)}…" da planilha não existe no banco. Provável que a planilha foi baixada de OUTRO projeto. Se confirmar, criará um pedido novo (ID será gerado pelo banco).`,
       })
       continue
     }
@@ -351,12 +370,15 @@ export async function buildComercialPreview(
 
     const existing = dbParcelasById.get(id)
     if (!existing) {
+      // ID na planilha mas não no banco. ANTES criava com ID inventado (gerava as 51
+      // parcelas-fantasma de 03/05/2026 quando a planilha veio de outro projeto).
+      // AGORA: sem ID — se o usuário confirmar create, banco gera ID novo.
       parcelaChanges.push({
-        action: 'create', parcela_id: id,
+        action: 'create', parcela_id: null,
         pedido_id: pedidoId, despesa_indireta_id: despId,
         numero_parcela: numero, valor, data_vencimento: dataVenc,
         campos: [], rowData: row,
-        warning: `Parcela_id "${id}" não existe no banco — será criada.`,
+        warning: `⚠ parcela_id "${id.slice(0, 8)}…" da planilha não existe no banco. Provável que a planilha foi baixada de OUTRO projeto. Se confirmar, criará uma parcela nova.`,
       })
       continue
     }
@@ -611,7 +633,7 @@ export async function applyComercialImport(
       cond_pagamento: toStr(findCol(pc.rowData, ['cond_pagamento'])) || null,
       data_entrega_prevista: toDateISO(findCol(pc.rowData, ['data_entrega_prevista'])),
       data_entrega_real: toDateISO(findCol(pc.rowData, ['data_entrega_real'])),
-      status: sanitizeStatus(findCol(pc.rowData, ['status'])),
+      status: sanitizePedidoStatus(findCol(pc.rowData, ['status'])),
       observacoes: toStr(findCol(pc.rowData, ['observacoes'])) || null,
     }
     if (pc.action === 'create') {

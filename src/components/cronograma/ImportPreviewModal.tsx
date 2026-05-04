@@ -19,11 +19,14 @@ export default function ImportPreviewModal({ preview, companyId, onClose, onDone
   const [result, setResult] = useState<ImportResult | null>(null)
   const [logFilter, setLogFilter] = useState<LogFilterLevel>('all')
   const [logFaseFilter, setLogFaseFilter] = useState<string>('all')
+  // Sync de órfãos — opt-in. Default false para preservar comportamento atual.
+  const [deleteDistsOrfas, setDeleteDistsOrfas] = useState(false)
+  const [deleteMedicoesOrfas, setDeleteMedicoesOrfas] = useState(false)
 
   const handleApply = async () => {
     try {
       setApplying(true)
-      const r = await applyImport(preview, companyId)
+      const r = await applyImport(preview, companyId, { deleteDistsOrfas, deleteMedicoesOrfas })
       setResult(r)
 
       if (r.erros > 0) {
@@ -122,6 +125,45 @@ export default function ImportPreviewModal({ preview, companyId, onClose, onDone
           )}
         </div>
 
+        {/* Aviso e opt-in para sync de órfãs */}
+        {(preview.distsOrfasNaoPresentesNaPlanilha?.length ?? 0) > 0 && (
+          <div className="border-t bg-amber-500/5 px-6 py-3 text-xs">
+            <div className="mb-2 flex items-start gap-2 text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <div>
+                <strong>Sincronização (modo "fonte da verdade"):</strong> o banco tem{' '}
+                <strong>{preview.distsOrfasNaoPresentesNaPlanilha.length}</strong> distribuição(ões) que NÃO estão na sua planilha
+                {(preview.medicoesOrfasSeDeletarDists?.length ?? 0) > 0 && (
+                  <> + <strong>{preview.medicoesOrfasSeDeletarDists.length}</strong> medição(ões) que ficariam vazia(s)</>
+                )}.
+                <br />
+                Por padrão elas são <strong>preservadas</strong>. Marque abaixo se quer que a planilha seja a única fonte da verdade
+                (recomendado quando você acabou de duplicar um projeto e está reimportando o WBS para "limpar a casa").
+              </div>
+            </div>
+            <label className="ml-5 flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={deleteDistsOrfas}
+                onChange={e => { setDeleteDistsOrfas(e.target.checked); if (!e.target.checked) setDeleteMedicoesOrfas(false) }}
+                className="h-3.5 w-3.5"
+              />
+              <span>Apagar as {preview.distsOrfasNaoPresentesNaPlanilha.length} distribuição(ões) que sumiram da planilha</span>
+            </label>
+            {deleteDistsOrfas && (preview.medicoesOrfasSeDeletarDists?.length ?? 0) > 0 && (
+              <label className="ml-5 mt-1 flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={deleteMedicoesOrfas}
+                  onChange={e => setDeleteMedicoesOrfas(e.target.checked)}
+                  className="h-3.5 w-3.5"
+                />
+                <span>Também apagar as {preview.medicoesOrfasSeDeletarDists.length} medição(ões) que ficariam órfã(s)</span>
+              </label>
+            )}
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex items-center justify-between border-t px-6 py-3">
           <div className="flex items-center gap-2 text-xs text-amber-600">
@@ -130,10 +172,10 @@ export default function ImportPreviewModal({ preview, companyId, onClose, onDone
           </div>
           <div className="flex items-center gap-2">
             <button onClick={onClose} className="rounded-lg border px-4 py-2 text-xs font-medium hover:bg-muted">Cancelar</button>
-            {!nothingToDo && (
+            {(!nothingToDo || deleteDistsOrfas) && (
               <button onClick={handleApply} disabled={applying} className="rounded-lg bg-primary px-4 py-2 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5">
                 {applying ? <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" /> : <Upload className="h-3.5 w-3.5" />}
-                {applying ? 'Aplicando...' : `Aplicar ${preview.totalAlteracoes + preview.totalNovos} Alterações`}
+                {applying ? 'Aplicando...' : `Aplicar ${preview.totalAlteracoes + preview.totalNovos} Alteraç${(preview.totalAlteracoes + preview.totalNovos) === 1 ? 'ão' : 'ões'}${deleteDistsOrfas ? ` + apagar ${preview.distsOrfasNaoPresentesNaPlanilha.length} órfã(s)` : ''}`}
               </button>
             )}
           </div>

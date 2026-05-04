@@ -27,10 +27,32 @@ interface DistChange {
   rowData: Record<string, unknown>
 }
 
+/** Distribuições do banco que NÃO estão na planilha (órfãs após reimport). */
+export interface DistOrfan {
+  id: string
+  etapaCod: string
+  etapaNome: string
+  medicao: number
+  casas: number
+  receita: number
+}
+
+/** Medições do banco que ficariam sem nenhuma distribuição se as órfãs forem apagadas. */
+export interface MedicaoOrfan {
+  id: string
+  numero: number
+  valor_planejado: number
+  used_in_outras_etapas: number
+}
+
 export interface ImportPreview {
   etapas: EtapaChange[]
   itens: ItemChange[]
   distribuicoes: DistChange[]
+  /** Dists do banco que não vieram na planilha. Apagar é OPT-IN no apply. */
+  distsOrfasNaoPresentesNaPlanilha: DistOrfan[]
+  /** Medições que sobrariam órfãs se as dists órfãs forem apagadas. */
+  medicoesOrfasSeDeletarDists: MedicaoOrfan[]
   totalAlteracoes: number
   totalNovos: number
   totalIgnorados: number
@@ -347,7 +369,61 @@ export async function buildImportPreview(
   const totalNovos = etapasChanges.filter(c => c.tipo === 'criar').length + itensChanges.filter(c => c.tipo === 'criar').length + distChanges.filter(c => c.tipo === 'criar').length
   const totalIgnorados = etapasChanges.filter(c => c.tipo === 'ignorar').length + itensChanges.filter(c => c.tipo === 'ignorar').length + distChanges.filter(c => c.tipo === 'ignorar').length
 
-  return { etapas: etapasChanges, itens: itensChanges, distribuicoes: distChanges, totalAlteracoes, totalNovos, totalIgnorados }
+  // ─── Detectar dists do banco ÓRFÃS (não estão na planilha) ───
+  // Chave da planilha: (etapa_codigo, medicao_numero)
+  const planilhaKeys = new Set<string>()
+  for (const row of distRows) {
+    const ec = String(row['Etapa Cód'] ?? '').trim()
+    const mn = Number(row['Medição']) || 0
+    if (ec && mn > 0) planilhaKeys.add(`${ec}::${mn}`)
+  }
+  const distsOrfasNaoPresentesNaPlanilha: DistOrfan[] = []
+  for (const d of (currentDists ?? [])) {
+    const etapa = (currentEtapas ?? []).find(e => e.id === d.etapa_id)
+    if (!etapa) continue
+    const key = `${etapa.codigo}::${d.medicao_numero}`
+    if (!planilhaKeys.has(key)) {
+      distsOrfasNaoPresentesNaPlanilha.push({
+        id: d.id,
+        etapaCod: etapa.codigo,
+        etapaNome: etapa.nome,
+        medicao: d.medicao_numero,
+        casas: Number(d.casas_planejadas || 0),
+        receita: Number(d.valor_liberado_faturamento || 0),
+      })
+    }
+  }
+
+  // ─── Detectar medições que ficariam órfãs se apagarmos as dists órfãs ───
+  const medicoesOrfasSeDeletarDists: MedicaoOrfan[] = []
+  if (distsOrfasNaoPresentesNaPlanilha.length > 0) {
+    const orfasIds = new Set(distsOrfasNaoPresentesNaPlanilha.map(o => o.id))
+    const medsAtuais = new Map<number, { id: string; valor: number }>()
+    const { data: rawMeds } = await supabase.from('medicoes').select('id, numero, valor_planejado').eq('company_id', companyId)
+    for (const m of (rawMeds ?? [])) medsAtuais.set(m.numero, { id: m.id, valor: Number(m.valor_planejado || 0) })
+
+    for (const [num, info] of medsAtuais.entries()) {
+      // Distribuições que sobreviverão (não-órfãs) com essa medicao_numero?
+      const sobreviventes = (currentDists ?? []).filter(d => d.medicao_numero === num && !orfasIds.has(d.id))
+      // Linhas da planilha com essa medicao?
+      const naPlanilha = distRows.some(r => Number(r['Medição']) === num)
+      if (sobreviventes.length === 0 && !naPlanilha) {
+        medicoesOrfasSeDeletarDists.push({
+          id: info.id,
+          numero: num,
+          valor_planejado: info.valor,
+          used_in_outras_etapas: 0,
+        })
+      }
+    }
+  }
+
+  return {
+    etapas: etapasChanges, itens: itensChanges, distribuicoes: distChanges,
+    distsOrfasNaoPresentesNaPlanilha,
+    medicoesOrfasSeDeletarDists,
+    totalAlteracoes, totalNovos, totalIgnorados,
+  }
 }
 
 // ─── Helper: format Supabase error for humans ─────────────
@@ -374,8 +450,16 @@ export function sanitizeStatus(val: any): string {
   return 'futuro'
 }
 
+/** Opções do apply — controla deleção de órfãos. */
+export interface ApplyOptions {
+  /** Se true, apaga as dists do banco que não estavam na planilha. */
+  deleteDistsOrfas?: boolean
+  /** Se true (e dists órfãs forem apagadas), apaga medições que ficariam vazias. */
+  deleteMedicoesOrfas?: boolean
+}
+
 // ─── Apply Import (with structured logging) ───────────────
-export async function applyImport(preview: ImportPreview, companyId: string): Promise<ImportResult> {
+export async function applyImport(preview: ImportPreview, companyId: string, options: ApplyOptions = {}): Promise<ImportResult> {
   const logs: ImportLogEntry[] = []
   let etapasAtualizadas = 0, etapasCriadas = 0
   let itensAtualizados = 0, itensCriados = 0
@@ -798,6 +882,39 @@ export async function applyImport(preview: ImportPreview, companyId: string): Pr
       distsCriadas++
     }
   }
+
+  // ═══════════════════════════════════════════════════════
+  // PHASE 4: DELETE ÓRFÃS (opt-in)
+  // ═══════════════════════════════════════════════════════
+  let distsApagadas = 0, medicoesApagadas = 0
+  if (options.deleteDistsOrfas && preview.distsOrfasNaoPresentesNaPlanilha.length > 0) {
+    const orfasIds = preview.distsOrfasNaoPresentesNaPlanilha.map(o => o.id)
+    const { error: delErr, count } = await supabase
+      .from('cronograma_distribuicao')
+      .delete({ count: 'exact' })
+      .in('id', orfasIds)
+    if (delErr) {
+      addLog({ nivel: 'error', fase: 'distribuicao', acao: 'pular', referencia: 'sync', mensagem: `Falha ao apagar dists órfãs: ${formatDbError(delErr)}` })
+    } else {
+      distsApagadas = count ?? 0
+      addLog({ nivel: 'info', fase: 'distribuicao', acao: 'pular', referencia: 'sync', mensagem: `${distsApagadas} distribuição(ões) órfã(s) apagada(s) (não estavam na planilha)` })
+    }
+
+    if (options.deleteMedicoesOrfas && preview.medicoesOrfasSeDeletarDists.length > 0) {
+      const medsIds = preview.medicoesOrfasSeDeletarDists.map(m => m.id)
+      const { error: medErr, count: medCount } = await supabase
+        .from('medicoes')
+        .delete({ count: 'exact' })
+        .in('id', medsIds)
+      if (medErr) {
+        addLog({ nivel: 'warn', fase: 'distribuicao', acao: 'pular', referencia: 'sync', mensagem: `Falha ao apagar medições órfãs: ${formatDbError(medErr)}` })
+      } else {
+        medicoesApagadas = medCount ?? 0
+        addLog({ nivel: 'info', fase: 'distribuicao', acao: 'pular', referencia: 'sync', mensagem: `${medicoesApagadas} medição(ões) órfã(s) apagada(s)` })
+      }
+    }
+  }
+  void distsApagadas; void medicoesApagadas
 
   // ═══════════════════════════════════════════════════════
   // AUDIT LOG — persist to DB
