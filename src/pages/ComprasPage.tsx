@@ -442,6 +442,9 @@ function PedidosTab({ search }: { search: string }) {
     item_compra_id: string
     casas_lote: string
     valor_unitario_real: string
+    /** Override aplicado quando edita pedido existente: respeita valor_total_real salvo
+     *  até o usuário mexer em casas_lote ou valor_unitario_real. */
+    valor_total_real_override?: number | null
   }
   const [loteItems, setLoteItems] = useState<LoteItem[]>([])
 
@@ -493,7 +496,12 @@ function PedidosTab({ search }: { search: string }) {
   }, [itensForEtapa, loteItems])
 
   const updateLoteItem = (itemCompraId: string, field: keyof LoteItem, value: string) => {
-    setLoteItems(prev => prev.map(i => i.item_compra_id === itemCompraId ? { ...i, [field]: value } : i))
+    setLoteItems(prev => prev.map(i => {
+      if (i.item_compra_id !== itemCompraId) return i
+      // Quando user altera casas_lote ou valor_unitario, limpa override → volta a calcular
+      const clearOverride = (field === 'casas_lote' || field === 'valor_unitario_real')
+      return { ...i, [field]: value, ...(clearOverride ? { valor_total_real_override: null } : {}) }
+    }))
   }
 
   const removeLoteItem = (itemCompraId: string) => {
@@ -508,7 +516,14 @@ function PedidosTab({ search }: { search: string }) {
       const qtdPorCasa = selectedItem?.qtd_por_casa ?? 0
       const precoUnit = parseBRL(li.valor_unitario_real)
       const qtdLoteCalc = Math.round(casasLote * qtdPorCasa * 100) / 100
-      const valorTotalCalc = Math.round(qtdLoteCalc * precoUnit * 100) / 100
+      // Se houver override salvo (edição de pedido com valor_total_real divergente do
+      // calculado), respeita o override até o usuário tocar em casas_lote ou valor_unit.
+      // Isso evita que pedidos com valor_total_real "manualmente ajustado" tenham seu
+      // total recalculado e exibido errado na UI.
+      const calcDoLote = Math.round(qtdLoteCalc * precoUnit * 100) / 100
+      const valorTotalCalc = (li.valor_total_real_override != null && li.valor_total_real_override > 0)
+        ? li.valor_total_real_override
+        : calcDoLote
 
       let used = 0
       if (selectedItem) {
@@ -625,14 +640,21 @@ function PedidosTab({ search }: { search: string }) {
       status: p.status,
       observacoes: p.observacoes ?? '',
     })
+    // Detecta se valor_total_real salvo difere do que seria calculado por
+    // casas × qtd_por_casa × valor_unit. Se sim, marca como override para
+    // a UI respeitar o valor salvo (verdade contábil).
+    const item = itens.find(i => i.id === p.item_compra_id)
+    const calcAuto = (p.casas_lote ?? 0) * (item?.qtd_por_casa ?? 0) * (p.valor_unitario_real ?? 0)
+    const valorSalvo = Number(p.valor_total_real ?? 0)
+    const temOverride = valorSalvo > 0 && Math.abs(calcAuto - valorSalvo) > 0.5
     setLoteItems([{
       id: crypto.randomUUID(),
       item_compra_id: p.item_compra_id,
       casas_lote: p.casas_lote?.toString() ?? '',
-      valor_unitario_real: p.valor_unitario_real ? toBRLInput(p.valor_unitario_real) : ''
+      valor_unitario_real: p.valor_unitario_real ? toBRLInput(p.valor_unitario_real) : '',
+      valor_total_real_override: temOverride ? valorSalvo : null,
     }])
     // Set etapa filter to item's etapa
-    const item = itens.find(i => i.id === p.item_compra_id)
     if (item) setEtapaFilter(item.etapa_id)
 
     // Fetch existing parcelas for this pedido
