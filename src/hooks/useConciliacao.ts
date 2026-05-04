@@ -488,18 +488,24 @@ export function useConfirmConciliacao() {
         parcela_id: conc.conciliacao_parcelas?.[0]?.parcela_id ?? null,
       }).eq('id', conc.movimentacao_id)
 
+      // IMPORTANTE: NÃO escrever valor_pago nem status aqui.
+      // A trigger SQL trg_sync_parcela_por_status_conciliacao (disparada pelo
+      // UPDATE conciliacoes acima) já recalcula valor_pago = SUM(valor_aplicado)
+      // e o status correto. Antes este loop somava valor_aplicado em cima do
+      // valor_pago já recalculado pela trigger, gerando duplicação contábil
+      // ("delta em dobro" — bug visto em ~12 parcelas em produção).
+      // Aqui só persistimos campos que a trigger NÃO toca: forma_pagamento,
+      // conta_bancaria_id e (se ainda nulo) data_pagamento_real.
       for (const link of (conc.conciliacao_parcelas ?? [])) {
-        const { data: parcela } = await supabase.from('parcelas').select('valor, valor_pago, data_pagamento_real, forma_pagamento, conta_bancaria_id').eq('id', link.parcela_id).single()
+        const { data: parcela } = await supabase
+          .from('parcelas')
+          .select('data_pagamento_real, forma_pagamento, conta_bancaria_id')
+          .eq('id', link.parcela_id)
+          .single()
         if (!parcela) continue
 
-        const novoPago = (Number(parcela.valor_pago) || 0) + link.valor_aplicado
-        const totalValor = Number(parcela.valor)
-        const novoStatus = novoPago >= totalValor - 0.005 ? 'paga' : 'parcialmente_paga'
-
         await supabase.from('parcelas').update({
-          status: novoStatus,
-          valor_pago: novoPago,
-          data_pagamento_real: novoStatus === 'paga' ? dataPgto : (parcela.data_pagamento_real ?? dataPgto),
+          data_pagamento_real: parcela.data_pagamento_real ?? dataPgto,
           forma_pagamento: parcela.forma_pagamento ?? formaInferida,
           conta_bancaria_id: parcela.conta_bancaria_id ?? contaId,
         }).eq('id', link.parcela_id)
@@ -652,11 +658,17 @@ async function aplicarDeltaOrigem(
   if (Math.abs(delta) < 0.005) return
 
   if (origem === 'parcela') {
-    const { data: p } = await supabase.from('parcelas').select('valor_pago').eq('id', origemId).single()
-    if (!p) return
-    const novoPago = Math.max(0, (Number(p.valor_pago) || 0) + delta)
-    const { status, data_pagamento_real } = await computeParcelaStatus(origemId, novoPago, dataPgto)
-    await supabase.from('parcelas').update({ valor_pago: novoPago, status, data_pagamento_real }).eq('id', origemId)
+    // NÃO atualizar valor_pago / status aqui: a trigger SQL trg_sync_parcela_valor_pago
+    // (em conciliacao_parcelas) recalcula tudo via SUM(valor_aplicado) ao detectar
+    // INSERT/UPDATE/DELETE no link. Escrever incremental aqui geraria duplicação
+    // contábil ("delta em dobro"). Apenas atualizamos data_pagamento_real quando
+    // ainda não há (a trigger preserva o valor existente, mas não cria do zero).
+    if (delta > 0) {
+      const { data: p } = await supabase.from('parcelas').select('data_pagamento_real').eq('id', origemId).single()
+      if (p && !p.data_pagamento_real) {
+        await supabase.from('parcelas').update({ data_pagamento_real: dataPgto }).eq('id', origemId)
+      }
+    }
   }
   else if (origem === 'mutuo_parcela') {
     const { data: mp } = await supabase.from('mutuo_parcelas').select('valor, valor_pago, data_vencimento').eq('id', origemId).single()
