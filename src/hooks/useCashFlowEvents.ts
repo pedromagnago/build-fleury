@@ -368,6 +368,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // Adiantamento Feito/Recebido: parcelas = devolução ao projeto (ENTRADA)
     // ═══════════════════════════════════════════════════════════
     mutuos.forEach(m => {
+      if (mutuosLixoIds.has(m.id)) return // mutuo lixo (STUB_DEDUPE/cancelado): suas parcelas tambem nao contam
       const parcelaEhEntrada = isAdiantamentoFeito(m)
       ;(m.parcelas || []).forEach((p: any) => {
         if (!p.data_vencimento) return
