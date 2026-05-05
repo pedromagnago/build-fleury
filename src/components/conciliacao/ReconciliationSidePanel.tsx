@@ -385,10 +385,17 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     }
 
     if (q) {
+      // Multi-token AND: cada palavra/data tem que casar. Inclui data BR/ISO,
+      // pedido#, parcela#, etapa, item — pra permitir buscas tipo "dione 13/04".
+      const tokens = q.split(/\s+/).filter(Boolean)
       arr = arr.filter(c => {
         if (selecionadosSet.has(c.id)) return true
-        const hay = norm(`${c.descricao} ${c.fornecedor ?? ''} ${c.valor} ${c.saldo}`)
-        return hay.includes(q)
+        const dataBr = fmtDateBr(c.data)
+        const ddmm = dataBr.length >= 5 ? dataBr.slice(0, 5) : ''
+        const pedidoTag = c.pedidoNumero != null ? `#${c.pedidoNumero}` : ''
+        const parcelaTag = c.parcelaNumero != null ? `P${c.parcelaNumero}` : ''
+        const hay = norm(`${c.descricao} ${c.fornecedor ?? ''} ${c.valor} ${c.saldo} ${dataBr} ${ddmm} ${c.data} ${pedidoTag} ${parcelaTag} ${c.etapaNome ?? ''} ${c.itemDescricao ?? ''}`)
+        return tokens.every(t => hay.includes(t))
       })
     } else if (filtroTipo === 'todos') {
       // Default (sem busca, sem filtro): candidatos com saldo >= 30% do valor.
@@ -401,17 +408,21 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       })
     }
 
-    // Ordenar: selecionados primeiro, depois match exato, depois data próxima
-    const dataMov = new Date(row.data).getTime()
+    // Ordenar: selecionados primeiro, depois mov_pendente (baixas pré-lançadas
+    // pertinentes), depois por data ascendente (cronológica) — permite achar
+    // "a parcela do dia 13/04" rolando a lista.
     return arr.map(c => {
-      const diffValor = Math.abs(c.saldo - absValor)
-      const diffDias = Math.abs((new Date(c.data).getTime() - dataMov) / 86400000)
-      const scoreExato = Math.abs(c.valor - absValor) <= absValor * 0.02 ? 0 : 1000
-      const scoreSelecionado = selecionadosSet.has(c.id) ? -10000 : 0
-      return { c, score: scoreSelecionado + scoreExato + diffValor + diffDias * 5 }
+      const dt = new Date(c.data).getTime() || 0
+      const grupo = selecionadosSet.has(c.id) ? 0
+        : c.tipo === 'mov_pendente' ? 1
+        : 2
+      return { c, grupo, dt }
     })
-    .sort((a, b) => a.score - b.score)
-    .slice(0, q ? 200 : 80)  // busca: 200; sem busca: 80 (era 40 — não cabia parcelas de previsões maiores)
+    .sort((a, b) => {
+      if (a.grupo !== b.grupo) return a.grupo - b.grupo
+      return a.dt - b.dt
+    })
+    .slice(0, q ? 200 : 80)
     .map(x => x.c)
   }, [poolCandidatos, search, row, selecao, filtroTipo])
 
