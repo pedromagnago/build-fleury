@@ -591,7 +591,7 @@ async function computeParcelaStatus(
 ): Promise<{ status: string; data_pagamento_real: string | null }> {
   const { data: p } = await supabase
     .from('parcelas')
-    .select('valor, data_vencimento, data_pagamento_real')
+    .select('valor, data_vencimento, data_prevista_pagamento, data_pagamento_real')
     .eq('id', parcelaId)
     .single()
   if (!p) return { status: 'a_vencer', data_pagamento_real: null }
@@ -601,7 +601,8 @@ async function computeParcelaStatus(
   const dataEfetiva = dataPgto || p.data_pagamento_real || today
 
   if (novoValorPago <= 0.005) {
-    const vencida = p.data_vencimento < today
+    const dataReferencia = (p as any).data_prevista_pagamento || p.data_vencimento
+    const vencida = dataReferencia < today
     return { status: vencida ? 'vencida' : 'a_vencer', data_pagamento_real: null }
   }
   if (novoValorPago < total - 0.005) {
@@ -911,13 +912,18 @@ export interface CreateConciliacaoPayload {
   vinculos: VinculoPayload[]
   matchType?: string
   dataPgto: string
+  /** IDs de movimenta\u00e7\u00f5es fantasma (Pgto lote / Quitar parcela) que ser\u00e3o
+   * absorvidas por este movimento real. Suas concilia\u00e7\u00f5es e CPs s\u00e3o exclu\u00eddas
+   * ap\u00f3s a cria\u00e7\u00e3o do v\u00ednculo principal \u2014 o trigger SQL recalcula valor_pago
+   * automaticamente (CPs com conciliacoes.status='aprovado' n\u00e3o entram na soma). */
+  phantomMovIds?: string[]
 }
 export function useCreateConciliacao() {
   const qc = useQueryClient()
   const { currentCompany } = useProject()
 
   return useMutation({
-    mutationFn: async ({ movimentacaoId, vinculos, matchType = 'manual_ui', dataPgto }: CreateConciliacaoPayload) => {
+    mutationFn: async ({ movimentacaoId, vinculos, matchType = 'manual_ui', dataPgto, phantomMovIds }: CreateConciliacaoPayload) => {
       if (!currentCompany) throw new Error('No company')
       if (vinculos.length === 0) throw new Error('Sem v\u00ednculos')
 
@@ -1005,6 +1011,22 @@ export function useCreateConciliacao() {
         parcela_id: primeiro.origem === 'parcela' ? primeiro.origem_id : null,
         ...(categoriaOrigem ? { categoria: categoriaOrigem } : {}),
       }).eq('id', movimentacaoId)
+
+      // Absorve movimenta\u00e7\u00f5es fantasma (Pgto lote / Quitar) \u2014 apaga conciliacoes
+      // 'aprovado', seus CPs e a mov fantasma. parcelas.valor_pago j\u00e1 reflete
+      // o v\u00ednculo confirmado; os CPs deletados eram 'aprovado' (n\u00e3o somados).
+      if (phantomMovIds && phantomMovIds.length > 0) {
+        const { data: phantomConcs } = await supabase
+          .from('conciliacoes')
+          .select('id')
+          .in('movimentacao_id', phantomMovIds)
+        const phantomConcIds = (phantomConcs ?? []).map((c: any) => c.id)
+        if (phantomConcIds.length > 0) {
+          await supabase.from('conciliacao_parcelas').delete().in('conciliacao_id', phantomConcIds)
+          await supabase.from('conciliacoes').delete().in('id', phantomConcIds)
+        }
+        await supabase.from('movimentacoes_bancarias').delete().in('id', phantomMovIds)
+      }
 
       return conc.id
     },

@@ -12,7 +12,7 @@ import { useMedicoes, useDistribuicao, useMovimentacoes } from '@/hooks/useOpera
 import { useItensCompra, usePedidos } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useMutuos } from '@/hooks/useMutuos'
-import { localDate, parsearCondicao } from '@/lib/parcelas'
+import { localDate, parsearCondicao, dataEfetivaParcela } from '@/lib/parcelas'
 import { supabase } from '@/lib/supabase'
 import type { FinancialViewMode } from '@/components/cronograma/FinancialViewFilter'
 
@@ -299,9 +299,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
       if (calcVal <= 0) return
 
-      // Paga: usa data_pagamento_real; se null (legado), cai em data_vencimento. Nunca empurra paga para hoje.
-      // Não paga: empurra vencida para hoje só na projeção (não em realizado/planejado).
-      let date = isPaga ? (p.data_pagamento_real || p.data_vencimento) : p.data_vencimento
+      // Data efetiva: pagamento_real (se paga) > prevista_pagamento > vencimento.
+      // Nao paga e ja vencida: empurra para amanha so na projecao (nao em realizado/planejado).
+      let date = (dataEfetivaParcela(p) || p.data_vencimento) as string
       if (!isPaga && date < today && !apenasRealizado) date = amanha
 
       const ped = pedidos.find(pd => pd.id === p.pedido_id)
@@ -380,7 +380,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
         const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
         if (calcVal <= 0) return
 
-        let date = isPaga ? (p.data_pagamento_real || p.data_vencimento) : p.data_vencimento
+        let date = (dataEfetivaParcela(p) || p.data_vencimento) as string
         if (!isPaga && date < today && !apenasRealizado) date = amanha
 
         all.push({

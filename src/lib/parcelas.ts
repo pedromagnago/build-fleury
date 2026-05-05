@@ -185,6 +185,23 @@ export function localDate(iso: string): Date {
   return new Date(y!, m! - 1, d!)
 }
 
+/**
+ * Data efetiva de uma parcela — usada em fluxo de caixa, dashboard e relatórios.
+ *
+ * Prioridade:
+ *   1. data_pagamento_real (se já foi pago, vale a data real do pagamento)
+ *   2. data_prevista_pagamento (previsão editável, default = data_vencimento)
+ *   3. data_vencimento (data contratual, fallback)
+ */
+export function dataEfetivaParcela(p: {
+  data_vencimento?: string | null
+  data_prevista_pagamento?: string | null
+  data_pagamento_real?: string | null
+}): string | null {
+  if (p.data_pagamento_real) return p.data_pagamento_real
+  return p.data_prevista_pagamento || p.data_vencimento || null
+}
+
 // ---------------------------------------------------------------------------
 // Regenerar parcelas (para cascata do cronograma)
 // ---------------------------------------------------------------------------

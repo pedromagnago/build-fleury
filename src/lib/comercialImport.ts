@@ -347,6 +347,7 @@ export async function buildComercialPreview(
     const numero = Number(findCol(row, ['numero_parcela'])) || 0
     const valor = toNum(findCol(row, ['valor']))
     const dataVenc = toDateISO(findCol(row, ['data_vencimento'])) ?? ''
+    const dataPrevista = toDateISO(findCol(row, ['data_prevista_pagamento'])) ?? null
     const valorPago = toNum(findCol(row, ['valor_pago']))
     const dataPgto = toDateISO(findCol(row, ['data_pagamento_real']))
     const status = toStr(findCol(row, ['status'])) || 'futura'
@@ -387,6 +388,7 @@ export async function buildComercialPreview(
       diffField('numero_parcela', existing.numero_parcela, numero, true),
       diffField('valor', existing.valor, valor, true),
       diffField('data_vencimento', existing.data_vencimento, dataVenc),
+      diffField('data_prevista_pagamento', (existing as any).data_prevista_pagamento, dataPrevista),
       diffField('valor_pago', existing.valor_pago, valorPago, true),
       diffField('data_pagamento_real', existing.data_pagamento_real, dataPgto),
       diffField('status', existing.status, status),
@@ -706,6 +708,7 @@ export async function applyComercialImport(
       numero_parcela: pc.numero_parcela,
       valor: pc.valor,
       data_vencimento: pc.data_vencimento,
+      data_prevista_pagamento: toDateISO(findCol(pc.rowData, ['data_prevista_pagamento'])) ?? pc.data_vencimento,
       valor_pago: toNum(findCol(pc.rowData, ['valor_pago'])),
       data_pagamento_real: toDateISO(findCol(pc.rowData, ['data_pagamento_real'])),
       status: toStr(findCol(pc.rowData, ['status'])) || 'futura',

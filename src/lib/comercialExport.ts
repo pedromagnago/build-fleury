@@ -110,6 +110,7 @@ export function exportComercialToExcel(input: ExportInput) {
       'numero_parcela': parc.numero_parcela,
       'valor': parc.valor,
       'data_vencimento': parc.data_vencimento ?? '',
+      'data_prevista_pagamento': (parc as any).data_prevista_pagamento ?? parc.data_vencimento ?? '',
       'valor_pago': parc.valor_pago ?? 0,
       'data_pagamento_real': parc.data_pagamento_real ?? '',
       'status': parc.status ?? '',

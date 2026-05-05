@@ -13,6 +13,8 @@ export interface Parcela {
   numero_parcela: number
   valor: number
   data_vencimento: string
+  /** Previsao editavel de pagamento. Default = data_vencimento. Usada em fluxo, dashboard e relatorios quando data_pagamento_real IS NULL. */
+  data_prevista_pagamento: string | null
   data_pagamento_real: string | null
   valor_pago: number
   forma_pagamento: string | null
@@ -453,7 +455,7 @@ export function useDashboardKPIs() {
 
       const [itensRes, parcelasRes, etapasRes, pedidosRes] = await Promise.all([
         supabase.from('itens_compra').select('id, valor_total_orcado, valor_consumido').eq('company_id', companyId).is('deleted_at', null),
-        supabase.from('parcelas').select('valor, data_vencimento, status, valor_pago, pedidos!inner(itens_compra(deleted_at))').eq('company_id', companyId).is('deleted_at', null),
+        supabase.from('parcelas').select('valor, data_vencimento, data_prevista_pagamento, data_pagamento_real, status, valor_pago, pedidos!inner(itens_compra(deleted_at))').eq('company_id', companyId).is('deleted_at', null),
         supabase.from('etapas').select('status').eq('company_id', companyId),
         supabase.from('pedidos').select('item_compra_id, valor_total_real').eq('company_id', companyId),
       ])
@@ -461,8 +463,8 @@ export function useDashboardKPIs() {
       const itens = (itensRes.data ?? []) as Array<{ id: string; valor_total_orcado: number; valor_consumido: number }>
       const rawParcelas = (parcelasRes.data ?? []) as Array<any>
       const parcelas = rawParcelas.filter(p => !p.pedidos?.itens_compra?.deleted_at).map(p => ({
-        valor: p.valor, data_vencimento: p.data_vencimento, status: p.status, valor_pago: p.valor_pago
-      })) as Array<{ valor: number; data_vencimento: string; status: string; valor_pago: number }>
+        valor: p.valor, data_vencimento: p.data_vencimento, data_prevista_pagamento: p.data_prevista_pagamento, data_pagamento_real: p.data_pagamento_real, status: p.status, valor_pago: p.valor_pago
+      })) as Array<{ valor: number; data_vencimento: string; data_prevista_pagamento: string | null; data_pagamento_real: string | null; status: string; valor_pago: number }>
       const etapas = (etapasRes.data ?? []) as Array<{ status: string }>
       const rawPedidos = (pedidosRes.data ?? []) as Array<any>
       
@@ -486,8 +488,12 @@ export function useDashboardKPIs() {
       const coberturaPercent = totalOrcado > 0 ? (comPedido / totalOrcado) * 100 : 0
 
       const today = new Date().toISOString().split('T')[0]
-      const vencidas = parcelas.filter((p) => p.status !== 'paga' && p.data_vencimento < (today ?? ''))
-      const aVencer = parcelas.filter((p) => p.status !== 'paga' && p.data_vencimento >= (today ?? '') && p.data_vencimento <= new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]!)
+      const limit30 = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]!
+      // Data efetiva: se ja paga, usa data_pagamento_real; senao, prevista_pagamento -> vencimento
+      const efetiva = (p: { data_vencimento?: string | null; data_prevista_pagamento?: string | null; data_pagamento_real?: string | null }) =>
+        p.data_pagamento_real || p.data_prevista_pagamento || p.data_vencimento || ''
+      const vencidas = parcelas.filter((p) => p.status !== 'paga' && efetiva(p) < (today ?? ''))
+      const aVencer = parcelas.filter((p) => p.status !== 'paga' && efetiva(p) >= (today ?? '') && efetiva(p) <= limit30)
 
       const faturamento = currentCompany?.faturamento_contrato ?? 0
       const custo = currentCompany?.custo_total_contrato ?? 0

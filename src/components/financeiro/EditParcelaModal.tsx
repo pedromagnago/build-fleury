@@ -47,6 +47,7 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
     valor: String(parcela.valor),
     valor_pago: String(parcela.valor_pago ?? 0),
     data_vencimento: parcela.data_vencimento,
+    data_prevista_pagamento: (parcela as any).data_prevista_pagamento ?? parcela.data_vencimento,
     data_pagamento_real: parcela.data_pagamento_real ?? '',
     forma_pagamento: parcela.forma_pagamento ?? '',
     conta_bancaria_id: parcela.conta_bancaria_id ?? '',
@@ -140,7 +141,8 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
     if (valorPagoNum >= valorNum && valorNum > 0) return 'paga'
     if (valorPagoNum > 0 && valorPagoNum < valorNum) return 'parcialmente_paga'
     const today = new Date().toISOString().split('T')[0]!
-    if (form.data_vencimento < today) return 'vencida'
+    const dataReferencia = form.data_prevista_pagamento || form.data_vencimento
+    if (dataReferencia < today) return 'vencida'
     return 'a_vencer'
   }
 
@@ -154,12 +156,13 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
         valor: valorNum,
         valor_pago: valorPagoNum,
         data_vencimento: form.data_vencimento,
+        data_prevista_pagamento: form.data_prevista_pagamento || form.data_vencimento,
         data_pagamento_real: form.data_pagamento_real || null,
         forma_pagamento: form.forma_pagamento || null,
         conta_bancaria_id: form.conta_bancaria_id || null,
         status: newStatus,
         observacoes: form.observacoes || null,
-      })
+      } as any)
       // Audit log
       await supabase.from('audit_logs').insert({
         company_id: parcela.company_id,
@@ -323,9 +326,9 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
             )}
 
             {/* Row 2: Datas */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className={LABEL}>Vencimento</label>
+                <label className={LABEL}>Vencimento (contratual)</label>
                 <input
                   type="date"
                   value={form.data_vencimento}
@@ -335,7 +338,16 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
                 />
               </div>
               <div>
-                <label className={LABEL}>Data Pagamento Real</label>
+                <label className={LABEL} title="Quando você prevê pagar — usada em fluxo de caixa, dashboard e relatórios">Previsão de pagamento</label>
+                <input
+                  type="date"
+                  value={form.data_prevista_pagamento}
+                  onChange={e => setForm(p => ({ ...p, data_prevista_pagamento: e.target.value }))}
+                  className={INPUT}
+                />
+              </div>
+              <div>
+                <label className={LABEL}>Pagamento Real</label>
                 <input
                   type="date"
                   value={form.data_pagamento_real}
@@ -344,6 +356,11 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
                 />
               </div>
             </div>
+            {form.data_prevista_pagamento && form.data_prevista_pagamento !== form.data_vencimento && !form.data_pagamento_real && (
+              <p className="-mt-2 text-[11px] text-blue-600 dark:text-blue-400">
+                Previsão difere do vencimento contratual. Fluxo de caixa, dashboard e relatórios consideram a previsão.
+              </p>
+            )}
 
             {/* Row 3: Forma + Conta */}
             <div className="grid grid-cols-2 gap-3">
