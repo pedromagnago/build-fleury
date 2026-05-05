@@ -191,11 +191,18 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
         const pago = Number(p.valor_pago || 0)
         const saldo = valor - pago
         if (saldo < 0.01) continue
+        // Parcela de pedido: descricao = "P{n}" (fornecedor + #pedido vão no
+        // header de grupo). Despesa indireta/avulsa: usa descricao/categoria
+        // própria (não é agrupada por fornecedor).
+        const fornecedorNome = (p as any).fornecedor_nome ?? null
+        const descricaoParcela = p.pedido_id
+          ? `P${p.numero_parcela}`
+          : (p.descricao ?? `Parcela ${p.numero_parcela}`)
         result.push({
           id: p.id,
           tipo: 'parcela',
-          descricao: (p as any).pedido_item ?? p.descricao ?? 'Parcela',
-          fornecedor: (p as any).fornecedor_nome ?? null,
+          descricao: descricaoParcela,
+          fornecedor: fornecedorNome,
           valor, valor_pago: pago, saldo,
           data: p.data_vencimento,
           status: p.status,
@@ -425,6 +432,49 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     .slice(0, q ? 200 : 80)
     .map(x => x.c)
   }, [poolCandidatos, search, row, selecao, filtroTipo])
+
+  // Agrupa parcelas de pedido em fornecedor → pedido. Os outros (mov_pendente,
+  // medição, mútuo, despesa indireta, parcela avulsa) ficam num bloco flat no topo.
+  const candidatosAgrupados = useMemo(() => {
+    type Parc = typeof candidatosFiltrados[number]
+    type PedidoGrupo = { pedidoId: string; numero: number | null; cond: string | null; entrega: string | null; parcelas: Parc[]; saldoTotal: number }
+    type FornGrupo = { fornecedor: string; pedidos: PedidoGrupo[]; saldoTotal: number }
+
+    const flat: Parc[] = []
+    const fornMap = new Map<string, FornGrupo>()
+
+    for (const c of candidatosFiltrados) {
+      if (c.tipo !== 'parcela' || !c.pedidoId) {
+        flat.push(c)
+        continue
+      }
+      const fornName = c.fornecedor ?? '(sem fornecedor)'
+      let fg = fornMap.get(fornName)
+      if (!fg) { fg = { fornecedor: fornName, pedidos: [], saldoTotal: 0 }; fornMap.set(fornName, fg) }
+      let pg = fg.pedidos.find(p => p.pedidoId === c.pedidoId)
+      if (!pg) {
+        pg = { pedidoId: c.pedidoId, numero: c.pedidoNumero ?? null, cond: c.pedidoCond ?? null, entrega: c.pedidoEntrega ?? null, parcelas: [], saldoTotal: 0 }
+        fg.pedidos.push(pg)
+      }
+      pg.parcelas.push(c)
+      pg.saldoTotal += c.saldo
+      fg.saldoTotal += c.saldo
+    }
+
+    // Ordena parcelas dentro do pedido por numero (depois data); pedidos por menor data; fornecedores por nome
+    for (const fg of fornMap.values()) {
+      for (const pg of fg.pedidos) {
+        pg.parcelas.sort((a, b) => (a.parcelaNumero ?? 0) - (b.parcelaNumero ?? 0) || new Date(a.data).getTime() - new Date(b.data).getTime())
+      }
+      fg.pedidos.sort((a, b) => {
+        const da = Math.min(...a.parcelas.map(p => new Date(p.data).getTime()))
+        const db = Math.min(...b.parcelas.map(p => new Date(p.data).getTime()))
+        return da - db
+      })
+    }
+    const fornecedores = Array.from(fornMap.values()).sort((a, b) => a.fornecedor.localeCompare(b.fornecedor))
+    return { flat, fornecedores }
+  }, [candidatosFiltrados])
 
   // Itens já vinculados ao movimento (via conciliacao_parcelas polimórfico)
   const vinculosDoMov = useMemo(() => {
@@ -1014,117 +1064,128 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                   {search ? 'Nenhum candidato encontrado' : 'Digite para buscar ou crie um novo lançamento'}
                 </p>
               </div>
-            ) : (
-              <div className="max-h-64 overflow-auto space-y-1 rounded-md border">
-                {candidatosFiltrados.map(c => {
-                  const selObj = selecao.get(c.id)
-                  const sel = !!selObj
-                  const val = selObj?.valor ?? 0
-                  const obs = selObj?.observacao ?? ''
-                  const matchExato = Math.abs(c.valor - absValor) <= absValor * 0.02
-                  const isSugerido = sel && row.situacao === 'sugerido'
-                  return (
-                    <div key={c.id}
-                      className={`border-b last:border-0 transition-colors ${
-                        isSugerido ? 'bg-blue-500/10 ring-1 ring-blue-500/30' :
-                        sel ? 'bg-primary/5' : 'hover:bg-muted/50'
-                      }`}>
-                      <div className="flex items-center gap-2 p-2">
-                        <input type="checkbox" checked={sel} onChange={() => toggleCandidato(c)}
-                          className="h-3.5 w-3.5 rounded accent-primary shrink-0" />
-                        <div className="min-w-0 flex-1 cursor-pointer" onClick={() => toggleCandidato(c)}>
-                          <div className="flex items-center gap-1 flex-wrap">
-                            <p className="text-xs font-medium truncate">{c.descricao}</p>
-                            {isSugerido && <span className="text-[9px] bg-blue-500/20 text-blue-700 px-1.5 py-0.5 rounded font-bold">SUGERIDO</span>}
-                            {matchExato && <span className="text-[9px] text-emerald-600 font-bold">MATCH</span>}
-                            {c.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
-                            {c.tipo === 'mutuo_recebimento' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
+            ) : (() => {
+              const renderRow = (c: typeof candidatosFiltrados[number], indented: boolean) => {
+                const selObj = selecao.get(c.id)
+                const sel = !!selObj
+                const val = selObj?.valor ?? 0
+                const obs = selObj?.observacao ?? ''
+                const matchExato = Math.abs(c.valor - absValor) <= absValor * 0.02
+                const isSugerido = sel && row.situacao === 'sugerido'
+                return (
+                  <div key={c.id}
+                    className={`border-b last:border-0 transition-colors ${
+                      isSugerido ? 'bg-blue-500/10 ring-1 ring-blue-500/30' :
+                      sel ? 'bg-primary/5' : 'hover:bg-muted/50'
+                    }`}>
+                    <div className={`flex items-center gap-2 p-2 ${indented ? 'pl-6' : ''}`}>
+                      <input type="checkbox" checked={sel} onChange={() => toggleCandidato(c)}
+                        className="h-3.5 w-3.5 rounded accent-primary shrink-0" />
+                      <div className="min-w-0 flex-1 cursor-pointer" onClick={() => toggleCandidato(c)}>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <p className="text-xs font-medium truncate">{c.descricao}</p>
+                          {isSugerido && <span className="text-[9px] bg-blue-500/20 text-blue-700 px-1.5 py-0.5 rounded font-bold">SUGERIDO</span>}
+                          {matchExato && <span className="text-[9px] text-emerald-600 font-bold">MATCH</span>}
+                          {c.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
+                          {c.tipo === 'mutuo_recebimento' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
                           {c.tipo === 'mutuo_captacao' && <span className="text-[9px] bg-indigo-500/10 text-indigo-600 px-1 rounded">CAP</span>}
-                            {c.tipo === 'mov_pendente' && (
-                              <span className="text-[9px] bg-orange-500/15 text-orange-700 px-1 rounded font-bold" title={`Baixa pré-lançada (${(c.phantomCps?.length ?? 0)} parcela(s)). Selecionar absorve as parcelas e apaga o lançamento fantasma.`}>
-                                BAIXA · {c.phantomCps?.length ?? 0}p
-                              </span>
-                            )}
-                            {c.pedidoNumero != null && (
-                              <span className="text-[9px] bg-blue-500/10 text-blue-700 px-1 rounded font-mono">
-                                #{c.pedidoNumero}{c.parcelaNumero ? `·P${c.parcelaNumero}` : ''}
-                              </span>
-                            )}
-                            {isPedidoDistante(c) && (
-                              <span className="text-[9px] bg-amber-500/15 text-amber-700 px-1 rounded font-bold" title="Pedido distante (>60 dias da data do PIX). Verifique se é o vínculo correto.">⚠ DIST</span>
-                            )}
-                            {/* Chips destacados (sempre visiveis): Venc + Valor da parcela */}
-                            <span className="text-[9px] bg-slate-500/10 text-slate-700 px-1 rounded font-mono shrink-0" title={`Vencimento: ${fmtDateBr(c.data)}`}>
-                              📅 {fmtDateBr(c.data)}
+                          {c.tipo === 'mov_pendente' && (
+                            <span className="text-[9px] bg-orange-500/15 text-orange-700 px-1 rounded font-bold" title={`Baixa pré-lançada (${(c.phantomCps?.length ?? 0)} parcela(s)). Selecionar absorve as parcelas e apaga o lançamento fantasma.`}>
+                              BAIXA · {c.phantomCps?.length ?? 0}p
                             </span>
-                            <span className="text-[9px] bg-primary/10 text-primary px-1 rounded font-mono font-bold shrink-0" title={`Saldo da parcela: ${formatCurrency(c.saldo)} de ${formatCurrency(c.valor)}`}>
-                              {formatCurrency(c.saldo)}
-                            </span>
-                          </div>
-                          {/* Linha secundaria truncavel: forn + etapa + status de pagamento */}
-                          <p className="text-[10px] text-muted-foreground truncate">
-                            {c.fornecedor ? c.fornecedor : ''}
-                            {c.fornecedor && c.etapaNome ? ' · ' : ''}
-                            {c.etapaNome ? c.etapaNome : ''}
-                            {c.valor_pago > 0 && ` · pago ${formatCurrency(c.valor_pago)}/${formatCurrency(c.valor)}`}
-                          </p>
-                          {/* Meta linha unica: cond + entrega + consumo do item (chips) */}
-                          {(c.pedidoCond || c.itemValorOrcado != null) && (
-                            <div className="flex items-center gap-1 flex-wrap mt-0.5 text-[9px]">
-                              {c.pedidoCond && (
-                                <span className="bg-blue-500/10 text-blue-700 px-1 rounded font-mono" title="Condição de pagamento">
-                                  {c.pedidoCond}{c.pedidoEntrega ? ` ⟶ ${fmtDateBr(c.pedidoEntrega)}` : ''}
-                                </span>
-                              )}
-                              {c.itemValorOrcado != null && c.itemValorConsumido != null && (() => {
-                                const saldo = c.itemValorOrcado - c.itemValorConsumido
-                                const estoura = saldo < absValor
-                                return (
-                                  <span className={`px-1 rounded font-mono ${estoura ? 'bg-amber-500/15 text-amber-700' : 'bg-emerald-500/10 text-emerald-700'}`}
-                                    title={`Item orçado ${formatCurrency(c.itemValorOrcado)} · consumido ${formatCurrency(c.itemValorConsumido)}${estoura ? ' (saldo insuficiente p/ esta MOV)' : ''}`}>
-                                    saldo item {formatCurrency(saldo)}
-                                  </span>
-                                )
-                              })()}
-                            </div>
                           )}
+                          {isPedidoDistante(c) && (
+                            <span className="text-[9px] bg-amber-500/15 text-amber-700 px-1 rounded font-bold" title="Pedido distante (>60 dias da data do PIX). Verifique se é o vínculo correto.">⚠ DIST</span>
+                          )}
+                          <span className="text-[9px] bg-slate-500/10 text-slate-700 px-1 rounded font-mono shrink-0" title={`Vencimento: ${fmtDateBr(c.data)}`}>
+                            📅 {fmtDateBr(c.data)}
+                          </span>
+                          <span className="text-[9px] bg-primary/10 text-primary px-1 rounded font-mono font-bold shrink-0" title={`Saldo: ${formatCurrency(c.saldo)} de ${formatCurrency(c.valor)}`}>
+                            {formatCurrency(c.saldo)}
+                          </span>
                         </div>
-                        {/* Botão "Quitar pedido" para parcela com pedido_id */}
-                        {c.pedidoId && !sel && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); quitarPedido(c.pedidoId!) }}
-                            className="text-[9px] rounded border px-1.5 py-0.5 text-blue-700 hover:bg-blue-500/10 shrink-0"
-                            title={`Marca todas as parcelas em aberto do pedido #${c.pedidoNumero ?? '?'} (FIFO)`}>
-                            Quitar pedido
-                          </button>
+                        {/* Linha secundária só para itens fora do agrupamento (despesa, mutuo, medição, mov_pendente) */}
+                        {!indented && (c.fornecedor || c.valor_pago > 0) && (
+                          <p className="text-[10px] text-muted-foreground truncate">
+                            {c.fornecedor ?? ''}
+                            {c.valor_pago > 0 && `${c.fornecedor ? ' · ' : ''}pago ${formatCurrency(c.valor_pago)}/${formatCurrency(c.valor)}`}
+                          </p>
                         )}
-                        {sel && (
-                          <input type="number" step="0.01" value={val}
-                            onChange={(e) => updateValor(c.id, Number(e.target.value) || 0)}
-                            onClick={(e) => e.stopPropagation()}
-                            className="w-24 rounded border bg-background px-1.5 py-0.5 text-xs text-right font-mono" />
-                        )}
-                        {sel && !obsExpandidos.has(c.id) && !obs && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setObsExpandidos(s => { const n = new Set(s); n.add(c.id); return n }) }}
-                            className="text-[9px] rounded border px-1 py-0.5 text-muted-foreground hover:bg-muted shrink-0"
-                            title="Adicionar observacao"
-                          >+ obs</button>
+                        {indented && c.valor_pago > 0 && (
+                          <p className="text-[10px] text-muted-foreground truncate">
+                            pago {formatCurrency(c.valor_pago)}/{formatCurrency(c.valor)}
+                          </p>
                         )}
                       </div>
-                      {sel && (obsExpandidos.has(c.id) || !!obs) && (
-                        <div className="px-2 pb-2">
-                          <textarea value={obs} onChange={(e) => updateObservacao(c.id, e.target.value)}
-                            placeholder="Observacao (opcional): memoria do consumo, lote, motivo do split..."
-                            rows={2}
-                            className="w-full rounded border bg-background px-2 py-1.5 text-[11px] placeholder:text-muted-foreground/60" />
-                        </div>
+                      {sel && (
+                        <input type="number" step="0.01" value={val}
+                          onChange={(e) => updateValor(c.id, Number(e.target.value) || 0)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-24 rounded border bg-background px-1.5 py-0.5 text-xs text-right font-mono" />
+                      )}
+                      {sel && !obsExpandidos.has(c.id) && !obs && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setObsExpandidos(s => { const n = new Set(s); n.add(c.id); return n }) }}
+                          className="text-[9px] rounded border px-1 py-0.5 text-muted-foreground hover:bg-muted shrink-0"
+                          title="Adicionar observacao"
+                        >+ obs</button>
                       )}
                     </div>
-                  )
-                })}
-              </div>
-            )}
+                    {sel && (obsExpandidos.has(c.id) || !!obs) && (
+                      <div className={`pb-2 ${indented ? 'pl-6 pr-2' : 'px-2'}`}>
+                        <textarea value={obs} onChange={(e) => updateObservacao(c.id, e.target.value)}
+                          placeholder="Observacao (opcional)"
+                          rows={2}
+                          className="w-full rounded border bg-background px-2 py-1.5 text-[11px] placeholder:text-muted-foreground/60" />
+                      </div>
+                    )}
+                  </div>
+                )
+              }
+              return (
+                <div className="max-h-80 overflow-auto rounded-md border">
+                  {/* Bloco flat: selecionados, mov_pendente, medição, mútuo, despesa, parcelas avulsas */}
+                  {candidatosAgrupados.flat.map(c => renderRow(c, false))}
+
+                  {/* Por fornecedor → pedido → parcelas */}
+                  {candidatosAgrupados.fornecedores.map(fg => (
+                    <div key={`forn-${fg.fornecedor}`}>
+                      <div className="bg-slate-100 dark:bg-slate-800 px-2 py-1 flex items-center justify-between border-t border-b">
+                        <span className="text-[10px] font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200 truncate">{fg.fornecedor}</span>
+                        <span className="text-[10px] font-mono font-bold text-slate-700 dark:text-slate-200 shrink-0 ml-2" title="Saldo total em aberto deste fornecedor (parcelas filtradas)">
+                          {formatCurrency(fg.saldoTotal)}
+                        </span>
+                      </div>
+                      {fg.pedidos.map(pg => (
+                        <div key={`ped-${pg.pedidoId}`}>
+                          <div className="bg-blue-500/5 px-2 py-0.5 flex items-center justify-between border-b">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-[10px] bg-blue-500/15 text-blue-700 px-1.5 rounded font-mono font-bold shrink-0">
+                                #{pg.numero ?? '?'}
+                              </span>
+                              <span className="text-[10px] text-blue-700/80 truncate">
+                                {pg.cond ?? ''}{pg.entrega ? ` ⟶ ${fmtDateBr(pg.entrega)}` : ''}
+                              </span>
+                              <span className="text-[10px] text-muted-foreground shrink-0">· {pg.parcelas.length} parc.</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="text-[10px] font-mono font-bold text-blue-700">{formatCurrency(pg.saldoTotal)}</span>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); quitarPedido(pg.pedidoId) }}
+                                className="text-[9px] rounded border px-1.5 py-0.5 text-blue-700 hover:bg-blue-500/10"
+                                title={`Marcar todas as parcelas em aberto do pedido #${pg.numero ?? '?'} (FIFO)`}>
+                                Quitar
+                              </button>
+                            </div>
+                          </div>
+                          {pg.parcelas.map(c => renderRow(c, true))}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
 
             {/* Resumo da seleção + botão vincular */}
             {selecao.size > 0 && (
