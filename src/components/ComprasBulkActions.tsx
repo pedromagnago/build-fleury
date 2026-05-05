@@ -160,8 +160,17 @@ function GerarPedidosModal({ itens, onClose, onDone }: { itens: ItemCompra[]; on
     setSaving(true)
     try {
       let totalParcelas = 0
+      // Itens do mesmo fornecedor compartilham pedido_grupo_id (1 PO lógica).
+      const grupoByFornecedor = new Map<string, string>()
       for (const p of preview) {
         const cond = p.cond_pagamento || condPadrao
+        const fornId = p.fornecedor_id || null
+        let pedidoGrupoId: string | null = null
+        if (fornId) {
+          let g = grupoByFornecedor.get(fornId)
+          if (!g) { g = crypto.randomUUID(); grupoByFornecedor.set(fornId, g) }
+          pedidoGrupoId = g
+        }
         const { data: pedido, error } = await supabase.from('pedidos').insert({
           company_id: currentCompany?.id,
           item_compra_id: p.id,
@@ -169,10 +178,11 @@ function GerarPedidosModal({ itens, onClose, onDone }: { itens: ItemCompra[]; on
           qtd_lote: p.qtd_lote,
           valor_unitario_real: p.custo_unitario_orcado,
           valor_total_real: p.valor_total,
-          fornecedor_id: p.fornecedor_id || null,
+          fornecedor_id: fornId,
           cond_pagamento: cond,
           data_entrega_prevista: dataEntrega,
           status: 'planejado',
+          pedido_grupo_id: pedidoGrupoId,
         }).select().single()
         if (error) throw error
 

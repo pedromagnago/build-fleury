@@ -63,7 +63,7 @@ export function useParcelas() {
       while (hasMore) {
         const { data, error } = await supabase
           .from('parcelas')
-          .select('*, pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, valor_total_real, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
+          .select('*, pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, valor_total_real, pedido_grupo_id, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
           .eq('company_id', companyId)
           .is('deleted_at', null)
           .order('data_vencimento', { ascending: true })
@@ -109,6 +109,7 @@ export function useParcelas() {
           pedido_cond_pagamento: (pedido?.cond_pagamento as string) ?? null,
           pedido_data_entrega: (pedido?.data_entrega_prevista as string) ?? null,
           pedido_valor_total: pedido?.valor_total_real != null ? Number(pedido.valor_total_real) : null,
+          pedido_grupo_id: (pedido?.pedido_grupo_id as string) ?? null,
           etapa_nome: etapa?.nome ?? null,
           item_valor_orcado: item?.valor_total_orcado != null ? Number(item.valor_total_orcado) : null,
           item_valor_consumido: item?.valor_consumido != null ? Number(item.valor_consumido) : null,

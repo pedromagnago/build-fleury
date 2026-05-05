@@ -51,6 +51,7 @@ interface Candidato {
   pedidoCond?: string | null
   pedidoEntrega?: string | null
   pedidoValorTotal?: number | null
+  pedidoGrupoId?: string | null
   itemDescricao?: string | null
   etapaNome?: string | null
   parcelaNumero?: number | null
@@ -212,6 +213,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
           pedidoCond: (p as any).pedido_cond_pagamento ?? null,
           pedidoEntrega: (p as any).pedido_data_entrega ?? null,
           pedidoValorTotal: (p as any).pedido_valor_total ?? null,
+          pedidoGrupoId: (p as any).pedido_grupo_id ?? null,
           itemDescricao: (p as any).pedido_item ?? null,
           etapaNome: (p as any).etapa_nome ?? null,
           parcelaNumero: p.numero_parcela,
@@ -433,12 +435,14 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     .map(x => x.c)
   }, [poolCandidatos, search, row, selecao, filtroTipo])
 
-  // Agrupa parcelas de pedido em fornecedor → pedido. Os outros (mov_pendente,
-  // medição, mútuo, despesa indireta, parcela avulsa) ficam num bloco flat no topo.
+  // Hierarquia: fornecedor → grupo (lote de pedidos com mesmo pedido_grupo_id)
+  // → pedido → parcela. Pedidos sem pedido_grupo_id viram grupo unitário.
+  // Outros (mov_pendente, medição, mútuo, despesa, parcela avulsa) vão no flat.
   const candidatosAgrupados = useMemo(() => {
     type Parc = typeof candidatosFiltrados[number]
     type PedidoGrupo = { pedidoId: string; numero: number | null; cond: string | null; entrega: string | null; parcelas: Parc[]; saldoTotal: number }
-    type FornGrupo = { fornecedor: string; pedidos: PedidoGrupo[]; saldoTotal: number }
+    type GrupoLote = { grupoId: string; isLote: boolean; pedidos: PedidoGrupo[]; saldoTotal: number }
+    type FornGrupo = { fornecedor: string; grupos: GrupoLote[]; saldoTotal: number }
 
     const flat: Parc[] = []
     const fornMap = new Map<string, FornGrupo>()
@@ -450,25 +454,32 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       }
       const fornName = c.fornecedor ?? '(sem fornecedor)'
       let fg = fornMap.get(fornName)
-      if (!fg) { fg = { fornecedor: fornName, pedidos: [], saldoTotal: 0 }; fornMap.set(fornName, fg) }
-      let pg = fg.pedidos.find(p => p.pedidoId === c.pedidoId)
+      if (!fg) { fg = { fornecedor: fornName, grupos: [], saldoTotal: 0 }; fornMap.set(fornName, fg) }
+      const grupoKey = c.pedidoGrupoId ?? `single:${c.pedidoId}`
+      const isLote = !!c.pedidoGrupoId
+      let lg = fg.grupos.find(g => g.grupoId === grupoKey)
+      if (!lg) { lg = { grupoId: grupoKey, isLote, pedidos: [], saldoTotal: 0 }; fg.grupos.push(lg) }
+      let pg = lg.pedidos.find(p => p.pedidoId === c.pedidoId)
       if (!pg) {
         pg = { pedidoId: c.pedidoId, numero: c.pedidoNumero ?? null, cond: c.pedidoCond ?? null, entrega: c.pedidoEntrega ?? null, parcelas: [], saldoTotal: 0 }
-        fg.pedidos.push(pg)
+        lg.pedidos.push(pg)
       }
       pg.parcelas.push(c)
       pg.saldoTotal += c.saldo
+      lg.saldoTotal += c.saldo
       fg.saldoTotal += c.saldo
     }
 
-    // Ordena parcelas dentro do pedido por numero (depois data); pedidos por menor data; fornecedores por nome
     for (const fg of fornMap.values()) {
-      for (const pg of fg.pedidos) {
-        pg.parcelas.sort((a, b) => (a.parcelaNumero ?? 0) - (b.parcelaNumero ?? 0) || new Date(a.data).getTime() - new Date(b.data).getTime())
+      for (const lg of fg.grupos) {
+        for (const pg of lg.pedidos) {
+          pg.parcelas.sort((a, b) => (a.parcelaNumero ?? 0) - (b.parcelaNumero ?? 0) || new Date(a.data).getTime() - new Date(b.data).getTime())
+        }
+        lg.pedidos.sort((a, b) => (a.numero ?? Number.MAX_SAFE_INTEGER) - (b.numero ?? Number.MAX_SAFE_INTEGER))
       }
-      fg.pedidos.sort((a, b) => {
-        const da = Math.min(...a.parcelas.map(p => new Date(p.data).getTime()))
-        const db = Math.min(...b.parcelas.map(p => new Date(p.data).getTime()))
+      fg.grupos.sort((a, b) => {
+        const da = Math.min(...a.pedidos.flatMap(p => p.parcelas.map(x => new Date(x.data).getTime() || 0)))
+        const db = Math.min(...b.pedidos.flatMap(p => p.parcelas.map(x => new Date(x.data).getTime() || 0)))
         return da - db
       })
     }
@@ -1147,7 +1158,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                   {/* Bloco flat: selecionados, mov_pendente, medição, mútuo, despesa, parcelas avulsas */}
                   {candidatosAgrupados.flat.map(c => renderRow(c, false))}
 
-                  {/* Por fornecedor → pedido → parcelas */}
+                  {/* Por fornecedor → grupo (lote) → pedido → parcelas */}
                   {candidatosAgrupados.fornecedores.map(fg => (
                     <div key={`forn-${fg.fornecedor}`}>
                       <div className="bg-slate-100 dark:bg-slate-800 px-2 py-1 flex items-center justify-between border-t border-b">
@@ -1156,31 +1167,49 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                           {formatCurrency(fg.saldoTotal)}
                         </span>
                       </div>
-                      {fg.pedidos.map(pg => (
-                        <div key={`ped-${pg.pedidoId}`}>
-                          <div className="bg-blue-500/5 px-2 py-0.5 flex items-center justify-between border-b">
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <span className="text-[10px] bg-blue-500/15 text-blue-700 px-1.5 rounded font-mono font-bold shrink-0">
-                                #{pg.numero ?? '?'}
-                              </span>
-                              <span className="text-[10px] text-blue-700/80 truncate">
-                                {pg.cond ?? ''}{pg.entrega ? ` ⟶ ${fmtDateBr(pg.entrega)}` : ''}
-                              </span>
-                              <span className="text-[10px] text-muted-foreground shrink-0">· {pg.parcelas.length} parc.</span>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <span className="text-[10px] font-mono font-bold text-blue-700">{formatCurrency(pg.saldoTotal)}</span>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); quitarPedido(pg.pedidoId) }}
-                                className="text-[9px] rounded border px-1.5 py-0.5 text-blue-700 hover:bg-blue-500/10"
-                                title={`Marcar todas as parcelas em aberto do pedido #${pg.numero ?? '?'} (FIFO)`}>
-                                Quitar
-                              </button>
-                            </div>
+                      {fg.grupos.map(lg => {
+                        const isMultiPedido = lg.isLote && lg.pedidos.length > 1
+                        return (
+                          <div key={`grupo-${lg.grupoId}`}>
+                            {isMultiPedido && (
+                              <div className="bg-amber-500/10 px-2 py-0.5 flex items-center justify-between border-b">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="text-[10px] bg-amber-500/20 text-amber-800 px-1.5 rounded font-bold shrink-0">LOTE</span>
+                                  <span className="text-[10px] text-amber-800/80 truncate">
+                                    {lg.pedidos.length} pedidos · {lg.pedidos.reduce((s, p) => s + p.parcelas.length, 0)} parc.
+                                  </span>
+                                </div>
+                                <span className="text-[10px] font-mono font-bold text-amber-800 shrink-0">{formatCurrency(lg.saldoTotal)}</span>
+                              </div>
+                            )}
+                            {lg.pedidos.map(pg => (
+                              <div key={`ped-${pg.pedidoId}`}>
+                                <div className={`bg-blue-500/5 px-2 py-0.5 flex items-center justify-between border-b ${isMultiPedido ? 'pl-4' : ''}`}>
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <span className="text-[10px] bg-blue-500/15 text-blue-700 px-1.5 rounded font-mono font-bold shrink-0">
+                                      #{pg.numero ?? '?'}
+                                    </span>
+                                    <span className="text-[10px] text-blue-700/80 truncate">
+                                      {pg.cond ?? ''}{pg.entrega ? ` ⟶ ${fmtDateBr(pg.entrega)}` : ''}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground shrink-0">· {pg.parcelas.length} parc.</span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <span className="text-[10px] font-mono font-bold text-blue-700">{formatCurrency(pg.saldoTotal)}</span>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); quitarPedido(pg.pedidoId) }}
+                                      className="text-[9px] rounded border px-1.5 py-0.5 text-blue-700 hover:bg-blue-500/10"
+                                      title={`Marcar todas as parcelas em aberto do pedido #${pg.numero ?? '?'} (FIFO)`}>
+                                      Quitar
+                                    </button>
+                                  </div>
+                                </div>
+                                {pg.parcelas.map(c => renderRow(c, true))}
+                              </div>
+                            ))}
                           </div>
-                          {pg.parcelas.map(c => renderRow(c, true))}
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   ))}
                 </div>

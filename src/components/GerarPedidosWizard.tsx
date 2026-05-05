@@ -175,7 +175,18 @@ export default function GerarPedidosWizard({ onClose }: { onClose: () => void })
     let successParcelas = 0
     const errors: string[] = []
 
+    // Pedidos do mesmo fornecedor gerados nesta sessão compartilham
+    // pedido_grupo_id — permite tratá-los como 1 PO lógica em conciliação/NF.
+    const grupoByFornecedor = new Map<string, string>()
+
     for (const row of previewPedidos) {
+      const fornId = row.fornecedor?.id ?? null
+      let pedidoGrupoId: string | null = null
+      if (fornId) {
+        let g = grupoByFornecedor.get(fornId)
+        if (!g) { g = crypto.randomUUID(); grupoByFornecedor.set(fornId, g) }
+        pedidoGrupoId = g
+      }
       try {
         const { data: pedido, error: pedidoErr } = await supabase
           .from('pedidos')
@@ -186,10 +197,11 @@ export default function GerarPedidosWizard({ onClose }: { onClose: () => void })
             qtd_lote: row.qtd,
             valor_unitario_real: row.valorUnit,
             valor_total_real: row.valorTotal,
-            fornecedor_id: row.fornecedor?.id ?? null,
+            fornecedor_id: fornId,
             cond_pagamento: row.condPagamento || null,
             data_entrega_prevista: row.dataEntrega || null,
             status: 'planejado',
+            pedido_grupo_id: pedidoGrupoId,
           })
           .select()
           .single()

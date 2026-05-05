@@ -54,6 +54,8 @@ export interface Pedido {
   data_entrega_real: string | null
   status: 'planejado' | 'confirmado' | 'entregue' | 'cancelado'
   observacoes: string | null
+  /** Agrupa pedidos do mesmo lançamento (1 PO com vários itens explodida em N pedidos). NULL = pedido isolado. */
+  pedido_grupo_id: string | null
   created_at: string
   // Joined
   item_descricao?: string
