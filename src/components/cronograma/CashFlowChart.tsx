@@ -67,13 +67,11 @@ export default function CashFlowChart({ viewMode, onViewModeChange }: Props) {
         buckets.push({ key: fmtISO(cursor), label, receita: 0, custo: 0, dateStartMs: cursor.getTime() })
         cursor.setDate(cursor.getDate() + 7)
       }
-    } else { // dia
-      const diffDays = Math.ceil((maxDate.getTime() - cursor.getTime()) / 86400000)
-      const step = diffDays > 120 ? Math.ceil(diffDays / 120) : 1
+    } else { // dia — 1 bucket por dia (Recharts cuida do spacing das labels do eixo X)
       while (cursor < maxDate) {
         const label = `${String(cursor.getDate()).padStart(2, '0')}/${String(cursor.getMonth() + 1).padStart(2, '0')}`
         buckets.push({ key: fmtISO(cursor), label, receita: 0, custo: 0, dateStartMs: cursor.getTime() })
-        cursor.setDate(cursor.getDate() + Math.max(1, step))
+        cursor.setDate(cursor.getDate() + 1)
       }
     }
 
