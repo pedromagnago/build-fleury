@@ -21,7 +21,7 @@ import {
   useConciliacoes, useCreateConciliacao,
 } from '@/hooks/useConciliacao'
 import { useParcelas } from '@/hooks/useFinanceiro'
-import { useMedicoes } from '@/hooks/useOperacional'
+import { useMedicoes, useMovimentacoes } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
 import { formatCurrency } from '@/lib/utils'
 import { EditConciliacaoDialog } from './EditConciliacaoDialog'
@@ -36,7 +36,7 @@ interface Props {
 // Candidato unificado para o matcher (parcela, medição, parcela de mútuo, ou mútuo inteiro)
 interface Candidato {
   id: string
-  tipo: 'parcela' | 'medicao' | 'mutuo_recebimento' | 'mutuo_captacao'
+  tipo: 'parcela' | 'medicao' | 'mutuo_recebimento' | 'mutuo_captacao' | 'mov_pendente'
   descricao: string
   fornecedor: string | null
   valor: number
@@ -57,6 +57,18 @@ interface Candidato {
   // Ligacao do consumo (item de compra)
   itemValorOrcado?: number | null
   itemValorConsumido?: number | null
+  // Para tipo='mov_pendente' (Pgto lote / Quitar): mov fantasma com baixa pré-feita.
+  // Selecioná-lo migra os CPs para a mov real e apaga o fantasma.
+  phantomMovId?: string
+  phantomConcId?: string
+  phantomCps?: Array<{
+    parcela_id: string | null
+    medicao_id: string | null
+    mutuo_parcela_id: string | null
+    mutuo_id: string | null
+    valor_aplicado: number
+    observacao: string | null
+  }>
 }
 
 function fmtDateBr(d: string | null | undefined): string {
@@ -82,6 +94,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   const { data: medicoes = [] } = useMedicoes()
   const { data: mutuos = [] } = useMutuos()
   const { data: concs = [] } = useConciliacoes()
+  const { data: movs = [] } = useMovimentacoes()
   const { data: auditLog = [] } = useConciliacaoHistory()
   const confirmConc = useConfirmConciliacao()
   const rejectConc = useRejectConciliacao()
@@ -132,6 +145,43 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     if (!row) return []
     const isSaida = row.tipo === 'saida'
     const result: Candidato[] = []
+
+    // Movs fantasma (Pgto lote / Quitar) — conciliacoes status='aprovado'
+    // representam baixas pré-feitas que ainda não foram associadas a um
+    // débito real do extrato. Permite consolidar várias baixas em uma só
+    // movimentação real (merge), apagando os fantasmas após.
+    const movRowId = row.raw?.id ?? null
+    for (const c of (concs as any[])) {
+      if (c.status !== 'aprovado') continue
+      if (!c.movimentacao_id || c.movimentacao_id === movRowId) continue
+      const mov = movs.find(m => m.id === c.movimentacao_id)
+      if (!mov) continue
+      if (mov.conciliado) continue
+      if (mov.tipo !== row.tipo) continue
+      const cps = (c.conciliacao_parcelas ?? []) as any[]
+      if (cps.length === 0) continue
+      const valor = Math.abs(Number(mov.valor) || 0)
+      result.push({
+        id: `movp-${mov.id}`,
+        tipo: 'mov_pendente',
+        descricao: mov.descricao || 'Baixa pré-lançada',
+        fornecedor: null,
+        valor, valor_pago: 0, saldo: valor,
+        data: mov.data,
+        status: 'aprovado',
+        raw: mov,
+        phantomMovId: mov.id,
+        phantomConcId: c.id,
+        phantomCps: cps.map(cp => ({
+          parcela_id: cp.parcela_id ?? null,
+          medicao_id: cp.medicao_id ?? null,
+          mutuo_parcela_id: cp.mutuo_parcela_id ?? null,
+          mutuo_id: cp.mutuo_id ?? null,
+          valor_aplicado: Number(cp.valor_aplicado) || 0,
+          observacao: cp.observacao ?? null,
+        })),
+      })
+    }
 
     if (isSaida) {
       // Saída: parcelas a pagar (pedidos + despesas indiretas)
@@ -312,7 +362,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       }
     }
     return result
-  }, [row, parcelas, medicoes, mutuos])
+  }, [row, parcelas, medicoes, mutuos, movs, concs])
 
   const candidatosFiltrados = useMemo(() => {
     if (!row) return []
@@ -343,8 +393,10 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     } else if (filtroTipo === 'todos') {
       // Default (sem busca, sem filtro): candidatos com saldo >= 30% do valor.
       // Com filtro explícito por tipo, mostra todos do tipo — o usuário já quer restringir.
+      // mov_pendente (baixas pré-lançadas) sempre passam — são raros e críticos pro merge.
       arr = arr.filter(c => {
         if (selecionadosSet.has(c.id)) return true
+        if (c.tipo === 'mov_pendente') return true
         return c.saldo >= absValor * 0.3
       })
     }
@@ -635,10 +687,24 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     if (distantes.length > 0) {
       if (!window.confirm(`Atencao: ${distantes.length} item(ns) de pedido distante (>60 dias da data do MOV). Verifique se e mesmo o vinculo correto. Continuar?`)) return
     }
-    // Converte selecao em VinculoPayload polimorfico
-    const vinculos = Array.from(selecao.entries()).map(([id, { valor, observacao }]) => {
+    // Converte selecao em VinculoPayload polimorfico. mov_pendente expande
+    // nos CPs originais (cada CP vira um vinculo); phantomMovIds são apagados
+    // após criar a conciliacao real.
+    const vinculos: { origem: 'parcela' | 'medicao' | 'mutuo_parcela' | 'mutuo'; origem_id: string; valor_aplicado: number; observacao: string | null }[] = []
+    const phantomMovIds: string[] = []
+    for (const [id, { valor, observacao }] of selecao.entries()) {
       const c = poolCandidatos.find(x => x.id === id)
-      if (!c) return null
+      if (!c) continue
+      if (c.tipo === 'mov_pendente') {
+        if (c.phantomMovId) phantomMovIds.push(c.phantomMovId)
+        for (const cp of (c.phantomCps ?? [])) {
+          if (cp.parcela_id) vinculos.push({ origem: 'parcela', origem_id: cp.parcela_id, valor_aplicado: cp.valor_aplicado, observacao: cp.observacao })
+          else if (cp.medicao_id) vinculos.push({ origem: 'medicao', origem_id: cp.medicao_id, valor_aplicado: cp.valor_aplicado, observacao: cp.observacao })
+          else if (cp.mutuo_parcela_id) vinculos.push({ origem: 'mutuo_parcela', origem_id: cp.mutuo_parcela_id, valor_aplicado: cp.valor_aplicado, observacao: cp.observacao })
+          else if (cp.mutuo_id) vinculos.push({ origem: 'mutuo', origem_id: cp.mutuo_id, valor_aplicado: cp.valor_aplicado, observacao: cp.observacao })
+        }
+        continue
+      }
       const origem: 'parcela' | 'medicao' | 'mutuo_parcela' | 'mutuo' =
         c.tipo === 'parcela' ? 'parcela' :
         c.tipo === 'medicao' ? 'medicao' :
@@ -647,10 +713,12 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
         c.tipo === 'medicao' ? c.id.replace(/^med-/, '') :
         c.tipo === 'mutuo_captacao' ? c.id.replace(/^mut-/, '') :
         c.id.replace(/^mutparc-/, '')
-      return { origem, origem_id, valor_aplicado: valor, observacao: observacao || null }
-    }).filter((v): v is NonNullable<typeof v> => v !== null)
+      vinculos.push({ origem, origem_id, valor_aplicado: valor, observacao: observacao || null })
+    }
 
     if (row.conciliacao_id) {
+      // Edição de uma conciliacao existente — não suporta absorver fantasmas
+      // (cenário raro: a mov já está conciliada). Os fantasmas seguem visíveis.
       await updateConc.mutateAsync({
         conciliacaoId: row.conciliacao_id,
         vinculos,
@@ -660,6 +728,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
         movimentacaoId: row.raw.id,
         vinculos,
         dataPgto: row.data,
+        phantomMovIds: phantomMovIds.length > 0 ? phantomMovIds : undefined,
       })
     }
     setSelecao(new Map())
@@ -960,6 +1029,11 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                             {c.tipo === 'medicao' && <span className="text-[9px] bg-purple-500/10 text-purple-600 px-1 rounded">MED</span>}
                             {c.tipo === 'mutuo_recebimento' && <span className="text-[9px] bg-violet-500/10 text-violet-600 px-1 rounded">MUT</span>}
                           {c.tipo === 'mutuo_captacao' && <span className="text-[9px] bg-indigo-500/10 text-indigo-600 px-1 rounded">CAP</span>}
+                            {c.tipo === 'mov_pendente' && (
+                              <span className="text-[9px] bg-orange-500/15 text-orange-700 px-1 rounded font-bold" title={`Baixa pré-lançada (${(c.phantomCps?.length ?? 0)} parcela(s)). Selecionar absorve as parcelas e apaga o lançamento fantasma.`}>
+                                BAIXA · {c.phantomCps?.length ?? 0}p
+                              </span>
+                            )}
                             {c.pedidoNumero != null && (
                               <span className="text-[9px] bg-blue-500/10 text-blue-700 px-1 rounded font-mono">
                                 #{c.pedidoNumero}{c.parcelaNumero ? `·P${c.parcelaNumero}` : ''}
