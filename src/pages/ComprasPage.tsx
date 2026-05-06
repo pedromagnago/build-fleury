@@ -415,6 +415,8 @@ function PedidosTab({ search }: { search: string }) {
   const [pedidoViewMode, setPedidoViewMode] = useState<'pedido' | 'etapa'>('pedido')
   const [expandedCascade, setExpandedCascade] = useState<Record<string, boolean>>({})
   const [expandedParcelas, setExpandedParcelas] = useState<Set<string>>(new Set())
+  const [expandedLote, setExpandedLote] = useState<Set<string>>(new Set())
+  const toggleLote = (k: string) => setExpandedLote(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
   const toggleCascade = (k: string) => setExpandedCascade(p => ({ ...p, [k]: !p[k] }))
   const toggleParcelas = (k: string) => setExpandedParcelas(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
 
@@ -967,16 +969,27 @@ function PedidosTab({ search }: { search: string }) {
         : (items[0]?.numero_pedido != null && items[0]?.numero_pedido !== 0
             ? `Pedido #${items[0].numero_pedido}`
             : `S/ Pedido (${items[0]?.id ?? ''})`)
+      // Saldo / pago — soma das parcelas dos pedidos do grupo
+      const itemPedidoIds = new Set(items.map(i => i.id))
+      const parcsDoGrupo = (parcelasAll as any[]).filter(par => par.pedido_id && itemPedidoIds.has(par.pedido_id))
+      const valorPagoLote = parcsDoGrupo.reduce((s, par) => s + Number(par.valor_pago || 0), 0)
+      const totalOrc = items.reduce((sum, i) => sum + (i.valor_total_real ?? 0), 0)
+      const saldoLote = Math.max(0, totalOrc - valorPagoLote)
+      // Cond display: filtra "0"/null
+      const condPag = items[0]?.cond_pagamento
+      const condDisplay = (condPag != null && condPag !== '' && condPag !== '0') ? condPag : null
       return {
          name: numeroLabel,
          items,
          numero: items[0]?.numero_pedido ?? 0,
          created_at: items[0]?.created_at ?? '',
          fornecedor: items[0]?.fornecedor_nome,
-         cond_pagamento: items[0]?.cond_pagamento,
+         cond_pagamento: condDisplay,
          data_entrega: items[0]?.data_entrega_prevista,
          status: items[0]?.status ?? 'planejado',
-         total: items.reduce((sum, i) => sum + (i.valor_total_real ?? 0), 0),
+         total: totalOrc,
+         pago: valorPagoLote,
+         saldo: saldoLote,
          isLote,
          pedidoGrupoId: items[0]?.pedido_grupo_id ?? null,
          numerosPedidos: numerosPedidoUnicos,
@@ -985,7 +998,7 @@ function PedidosTab({ search }: { search: string }) {
       if (a.numero !== b.numero) return b.numero - a.numero
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     })
-  }, [filtered])
+  }, [filtered, parcelasAll])
 
   const totals = useMemo(() => {
     const valor = filtered.reduce((acc, p) => acc + (p.valor_total_real ?? 0), 0)
@@ -1430,11 +1443,14 @@ function PedidosTab({ search }: { search: string }) {
               </tr>
             </thead>
             <tbody>
-              {grouped.map(group => (
+              {grouped.map(group => {
+                const loteKey = `lote:${group.name}`
+                const isLoteExpanded = !group.isLote || expandedLote.has(loteKey)
+                return (
                 <React.Fragment key={group.name}>
                   {/* Header Row */}
-                  <tr className="bg-muted/30 font-semibold border-t">
-                    <td className="px-3 py-2 text-center border-b">
+                  <tr className={`font-semibold border-t cursor-pointer ${group.isLote ? 'bg-amber-500/5 hover:bg-amber-500/10' : 'bg-muted/30'}`} onClick={() => group.isLote && toggleLote(loteKey)}>
+                    <td className="px-3 py-2 text-center border-b" onClick={(e) => e.stopPropagation()}>
                       {group.isLote && (
                         <input type="checkbox"
                           checked={group.items.every(p => selection.isSelected(p.id))}
@@ -1451,6 +1467,9 @@ function PedidosTab({ search }: { search: string }) {
                     </td>
                     <td className="px-3 py-2 border-b" colSpan={2}>
                       <div className="flex items-center gap-2 flex-wrap">
+                         {group.isLote && (
+                           <span className="text-[10px] text-amber-700 font-mono w-3 inline-block">{isLoteExpanded ? '▾' : '▸'}</span>
+                         )}
                          {group.isLote && (
                            <span className="inline-flex items-center rounded-md bg-amber-500/15 px-2 py-1 text-[10px] font-bold text-amber-800"
                              title={`Lote de ${group.items.length} itens criados juntos${group.numerosPedidos.length > 1 ? ` (pedidos #${group.numerosPedidos.slice(0, 6).join(', #')}${group.numerosPedidos.length > 6 ? '…' : ''})` : ''}`}>
@@ -1473,7 +1492,7 @@ function PedidosTab({ search }: { search: string }) {
                        </div>
                     </td>
                     <td className="px-3 py-2 text-right border-b text-primary tracking-tight font-bold">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                         {(() => {
                           const groupPedidoIds = group.items.map(p => p.id)
                           const parcs = (parcelasAll as any[]).filter(par => par.pedido_id && groupPedidoIds.includes(par.pedido_id))
@@ -1489,7 +1508,17 @@ function PedidosTab({ search }: { search: string }) {
                             </button>
                           )
                         })()}
-                        <span>{formatCurrency(group.total)}</span>
+                        <div className="flex flex-col items-end">
+                          <span title="Valor total orçado dos pedidos">{formatCurrency(group.total)}</span>
+                          {group.pago > 0 && group.pago < group.total - 0.005 && (
+                            <span className="text-[9px] font-normal text-amber-600" title={`Saldo em aberto = orçado − pago`}>
+                              saldo {formatCurrency(group.saldo)}
+                            </span>
+                          )}
+                          {group.pago >= group.total - 0.005 && group.total > 0 && (
+                            <span className="text-[9px] font-normal text-emerald-600">PAGO</span>
+                          )}
+                        </div>
                       </div>
                     </td>
                     <td className="px-3 py-2 border-b" colSpan={1}></td>
@@ -1530,8 +1559,8 @@ function PedidosTab({ search }: { search: string }) {
                     )
                   })()}
 
-                  {/* Children Rows */}
-                  {group.items.map(p => (
+                  {/* Children Rows — escondidas por padrão quando é lote (default colapsado) */}
+                  {isLoteExpanded && group.items.map(p => (
                     <tr key={p.id} className="group/row hover:bg-muted/10 text-muted-foreground border-b border-border/40 last:border-0">
                       <td className="px-3 py-2 text-center">
                         <input type="checkbox" checked={selection.isSelected(p.id)}
@@ -1561,7 +1590,8 @@ function PedidosTab({ search }: { search: string }) {
                     </tr>
                   ))}
                 </React.Fragment>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>
