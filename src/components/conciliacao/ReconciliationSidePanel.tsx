@@ -51,15 +51,9 @@ interface Candidato {
   pedidoCond?: string | null
   pedidoEntrega?: string | null
   pedidoValorTotal?: number | null
-  pedidoGrupoId?: string | null
   itemDescricao?: string | null
   etapaNome?: string | null
   parcelaNumero?: number | null
-  // Agregação por (fornecedor, vencimento): parcelas de pedidos com mesmo
-  // fornecedor e mesma data viram 1 candidato. Selecionar = vincular todas.
-  aggParcelaIds?: string[]
-  aggCount?: number
-  aggPedidoIds?: string[]
   // Ligacao do consumo (item de compra)
   itemValorOrcado?: number | null
   itemValorConsumido?: number | null
@@ -190,85 +184,39 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     }
 
     if (isSaida) {
-      // Saída — parcelas a pagar.
-      // Parcelas de pedido são AGREGADAS por (fornecedor, data_vencimento):
-      // todas as parcelas que pagam no mesmo dia para o mesmo fornecedor
-      // viram um candidato único ("lote de pagamento daquela data").
-      // Despesas indiretas / avulsas ficam individuais.
-      const aggMap = new Map<string, {
-        parcelas: any[]
-        fornecedor: string | null
-        data: string
-      }>()
+      // Saída: parcelas a pagar (pedidos + despesas indiretas)
       for (const p of parcelas) {
         if (p.status === 'paga') continue
         const valor = Number(p.valor)
         const pago = Number(p.valor_pago || 0)
         const saldo = valor - pago
         if (saldo < 0.01) continue
-        if (!p.pedido_id) {
-          // Despesa indireta / avulsa: candidato individual
-          result.push({
-            id: p.id,
-            tipo: 'parcela',
-            descricao: p.descricao ?? `Parcela ${p.numero_parcela}`,
-            fornecedor: (p as any).fornecedor_nome ?? null,
-            valor, valor_pago: pago, saldo,
-            data: p.data_vencimento,
-            status: p.status,
-            raw: p,
-            pedidoId: null,
-            parcelaNumero: p.numero_parcela,
-          })
-          continue
-        }
-        const fornNome = (p as any).fornecedor_nome ?? '(sem fornecedor)'
-        const key = `${fornNome}|${p.data_vencimento}`
-        let g = aggMap.get(key)
-        if (!g) { g = { parcelas: [], fornecedor: fornNome, data: p.data_vencimento }; aggMap.set(key, g) }
-        g.parcelas.push(p)
-      }
-      for (const [key, g] of aggMap.entries()) {
-        const ps = g.parcelas
-        const valorTotal = ps.reduce((s, p) => s + Number(p.valor), 0)
-        const pagoTotal = ps.reduce((s, p) => s + Number(p.valor_pago || 0), 0)
-        const saldoTotal = valorTotal - pagoTotal
-        const numerosParc = new Set(ps.map(p => p.numero_parcela))
-        const pedidoIds = Array.from(new Set(ps.map(p => p.pedido_id))) as string[]
-        const numerosPedido = Array.from(new Set(ps.map(p => (p as any).pedido_numero).filter((n: any) => n != null))) as number[]
-        const isAgg = ps.length > 1
-        const descricao = isAgg
-          ? (numerosParc.size === 1 ? `P${[...numerosParc][0]}` : 'Parcelas')
-          : `P${ps[0].numero_parcela}`
-        // Conds/entrega/item só fazem sentido para singleton
-        const single = ps.length === 1 ? ps[0] : null
+        // Parcela de pedido: descricao = "P{n}" (fornecedor + #pedido vão no
+        // header de grupo). Despesa indireta/avulsa: usa descricao/categoria
+        // própria (não é agrupada por fornecedor).
+        const fornecedorNome = (p as any).fornecedor_nome ?? null
+        const descricaoParcela = p.pedido_id
+          ? `P${p.numero_parcela}`
+          : (p.descricao ?? `Parcela ${p.numero_parcela}`)
         result.push({
-          id: isAgg ? `pagg|${key}` : ps[0].id,
+          id: p.id,
           tipo: 'parcela',
-          descricao,
-          fornecedor: g.fornecedor,
-          valor: valorTotal,
-          valor_pago: pagoTotal,
-          saldo: saldoTotal,
-          data: g.data,
-          status: isAgg ? 'mixed' : ps[0].status,
-          raw: isAgg ? { aggParcelas: ps } : ps[0],
-          pedidoId: single?.pedido_id ?? null,
-          pedidoNumero: single ? ((single as any).pedido_numero ?? null) : null,
-          pedidoCond: single ? ((single as any).pedido_cond_pagamento ?? null) : null,
-          pedidoEntrega: single ? ((single as any).pedido_data_entrega ?? null) : null,
-          pedidoValorTotal: single ? ((single as any).pedido_valor_total ?? null) : null,
-          pedidoGrupoId: single ? ((single as any).pedido_grupo_id ?? null) : null,
-          itemDescricao: single ? ((single as any).pedido_item ?? null) : null,
-          etapaNome: single ? ((single as any).etapa_nome ?? null) : null,
-          parcelaNumero: numerosParc.size === 1 ? [...numerosParc][0] as number : null,
-          itemValorOrcado: single ? ((single as any).item_valor_orcado ?? null) : null,
-          itemValorConsumido: single ? ((single as any).item_valor_consumido ?? null) : null,
-          aggParcelaIds: isAgg ? ps.map(p => p.id) : undefined,
-          aggCount: ps.length,
-          aggPedidoIds: isAgg ? pedidoIds : undefined,
-          // numerosPedido fica pro tooltip
-          ...(isAgg && numerosPedido.length > 0 ? { _numerosPedido: numerosPedido } as any : {}),
+          descricao: descricaoParcela,
+          fornecedor: fornecedorNome,
+          valor, valor_pago: pago, saldo,
+          data: p.data_vencimento,
+          status: p.status,
+          raw: p,
+          pedidoId: p.pedido_id,
+          pedidoNumero: (p as any).pedido_numero ?? null,
+          pedidoCond: (p as any).pedido_cond_pagamento ?? null,
+          pedidoEntrega: (p as any).pedido_data_entrega ?? null,
+          pedidoValorTotal: (p as any).pedido_valor_total ?? null,
+          itemDescricao: (p as any).pedido_item ?? null,
+          etapaNome: (p as any).etapa_nome ?? null,
+          parcelaNumero: p.numero_parcela,
+          itemValorOrcado: (p as any).item_valor_orcado ?? null,
+          itemValorConsumido: (p as any).item_valor_consumido ?? null,
         })
       }
 
@@ -485,34 +433,44 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     .map(x => x.c)
   }, [poolCandidatos, search, row, selecao, filtroTipo])
 
-  // Agrupamento simples: fornecedor → parcelas (já agregadas por data no
-  // poolCandidatos). Outros tipos (mov_pendente, medição, mútuo, despesa,
-  // parcela avulsa) ficam num bloco flat no topo.
+  // Agrupa parcelas de pedido em fornecedor → pedido. Os outros (mov_pendente,
+  // medição, mútuo, despesa indireta, parcela avulsa) ficam num bloco flat no topo.
   const candidatosAgrupados = useMemo(() => {
     type Parc = typeof candidatosFiltrados[number]
-    type FornGrupo = { fornecedor: string; parcelas: Parc[]; saldoTotal: number }
+    type PedidoGrupo = { pedidoId: string; numero: number | null; cond: string | null; entrega: string | null; parcelas: Parc[]; saldoTotal: number }
+    type FornGrupo = { fornecedor: string; pedidos: PedidoGrupo[]; saldoTotal: number }
 
     const flat: Parc[] = []
     const fornMap = new Map<string, FornGrupo>()
 
     for (const c of candidatosFiltrados) {
-      // Parcela de pedido (com fornecedor) entra no agrupamento.
-      // Despesa/avulsa (sem pedidoId) e outros tipos vão pro flat.
-      const ehParcelaPedido = c.tipo === 'parcela' && (!!c.pedidoId || !!c.aggParcelaIds)
-      if (!ehParcelaPedido) {
+      if (c.tipo !== 'parcela' || !c.pedidoId) {
         flat.push(c)
         continue
       }
       const fornName = c.fornecedor ?? '(sem fornecedor)'
       let fg = fornMap.get(fornName)
-      if (!fg) { fg = { fornecedor: fornName, parcelas: [], saldoTotal: 0 }; fornMap.set(fornName, fg) }
-      fg.parcelas.push(c)
+      if (!fg) { fg = { fornecedor: fornName, pedidos: [], saldoTotal: 0 }; fornMap.set(fornName, fg) }
+      let pg = fg.pedidos.find(p => p.pedidoId === c.pedidoId)
+      if (!pg) {
+        pg = { pedidoId: c.pedidoId, numero: c.pedidoNumero ?? null, cond: c.pedidoCond ?? null, entrega: c.pedidoEntrega ?? null, parcelas: [], saldoTotal: 0 }
+        fg.pedidos.push(pg)
+      }
+      pg.parcelas.push(c)
+      pg.saldoTotal += c.saldo
       fg.saldoTotal += c.saldo
     }
 
+    // Ordena parcelas dentro do pedido por numero (depois data); pedidos por menor data; fornecedores por nome
     for (const fg of fornMap.values()) {
-      // Por data ascendente — facilita achar "a parcela do dia X"
-      fg.parcelas.sort((a, b) => new Date(a.data).getTime() - new Date(b.data).getTime())
+      for (const pg of fg.pedidos) {
+        pg.parcelas.sort((a, b) => (a.parcelaNumero ?? 0) - (b.parcelaNumero ?? 0) || new Date(a.data).getTime() - new Date(b.data).getTime())
+      }
+      fg.pedidos.sort((a, b) => {
+        const da = Math.min(...a.parcelas.map(p => new Date(p.data).getTime()))
+        const db = Math.min(...b.parcelas.map(p => new Date(p.data).getTime()))
+        return da - db
+      })
     }
     const fornecedores = Array.from(fornMap.values()).sort((a, b) => a.fornecedor.localeCompare(b.fornecedor))
     return { flat, fornecedores }
@@ -637,6 +595,30 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     const atual = novo.get(id)
     if (!atual) return
     novo.set(id, { ...atual, observacao: obs })
+    setSelecao(novo)
+  }
+
+  // Quita um pedido inteiro: marca todas as parcelas em aberto e distribui FIFO
+  // o valor disponível da MOV (mov.valor - já aplicado em outras parcelas).
+  const quitarPedido = (pedidoId: string) => {
+    if (!row) return
+    const parcDoPedido = poolCandidatos
+      .filter(c => c.tipo === 'parcela' && c.pedidoId === pedidoId)
+      .sort((a, b) => (a.data || '').localeCompare(b.data || ''))
+    if (parcDoPedido.length === 0) return
+    const novo = new Map(selecao)
+    // Limpa qualquer parcela desse pedido já marcada
+    for (const c of parcDoPedido) novo.delete(c.id)
+    // Recalcula disponível
+    const jaAplicado = Array.from(novo.values()).reduce((s, v) => s + v.valor, 0)
+    let restante = absValor - jaAplicado
+    if (restante <= 0) restante = parcDoPedido.reduce((s, c) => s + c.saldo, 0) // se já zerou, distribui pelo total
+    for (const c of parcDoPedido) {
+      if (restante <= 0.005) break
+      const aplicar = Math.min(c.saldo, restante)
+      novo.set(c.id, { valor: aplicar, observacao: '' })
+      restante -= aplicar
+    }
     setSelecao(novo)
   }
 
@@ -781,25 +763,6 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
           else if (cp.medicao_id) vinculos.push({ origem: 'medicao', origem_id: cp.medicao_id, valor_aplicado: cp.valor_aplicado, observacao: cp.observacao })
           else if (cp.mutuo_parcela_id) vinculos.push({ origem: 'mutuo_parcela', origem_id: cp.mutuo_parcela_id, valor_aplicado: cp.valor_aplicado, observacao: cp.observacao })
           else if (cp.mutuo_id) vinculos.push({ origem: 'mutuo', origem_id: cp.mutuo_id, valor_aplicado: cp.valor_aplicado, observacao: cp.observacao })
-        }
-        continue
-      }
-      // Candidato agregado de parcelas (mesma data + fornecedor): expande
-      // em N vinculos, distribuindo o valor proporcional ao saldo de cada parcela.
-      if (c.tipo === 'parcela' && c.aggParcelaIds && c.aggParcelaIds.length > 0) {
-        const aggParcs = (c.raw?.aggParcelas ?? []) as any[]
-        const saldoTotal = aggParcs.reduce((s, p) => s + (Number(p.valor) - Number(p.valor_pago || 0)), 0) || 1
-        const valorTotalAplicar = valor // do input do usuário
-        for (const pp of aggParcs) {
-          const saldoP = Number(pp.valor) - Number(pp.valor_pago || 0)
-          const aplicado = (saldoP / saldoTotal) * valorTotalAplicar
-          if (aplicado < 0.005) continue
-          vinculos.push({
-            origem: 'parcela',
-            origem_id: pp.id,
-            valor_aplicado: Math.round(aplicado * 100) / 100,
-            observacao: observacao || null,
-          })
         }
         continue
       }
@@ -1131,11 +1094,6 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                               BAIXA · {c.phantomCps?.length ?? 0}p
                             </span>
                           )}
-                          {c.aggParcelaIds && c.aggParcelaIds.length > 1 && (
-                            <span className="text-[9px] bg-amber-500/15 text-amber-700 px-1 rounded font-bold" title={`${c.aggParcelaIds.length} parcelas que pagam nesta mesma data (${c.aggPedidoIds?.length ?? 0} pedidos). Selecionar = vincular todas; valor é dividido proporcional ao saldo de cada uma.`}>
-                              ×{c.aggParcelaIds.length}
-                            </span>
-                          )}
                           {isPedidoDistante(c) && (
                             <span className="text-[9px] bg-amber-500/15 text-amber-700 px-1 rounded font-bold" title="Pedido distante (>60 dias da data do PIX). Verifique se é o vínculo correto.">⚠ DIST</span>
                           )}
@@ -1189,19 +1147,40 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                   {/* Bloco flat: selecionados, mov_pendente, medição, mútuo, despesa, parcelas avulsas */}
                   {candidatosAgrupados.flat.map(c => renderRow(c, false))}
 
-                  {/* Por fornecedor → linhas agregadas por data de vencimento */}
+                  {/* Por fornecedor → pedido → parcelas */}
                   {candidatosAgrupados.fornecedores.map(fg => (
                     <div key={`forn-${fg.fornecedor}`}>
                       <div className="bg-slate-100 dark:bg-slate-800 px-2 py-1 flex items-center justify-between border-t border-b">
                         <span className="text-[10px] font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200 truncate">{fg.fornecedor}</span>
-                        <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                          <span className="text-[10px] text-muted-foreground">{fg.parcelas.length} {fg.parcelas.length === 1 ? 'data' : 'datas'}</span>
-                          <span className="text-[10px] font-mono font-bold text-slate-700 dark:text-slate-200" title="Saldo total em aberto deste fornecedor (parcelas filtradas)">
-                            {formatCurrency(fg.saldoTotal)}
-                          </span>
-                        </div>
+                        <span className="text-[10px] font-mono font-bold text-slate-700 dark:text-slate-200 shrink-0 ml-2" title="Saldo total em aberto deste fornecedor (parcelas filtradas)">
+                          {formatCurrency(fg.saldoTotal)}
+                        </span>
                       </div>
-                      {fg.parcelas.map(c => renderRow(c, true))}
+                      {fg.pedidos.map(pg => (
+                        <div key={`ped-${pg.pedidoId}`}>
+                          <div className="bg-blue-500/5 px-2 py-0.5 flex items-center justify-between border-b">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-[10px] bg-blue-500/15 text-blue-700 px-1.5 rounded font-mono font-bold shrink-0">
+                                #{pg.numero ?? '?'}
+                              </span>
+                              <span className="text-[10px] text-blue-700/80 truncate">
+                                {pg.cond ?? ''}{pg.entrega ? ` ⟶ ${fmtDateBr(pg.entrega)}` : ''}
+                              </span>
+                              <span className="text-[10px] text-muted-foreground shrink-0">· {pg.parcelas.length} parc.</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="text-[10px] font-mono font-bold text-blue-700">{formatCurrency(pg.saldoTotal)}</span>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); quitarPedido(pg.pedidoId) }}
+                                className="text-[9px] rounded border px-1.5 py-0.5 text-blue-700 hover:bg-blue-500/10"
+                                title={`Marcar todas as parcelas em aberto do pedido #${pg.numero ?? '?'} (FIFO)`}>
+                                Quitar
+                              </button>
+                            </div>
+                          </div>
+                          {pg.parcelas.map(c => renderRow(c, true))}
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>

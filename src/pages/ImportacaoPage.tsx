@@ -724,10 +724,6 @@ function PedidosTab() {
     setImporting(true); setProgress(0)
     const errors: string[] = []
     let successPedidos = 0, totalParcelas = 0
-    // Linhas do Excel com mesmo numero_pedido + fornecedor compartilham
-    // pedido_grupo_id (1 PO com vários itens). Sem numero_pedido cai pra
-    // por-fornecedor desta sessão.
-    const grupoByKey = new Map<string, string>()
     for (let i = 0; i < enrichedRows.length; i++) {
       setProgress(Math.round(((i + 1) / enrichedRows.length) * 100))
       const row = enrichedRows[i]!
@@ -761,23 +757,12 @@ function PedidosTab() {
         const qtdPorCasa = item.qtd_por_casa ?? 1
         const qtdLote = row['_qtd_entrega'] ? parseNumberCell(row['_qtd_entrega']) : casas * qtdPorCasa
         const valorTotal = row.valorTotal
-        const numeroPedido = row['numero_pedido'] ? parseInt(row['numero_pedido']) : null
-        const grupoKey = numeroPedido != null && fornecedorId
-          ? `n:${fornecedorId}:${numeroPedido}`
-          : (fornecedorId ? `f:${fornecedorId}` : null)
-        let pedidoGrupoId: string | null = null
-        if (grupoKey) {
-          let g = grupoByKey.get(grupoKey)
-          if (!g) { g = crypto.randomUUID(); grupoByKey.set(grupoKey, g) }
-          pedidoGrupoId = g
-        }
         const { data: pedido, error: pedErr } = await supabase.from('pedidos').insert({
           company_id: currentCompany.id, item_compra_id: item.id,
-          numero_pedido: numeroPedido,
+          numero_pedido: row['numero_pedido'] ? parseInt(row['numero_pedido']) : null,
           casas_lote: casas, qtd_lote: qtdLote, valor_unitario_real: unitario, valor_total_real: valorTotal,
           fornecedor_id: fornecedorId, cond_pagamento: condPagamento,
           data_entrega_prevista: dataEntrega, status: 'planejado',
-          pedido_grupo_id: pedidoGrupoId,
         }).select('id').single()
         if (pedErr) throw pedErr
         if (!pedido) throw new Error('Pedido não criado')

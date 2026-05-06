@@ -602,10 +602,6 @@ export async function applyComercialImport(
   const itemByCod = new Map((itemRes.data ?? []).map((i: any) => [i.codigo, i.id]))
   const fornByNome = new Map((fornRes.data ?? []).map((f: any) => [normFornNome(f.nome).toUpperCase(), f.id]))
 
-  // Linhas com mesmo (fornecedor, numero_pedido) compartilham pedido_grupo_id —
-  // sinaliza que são itens de uma mesma PO. Sem numero, cai pra grupo
-  // por-fornecedor desta sessão de import.
-  const grupoByKey = new Map<string, string>()
   for (const pc of preview.pedidos) {
     if (pc.action === 'unchanged') continue
     if (pc.action === 'missing') {
@@ -628,16 +624,6 @@ export async function applyComercialImport(
       if (novoF) { fornId = novoF.id; fornByNome.set(fornNomeUpper, novoF.id) }
     }
 
-    const grupoKey = pc.numero_pedido != null && fornId
-      ? `n:${fornId}:${pc.numero_pedido}`
-      : (fornId ? `f:${fornId}` : null)
-    let pedidoGrupoId: string | null = null
-    if (grupoKey) {
-      let g = grupoByKey.get(grupoKey)
-      if (!g) { g = (globalThis.crypto?.randomUUID?.()) ?? null; if (g) grupoByKey.set(grupoKey, g) }
-      pedidoGrupoId = g
-    }
-
     const payload: Record<string, unknown> = {
       item_compra_id: itemId,
       fornecedor_id: fornId,
@@ -651,7 +637,6 @@ export async function applyComercialImport(
       data_entrega_real: toDateISO(findCol(pc.rowData, ['data_entrega_real'])),
       status: sanitizePedidoStatus(findCol(pc.rowData, ['status'])),
       observacoes: toStr(findCol(pc.rowData, ['observacoes'])) || null,
-      pedido_grupo_id: pedidoGrupoId,
     }
     if (pc.action === 'create') {
       const insertData = { ...payload, company_id: companyId, ...(pc.pedido_id ? { id: pc.pedido_id } : {}) }
