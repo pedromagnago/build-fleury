@@ -941,17 +941,34 @@ function PedidosTab({ search }: { search: string }) {
   })
 
   const grouped = useMemo(() => {
+    // Agrupa por pedido_grupo_id (lote do mesmo lançamento) quando setado;
+    // cai pra numero_pedido pra pedidos antigos / isolados.
     const map = new Map<string, Pedido[]>()
     filtered.forEach(p => {
-      const isNull = p.numero_pedido == null || p.numero_pedido === 0
-      const g = isNull ? `S/ Pedido (${p.id})` : `Pedido #${p.numero_pedido}`
-      if (!map.has(g)) map.set(g, [])
-      map.get(g)!.push(p)
+      let key: string
+      if (p.pedido_grupo_id) {
+        key = `grupo:${p.pedido_grupo_id}`
+      } else if (p.numero_pedido != null && p.numero_pedido !== 0) {
+        key = `num:${p.numero_pedido}`
+      } else {
+        key = `solo:${p.id}`
+      }
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(p)
     })
-    
-    return Array.from(map.entries()).map(([name, items]) => {
-      return { 
-         name, 
+
+    return Array.from(map.entries()).map(([key, items]) => {
+      const isLote = key.startsWith('grupo:') && items.length > 1
+      const numerosPedidoUnicos = Array.from(new Set(items.map(i => i.numero_pedido).filter((n): n is number => n != null && n !== 0)))
+      const numeroLabel = isLote
+        ? (numerosPedidoUnicos.length > 1
+            ? `Lote #${Math.min(...numerosPedidoUnicos)}–#${Math.max(...numerosPedidoUnicos)}`
+            : (numerosPedidoUnicos[0] != null ? `Lote #${numerosPedidoUnicos[0]}` : `Lote (${items.length} itens)`))
+        : (items[0]?.numero_pedido != null && items[0]?.numero_pedido !== 0
+            ? `Pedido #${items[0].numero_pedido}`
+            : `S/ Pedido (${items[0]?.id ?? ''})`)
+      return {
+         name: numeroLabel,
          items,
          numero: items[0]?.numero_pedido ?? 0,
          created_at: items[0]?.created_at ?? '',
@@ -959,7 +976,10 @@ function PedidosTab({ search }: { search: string }) {
          cond_pagamento: items[0]?.cond_pagamento,
          data_entrega: items[0]?.data_entrega_prevista,
          status: items[0]?.status ?? 'planejado',
-         total: items.reduce((sum, i) => sum + (i.valor_total_real ?? 0), 0)
+         total: items.reduce((sum, i) => sum + (i.valor_total_real ?? 0), 0),
+         isLote,
+         pedidoGrupoId: items[0]?.pedido_grupo_id ?? null,
+         numerosPedidos: numerosPedidoUnicos,
       }
     }).sort((a, b) => {
       if (a.numero !== b.numero) return b.numero - a.numero
@@ -1415,9 +1435,28 @@ function PedidosTab({ search }: { search: string }) {
                   {/* Header Row */}
                   <tr className="bg-muted/30 font-semibold border-t">
                     <td className="px-3 py-2 text-center border-b">
+                      {group.isLote && (
+                        <input type="checkbox"
+                          checked={group.items.every(p => selection.isSelected(p.id))}
+                          onChange={() => {
+                            const allSelected = group.items.every(p => selection.isSelected(p.id))
+                            for (const p of group.items) {
+                              if (allSelected) { if (selection.isSelected(p.id)) selection.toggle(p.id) }
+                              else { if (!selection.isSelected(p.id)) selection.toggle(p.id) }
+                            }
+                          }}
+                          className="h-3.5 w-3.5 rounded accent-primary"
+                          title="Selecionar todos os itens do lote" />
+                      )}
                     </td>
                     <td className="px-3 py-2 border-b" colSpan={2}>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                         {group.isLote && (
+                           <span className="inline-flex items-center rounded-md bg-amber-500/15 px-2 py-1 text-[10px] font-bold text-amber-800"
+                             title={`Lote de ${group.items.length} itens criados juntos${group.numerosPedidos.length > 1 ? ` (pedidos #${group.numerosPedidos.slice(0, 6).join(', #')}${group.numerosPedidos.length > 6 ? '…' : ''})` : ''}`}>
+                             LOTE · {group.items.length} itens
+                           </span>
+                         )}
                          <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-1 text-xs font-bold text-primary">
                            {group.name}
                          </span>

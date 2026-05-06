@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -174,6 +174,8 @@ function ParcelasTab({ search }: { search: string }) {
   const [viewingVinculos, setViewingVinculos] = useState<Parcela | null>(null)
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('todos')
   const [dueFilter, setDueFilter] = useState<DueFilter>('todas')
+  const [groupBy, setGroupBy] = useState<'flat' | 'vencimento'>('flat')
+  const [expandedLote, setExpandedLote] = useState<Set<string>>(new Set())
   const selection = useSelection()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: mutuos = [] } = useMutuos()
@@ -327,6 +329,26 @@ function ParcelasTab({ search }: { search: string }) {
     return combined.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
   }, [filtered, mutuoParcelas, typeFilter])
 
+  // Agrupamento por (fornecedor, vencimento) — "lote de pagamento" runtime.
+  // Parcelas com mesmo fornecedor pagando no mesmo dia consolidam num grupo.
+  const groupedByVenc = useMemo(() => {
+    if (groupBy !== 'vencimento') return [] as Array<{ key: string; fornecedor: string; data: string; parcelas: typeof allFiltered; total: number; pago: number; pendente: number }>
+    const map = new Map<string, { key: string; fornecedor: string; data: string; parcelas: typeof allFiltered }>()
+    for (const p of allFiltered) {
+      const forn = (p as any).fornecedor_nome ?? '(sem fornecedor)'
+      const key = `${forn}|${p.data_vencimento ?? ''}`
+      let g = map.get(key)
+      if (!g) { g = { key, fornecedor: forn, data: p.data_vencimento ?? '', parcelas: [] }; map.set(key, g) }
+      g.parcelas.push(p)
+    }
+    return Array.from(map.values()).map(g => {
+      const total = g.parcelas.reduce((s, p) => s + Number(p.valor || 0), 0)
+      const pago = g.parcelas.reduce((s, p) => s + Number(p.valor_pago || 0), 0)
+      const pendente = g.parcelas.reduce((s, p) => s + (p.status !== 'paga' ? Number(p.valor || 0) - Number(p.valor_pago || 0) : 0), 0)
+      return { ...g, total, pago, pendente }
+    }).sort((a, b) => a.data.localeCompare(b.data) || a.fornecedor.localeCompare(b.fornecedor))
+  }, [allFiltered, groupBy])
+
   const totals = allFiltered.reduce(
     (acc, p) => ({
       total: acc.total + p.valor,
@@ -431,6 +453,14 @@ function ParcelasTab({ search }: { search: string }) {
             >{label}</button>
           ))}
         </div>
+        {/* Group By Toggle */}
+        <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5" title="Agrupar parcelas com mesma data + fornecedor (lote de pagamento)">
+          {([['flat', 'Lista'], ['vencimento', 'Por venc.']] as const).map(([k, label]) => (
+            <button key={k} onClick={() => setGroupBy(k)}
+              className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${groupBy === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            >{label}</button>
+          ))}
+        </div>
         <div className="ml-auto flex gap-1.5">
           <button onClick={selectVencidas} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-red-500 hover:bg-red-500/10" title="Selecionar parcelas vencidas">Sel. vencidas</button>
           <button onClick={selectSemana} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-amber-600 hover:bg-amber-500/10" title="Selecionar parcelas desta semana">Sel. semana</button>
@@ -489,7 +519,8 @@ function ParcelasTab({ search }: { search: string }) {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {allFiltered.map((p) => {
+              {(() => {
+                const renderParcelaRow = (p: typeof allFiltered[number], indented = false) => {
                 const cfg = statusConfig[p.status] ?? statusConfig['futura']!
                 const isMutuo = (p as any)._source === 'mutuo'
                 const isEditingRow = editingParcela?.id === p.id || payingParcela?.id === p.id
@@ -500,8 +531,8 @@ function ParcelasTab({ search }: { search: string }) {
                 const pedidoNumero = (p as any).pedido_numero as number | null | undefined
                 const fornecedorNome = (p as any).fornecedor_nome as string | null | undefined
                 return (
-                  <tr key={p.id} data-parcela-id={p.id} className={`group transition-colors ${isEditingRow ? 'row-editing' : 'hover:bg-muted/20'}`}>
-                    <td className="px-2 py-2.5 text-center">
+                  <tr key={p.id} data-parcela-id={p.id} className={`group transition-colors ${isEditingRow ? 'row-editing' : 'hover:bg-muted/20'} ${indented ? 'bg-muted/5' : ''}`}>
+                    <td className={`px-2 py-2.5 text-center ${indented ? 'pl-6' : ''}`}>
                       <input type="checkbox" checked={selection.isSelected(p.id)}
                         onChange={() => selection.toggle(p.id)}
                         className="h-3.5 w-3.5 rounded accent-primary" />
@@ -591,7 +622,55 @@ function ParcelasTab({ search }: { search: string }) {
                     </td>
                   </tr>
                 )
-              })}
+                }
+                if (groupBy === 'flat') return allFiltered.map((p) => renderParcelaRow(p))
+                return groupedByVenc.map((grp) => {
+                  const expanded = expandedLote.has(grp.key)
+                  const isLote = grp.parcelas.length > 1
+                  const allSelected = grp.parcelas.every(p => selection.isSelected(p.id))
+                  const toggleGroup = () => {
+                    for (const p of grp.parcelas) {
+                      if (allSelected) { if (selection.isSelected(p.id)) selection.toggle(p.id) }
+                      else { if (!selection.isSelected(p.id)) selection.toggle(p.id) }
+                    }
+                  }
+                  const toggleExpand = () => {
+                    setExpandedLote(s => { const n = new Set(s); n.has(grp.key) ? n.delete(grp.key) : n.add(grp.key); return n })
+                  }
+                  if (!isLote) return renderParcelaRow(grp.parcelas[0]!)
+                  return (
+                    <React.Fragment key={grp.key}>
+                      <tr className="bg-amber-500/5 border-t border-b font-medium cursor-pointer hover:bg-amber-500/10" onClick={toggleExpand}>
+                        <td className="px-2 py-2 text-center" onClick={(e) => e.stopPropagation()}>
+                          <input type="checkbox" checked={allSelected} onChange={toggleGroup}
+                            className="h-3.5 w-3.5 rounded accent-primary" title="Selecionar todas as parcelas do lote" />
+                        </td>
+                        <td className="px-3 py-2 text-center text-xs font-bold">
+                          <div className="flex items-center justify-center gap-1">
+                            <span>{expanded ? '▾' : '▸'}</span>
+                            <span>{grp.data ? localDate(grp.data).toLocaleDateString('pt-BR') : '—'}</span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-center text-[10px]">
+                          <span className="rounded bg-amber-500/20 px-1.5 py-0.5 font-bold text-amber-800" title={`Lote: ${grp.parcelas.length} parcelas com mesmo fornecedor pagando ${localDate(grp.data).toLocaleDateString('pt-BR')}`}>
+                            LOTE · {grp.parcelas.length}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-[10px] text-muted-foreground" colSpan={2}>
+                          {grp.fornecedor}
+                        </td>
+                        <td className="px-3 py-2 text-[10px] text-muted-foreground truncate">{grp.parcelas.length} parcelas</td>
+                        <td className="px-3 py-2 text-right text-xs font-bold">{formatCurrency(grp.total)}</td>
+                        <td className="px-3 py-2 text-center text-[10px] text-muted-foreground" colSpan={4}>
+                          {grp.pago > 0 && <span>pago {formatCurrency(grp.pago)}/</span>}
+                          <span>{formatCurrency(grp.pendente)} pendente</span>
+                        </td>
+                      </tr>
+                      {expanded && grp.parcelas.map(p => renderParcelaRow(p, true))}
+                    </React.Fragment>
+                  )
+                })
+              })()}
             </tbody>
           </table>
         </div>
