@@ -441,6 +441,124 @@ export function useHealthChecks() {
     })
 
     // ═══════════════════════════════════════════════════════════
+    // 13. Σ parcelas ≠ valor da despesa indireta (regra B análoga)
+    // ═══════════════════════════════════════════════════════════
+    const parcelasPorDespesa = new Map<string, number>()
+    for (const p of parcelas) {
+      if (!p.despesa_indireta_id) continue
+      parcelasPorDespesa.set(
+        p.despesa_indireta_id,
+        (parcelasPorDespesa.get(p.despesa_indireta_id) ?? 0) + Number(p.valor || 0)
+      )
+    }
+    const despDesbalanceadas: HealthCheckItem[] = []
+    let totalDifDesp = 0
+    for (const d of despesas as any[]) {
+      const valor = Number(d.valor_orcado ?? 0)
+      if (valor <= 0) continue
+      const somaParc = parcelasPorDespesa.get(d.id) ?? 0
+      if (somaParc === 0) continue // coberto por "despesa indireta sem parcela"
+      const dif = somaParc - valor
+      if (Math.abs(dif) <= 0.5) continue
+      despDesbalanceadas.push({
+        id: d.id,
+        label: `${d.descricao || 'Despesa'} — ${d.categoria || '—'}`,
+        description: `Orçado ${fmtBRL(valor)} • Parcelas ${fmtBRL(somaParc)} • Dif ${dif > 0 ? '+' : ''}${fmtBRL(dif)}`,
+        value: Math.abs(dif),
+      })
+      totalDifDesp += Math.abs(dif)
+    }
+    all.push({
+      id: 'parcelas-vs-despesa',
+      title: 'Σ parcelas ≠ valor da despesa indireta',
+      severity: despDesbalanceadas.length === 0 ? 'ok' : 'critical',
+      summary: despDesbalanceadas.length === 0
+        ? 'Cobertura de parcelas bate com o valor de cada despesa indireta'
+        : `${despDesbalanceadas.length} despesa(s) com ${fmtBRL(totalDifDesp)} de divergência total`,
+      items: despDesbalanceadas.slice(0, 30),
+      route: '/despesas-indiretas',
+      routeLabel: 'Ir para Custos Indiretos',
+    })
+
+    // ═══════════════════════════════════════════════════════════
+    // 14. Despesa indireta sem parcela
+    // ═══════════════════════════════════════════════════════════
+    const despSemParcela = (despesas as any[]).filter(d => {
+      const valor = Number(d.valor_orcado ?? 0)
+      if (valor <= 0) return false
+      return !parcelasPorDespesa.has(d.id)
+    })
+    const valorDespSemParc = despSemParcela.reduce((s, d) => s + Number(d.valor_orcado || 0), 0)
+    all.push({
+      id: 'despesa-sem-parcela',
+      title: 'Despesa indireta sem parcela',
+      severity: despSemParcela.length === 0 ? 'ok' : despSemParcela.length <= 3 ? 'warn' : 'critical',
+      summary: despSemParcela.length === 0
+        ? 'Todas as despesas indiretas com orçamento têm parcelas geradas'
+        : `${despSemParcela.length} despesa(s) sem parcela — ${fmtBRL(valorDespSemParc)} fora do fluxo`,
+      items: despSemParcela.slice(0, 30).map(d => ({
+        id: d.id,
+        label: `${d.descricao || 'Despesa'} — ${d.categoria || '—'}`,
+        description: `Orçado ${fmtBRL(Number(d.valor_orcado || 0))} • Período: ${d.tipo_periodo || 'pontual'}`,
+        value: Number(d.valor_orcado || 0),
+      })),
+      route: '/despesas-indiretas',
+      routeLabel: 'Ir para Custos Indiretos',
+    })
+
+    // ═══════════════════════════════════════════════════════════
+    // 15. Parcelas órfãs — sem pedido_id nem despesa_indireta_id
+    // ═══════════════════════════════════════════════════════════
+    const orfas = parcelas.filter(p => !p.pedido_id && !p.despesa_indireta_id)
+    const valorOrfas = orfas.reduce((s, p) => s + Number(p.valor || 0), 0)
+    all.push({
+      id: 'parcelas-orfas',
+      title: 'Parcelas órfãs',
+      severity: orfas.length === 0 ? 'ok' : 'critical',
+      summary: orfas.length === 0
+        ? 'Todas as parcelas têm origem (pedido ou despesa indireta)'
+        : `${orfas.length} parcela(s) sem origem — ${fmtBRL(valorOrfas)} sem rastreio`,
+      items: orfas.slice(0, 30).map(p => ({
+        id: p.id,
+        label: `Parcela ${p.numero_parcela} — ${p.descricao || p.fornecedor_nome || 'sem descrição'}`,
+        description: `Vencimento ${p.data_vencimento} • Valor ${fmtBRL(Number(p.valor || 0))} • Status ${p.status}`,
+        value: Number(p.valor || 0),
+      })),
+      route: '/pagamentos',
+      routeLabel: 'Ir para Pagamentos',
+    })
+
+    // ═══════════════════════════════════════════════════════════
+    // 16. Pedido cancelado/rascunho com parcelas ativas
+    // ═══════════════════════════════════════════════════════════
+    const pedidosCanceladosComParcela: HealthCheckItem[] = []
+    let valorCanceladoComParc = 0
+    for (const ped of pedidos) {
+      if (ped.status === 'confirmado') continue
+      const somaParc = parcelasPorPedido.get(ped.id) ?? 0
+      if (somaParc <= 0.5) continue
+      pedidosCanceladosComParcela.push({
+        id: ped.id,
+        label: `Pedido #${ped.numero_pedido ?? '?'} — ${ped.fornecedor_nome ?? 'Sem forn.'}`,
+        description: `Status ${ped.status} • Σ parcelas ${fmtBRL(somaParc)} ainda no fluxo`,
+        value: somaParc,
+        pedidoId: ped.id,
+      })
+      valorCanceladoComParc += somaParc
+    }
+    all.push({
+      id: 'pedido-cancelado-com-parcela',
+      title: 'Pedido não-confirmado com parcelas',
+      severity: pedidosCanceladosComParcela.length === 0 ? 'ok' : 'critical',
+      summary: pedidosCanceladosComParcela.length === 0
+        ? 'Pedidos cancelados/rascunho não têm parcelas pendentes'
+        : `${pedidosCanceladosComParcela.length} pedido(s) não-confirmados com ${fmtBRL(valorCanceladoComParc)} em parcelas`,
+      items: pedidosCanceladosComParcela.slice(0, 30),
+      route: '/pagamentos',
+      routeLabel: 'Ir para Pagamentos',
+    })
+
+    // ═══════════════════════════════════════════════════════════
     // 12. Status / valor_pago dessincronizado (regra D)
     // ═══════════════════════════════════════════════════════════
     const dessinc: HealthCheckItem[] = []

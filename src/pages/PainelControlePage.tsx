@@ -106,12 +106,18 @@ export default function PainelControlePage() {
     // Diretos
     const orcadoDiretos = itens.reduce((s, i) => s + (Number(i.valor_total_orcado) || 0), 0)
     const pedidosTotal = pedidos.reduce((s, p) => s + (Number(p.valor_total_real) || 0), 0)
+    const previstoDiretosParcelas = parcelas
+      .filter(p => p.pedido_id != null)
+      .reduce((s, p) => s + (Number(p.valor) || 0), 0)
     const pagoDiretos = parcelas
       .filter(p => p.pedido_id != null)
       .reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
 
     // Indiretos
     const orcadoIndiretos = despesas.reduce((s: number, d: any) => s + (Number(d.valor_orcado) || 0), 0)
+    const previstoIndiretosParcelas = parcelas
+      .filter(p => p.despesa_indireta_id != null)
+      .reduce((s: number, p: any) => s + (Number(p.valor) || 0), 0)
     const pagoIndiretos = parcelas
       .filter(p => p.despesa_indireta_id != null)
       .reduce((s: number, p: any) => s + (Number(p.valor_pago) || 0), 0)
@@ -157,7 +163,31 @@ export default function PainelControlePage() {
     const orcadoComFinanceiro = orcadoOperacional + custoFinanceiroProjetado
     const pagoComFinanceiro = pagoOperacional + custoFinanceiroRealizado
 
-    const gap = pagoOperacional - conciliado
+    // ─── CONCILIAÇÃO 3 FONTES × PAGAMENTOS ───
+    // Decomposição do TOTAL DAS PARCELAS (= o que aparece em /pagamentos):
+    //   parcelas (pedido) + parcelas (despesa) + parcelas (órfãs) + mutuo_parcelas
+    const previstoOrfas = parcelas
+      .filter(p => !p.pedido_id && !p.despesa_indireta_id)
+      .reduce((s, p) => s + (Number(p.valor) || 0), 0)
+    const pagoOrfas = parcelas
+      .filter(p => !p.pedido_id && !p.despesa_indireta_id)
+      .reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
+
+    // Total real das parcelas no sistema (= card TOTAL de /pagamentos)
+    const totalParcelasGeradas = previstoDiretosParcelas + previstoIndiretosParcelas
+      + previstoOrfas + capitalContratadoParcelas
+
+    // Lado "fontes": pedidos.valor_total_real + despesas.valor_orcado + capital.contratado.
+    // Idealmente bate com Σ parcelas, mas pode haver descasamento (pedido sem cond, etc.)
+    const previstoPedidos = pedidosTotal                     // pedidos.valor_total_real
+    const previstoIndiretos = previstoIndiretosParcelas      // Σ parcelas com despesa_indireta_id
+    const previstoCapital = capitalContratadoParcelas        // Σ mutuo_parcelas.valor
+    const previstoTotalFontes = previstoPedidos + previstoIndiretos + previstoCapital + previstoOrfas
+    const gapPrevisto = previstoTotalFontes - totalParcelasGeradas
+
+    // REAL: o que foi pago (lado das fontes) deve bater com saídas conciliadas no banco
+    const pagoTotal = pagoDiretos + pagoIndiretos + capitalPagoTotal + pagoOrfas
+    const gap = pagoTotal - conciliado
 
     return {
       orcadoDiretos, orcadoIndiretos,
@@ -169,6 +199,10 @@ export default function PainelControlePage() {
       custoFinanceiroProjetado, custoFinanceiroRealizado,
       medicoesLiberadas, medicoesPlanejadas,
       movSaidas, conciliado, gap,
+      // Novos campos da conciliação 3 fontes
+      previstoPedidos, previstoIndiretos, previstoCapital, previstoOrfas,
+      previstoTotalFontes, totalParcelasGeradas, gapPrevisto,
+      pagoOrfas, pagoTotal,
     }
   }, [itens, pedidos, parcelas, despesas, mutuos, medicoes, movimentacoes])
 
@@ -454,41 +488,96 @@ export default function PainelControlePage() {
       {/* ─── CONCILIAÇÃO × PAGAMENTOS ─── */}
       <div>
         <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Conciliação × pagamentos
+          Conciliação 3 fontes × pagamentos
         </h2>
-        <div className="grid gap-3 md:grid-cols-4">
-          <div className="rounded-xl border p-4">
-            <div className="text-[10px] uppercase text-muted-foreground">Pago (parcelas)</div>
-            <div className="mt-1 text-xl font-bold tabular-nums">{formatCurrency(agg.pagoOperacional)}</div>
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              {parcelas.filter(p => p.valor_pago > 0).length} parcelas com pagamento
-            </div>
-          </div>
-          <div className="rounded-xl border p-4">
-            <div className="text-[10px] uppercase text-muted-foreground">Saídas banco (OFX)</div>
-            <div className="mt-1 text-xl font-bold tabular-nums">{formatCurrency(agg.movSaidas)}</div>
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              {movimentacoes.filter(m => m.tipo === 'saida').length} movimentações
-            </div>
-          </div>
-          <div className="rounded-xl border p-4">
-            <div className="text-[10px] uppercase text-muted-foreground">Conciliado</div>
-            <div className="mt-1 text-xl font-bold text-emerald-600 tabular-nums">{formatCurrency(agg.conciliado)}</div>
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              {movimentacoes.filter(m => m.conciliado).length} /{' '}
-              {movimentacoes.length} movimentações
-            </div>
-          </div>
-          <div className={`rounded-xl border p-4 ${Math.abs(agg.gap) > 1 ? 'border-red-500/30 bg-red-500/5' : 'border-emerald-500/30 bg-emerald-500/5'}`}>
-            <div className="text-[10px] uppercase text-muted-foreground">Gap</div>
-            <div className={`mt-1 text-xl font-bold tabular-nums ${Math.abs(agg.gap) > 1 ? 'text-red-600' : 'text-emerald-600'}`}>
-              {formatCurrency(agg.gap)}
-            </div>
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              Pago − Conciliado
-            </div>
-          </div>
+        <p className="mb-3 text-[11px] text-muted-foreground">
+          Confere se <strong>Pedidos + Custos Indiretos + Capital (devolução)</strong> batem
+          com o total de parcelas geradas (previsto) e com as saídas conciliadas no banco (real).
+        </p>
+
+        <div className="overflow-hidden rounded-xl border">
+          <table className="tbl-bf w-full text-sm">
+            <thead className="bg-muted/80">
+              <tr className="text-left text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                <th className="px-3 py-2">Fonte</th>
+                <th className="px-3 py-2 text-right">Previsto (contratado)</th>
+                <th className="px-3 py-2 text-right">Real (pago)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/50">
+              <tr>
+                <td className="px-3 py-2">🔧 Pedidos</td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(agg.previstoPedidos)}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{formatCurrency(agg.pagoDiretos)}</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-2">🏢 Custos Indiretos</td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(agg.previstoIndiretos)}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{formatCurrency(agg.pagoIndiretos)}</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-2">🏦 Capital (devolução + juros)</td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(agg.previstoCapital)}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{formatCurrency(agg.capitalPagoTotal)}</td>
+              </tr>
+              {(agg.previstoOrfas > 0.5 || agg.pagoOrfas > 0.5) && (
+                <tr className="bg-amber-500/5">
+                  <td className="px-3 py-2 text-amber-700 dark:text-amber-400" title="Parcelas sem pedido_id e sem despesa_indireta_id — não rastreáveis a uma fonte">
+                    ⚠️ Órfãs (sem pedido/despesa)
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums text-amber-700 dark:text-amber-400">{formatCurrency(agg.previstoOrfas)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-amber-700 dark:text-amber-400">{formatCurrency(agg.pagoOrfas)}</td>
+                </tr>
+              )}
+              <tr className="bg-primary/15 font-bold">
+                <td className="px-3 py-2">Σ Total das fontes</td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(agg.previstoTotalFontes)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(agg.pagoTotal)}</td>
+              </tr>
+              <tr className="bg-muted/30">
+                <td className="px-3 py-2 text-muted-foreground" title="Previsto: Σ parcelas (com pedido_id ou despesa_indireta_id) + Σ mutuo_parcelas. Real: Σ saídas conciliadas no extrato.">
+                  Referência (pagamentos)
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {formatCurrency(agg.totalParcelasGeradas)}
+                  <div className="text-[10px] text-muted-foreground/70">Σ parcelas geradas</div>
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {formatCurrency(agg.conciliado)}
+                  <div className="text-[10px] text-muted-foreground/70">
+                    Σ saídas conciliadas ({movimentacoes.filter(m => m.conciliado).length}/{movimentacoes.length} mov.)
+                  </div>
+                </td>
+              </tr>
+              <tr className={`font-bold border-t-2 ${
+                Math.abs(agg.gapPrevisto) > 1 || Math.abs(agg.gap) > 1
+                  ? 'bg-red-500/10 border-red-500/40'
+                  : 'bg-emerald-500/10 border-emerald-500/40'
+              }`}>
+                <td className="px-3 py-2">Gap (fontes − referência)</td>
+                <td className={`px-3 py-2 text-right tabular-nums ${Math.abs(agg.gapPrevisto) > 1 ? 'text-red-600' : 'text-emerald-600'}`}>
+                  {formatCurrency(agg.gapPrevisto)}
+                  {Math.abs(agg.gapPrevisto) > 1 && <AlertTriangle className="inline h-3.5 w-3.5 ml-1" />}
+                </td>
+                <td className={`px-3 py-2 text-right tabular-nums ${Math.abs(agg.gap) > 1 ? 'text-red-600' : 'text-emerald-600'}`}>
+                  {formatCurrency(agg.gap)}
+                  {Math.abs(agg.gap) > 1 && <AlertTriangle className="inline h-3.5 w-3.5 ml-1" />}
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
+
+        {(Math.abs(agg.gapPrevisto) > 1 || Math.abs(agg.gap) > 1) && (
+          <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-[12px] text-amber-900 dark:text-amber-200">
+            <div className="font-semibold mb-1">Possíveis causas do gap:</div>
+            <ul className="list-disc pl-5 space-y-0.5">
+              <li><strong>Previsto:</strong> pedido com <code>valor_total_real</code> diferente da soma das suas parcelas (ex.: pedido sem cond. de pagamento, ou parcelas não geradas/excluídas).</li>
+              <li><strong>Real:</strong> pagamento lançado em parcela mas movimentação bancária não conciliada — ou conciliada num período fora deste filtro.</li>
+              <li><strong>Capital:</strong> juros embutidos nas parcelas dos mútuos podem inflar o total contratado vs valor captado.</li>
+            </ul>
+          </div>
+        )}
       </div>
       </div>
       )}
