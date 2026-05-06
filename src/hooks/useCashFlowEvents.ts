@@ -251,21 +251,94 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       movsValueByParcelaId.set(parcelaId, soma)
     }
 
+    // Lookup reverso: mov_id -> parcela_id (primeira vinculada). Usado para
+    // enriquecer o evento bancario com etapa/fornecedor/item do pedido —
+    // sem isso, todo pagamento via mov vira "Banco/Banco" na arvore do
+    // fluxo, escondendo o pagamento da etapa/fornecedor original.
+    const parcelaIdByMovId = new Map<string, string>()
+    for (const c of (linksMovs as any[])) {
+      for (const l of (c.conciliacao_parcelas ?? [])) {
+        if (!l.parcela_id) continue
+        if (!parcelaIdByMovId.has(c.movimentacao_id)) {
+          parcelaIdByMovId.set(c.movimentacao_id, l.parcela_id)
+        }
+      }
+    }
+    const parcelaById = new Map(parcelas.map(p => [p.id, p]))
+    const pedidoById = new Map(pedidos.map(p => [p.id, p]))
+    const itemById = new Map(itens.map(i => [i.id, i]))
+    const etapaById = new Map(etapas.map(e => [e.id, e]))
+
     // ═══════════════════════════════════════════════════════════
     // EVENTO REAL — TODAS as movs bancarias viram eventos com valor + data REAIS.
     // Garante: saldo historico do Fluxo == saldo da Conciliacao (sem aproximacao).
+    // Mov vinculada a uma parcela HERDA cat/etapa/fornecedor/item dela —
+    // assim o pagamento aparece sob a etapa/fornecedor original na arvore
+    // (e nao em "Banco/Banco" generico).
     // ═══════════════════════════════════════════════════════════
     for (const mv of (movs as any[])) {
       if (!mv.data) continue
       const val = Math.abs(Number(mv.valor))
       if (!(val > 0)) continue
       const isEntrada = mv.tipo === 'entrada'
+
+      let cat: string = 'Banco'
+      let etapa: string | undefined = 'Banco'
+      let forn: string | undefined
+      let item: string | undefined
+      let pedidoId: string | undefined
+      let pedidoNumero: number | undefined
+      let parcelaNumero: number | undefined
+      let parcelaTipo: 'contratual' | 'adiantamento' | undefined
+      let descPrefix = ''
+
+      const parcelaId = parcelaIdByMovId.get(mv.id)
+      if (parcelaId) {
+        const par = parcelaById.get(parcelaId)
+        if (par) {
+          parcelaNumero = par.numero_parcela
+          parcelaTipo = (par as any).tipo
+          if (par.pedido_id) {
+            const ped = pedidoById.get(par.pedido_id)
+            if (ped) {
+              const itemObj = itemById.get(ped.item_compra_id)
+              const etapaObj = itemObj ? etapaById.get(itemObj.etapa_id) : undefined
+              cat = itemObj?.categoria || 'Obra'
+              etapa = etapaObj?.nome
+              forn = ped.fornecedor_nome
+              item = ped.item_descricao || itemObj?.descricao
+              pedidoId = ped.id
+              pedidoNumero = ped.numero_pedido ?? undefined
+              descPrefix = `Parc ${par.numero_parcela}${forn ? ' — ' + forn : ''} · `
+            }
+          } else if (par.despesa_indireta_id && (par as any).despesas_indiretas) {
+            const di = (par as any).despesas_indiretas
+            cat = di.categoria || 'Despesa Indireta'
+            etapa = 'Custos Indiretos'
+            forn = di.fornecedor_nome || di.categoria || 'Indireto'
+            item = di.descricao
+            descPrefix = `Parc ${par.numero_parcela}${forn ? ' — ' + forn : ''} · `
+          }
+        }
+      }
+
       all.push({
         id: `mb-${mv.id}`,
         date: mv.data,
         type: isEntrada ? 'entrada' : 'firme',
         valor: val,
-        meta: { cat: isEntrada ? 'Banco' : 'Banco', etapa: 'Banco', desc: mv.descricao || (isEntrada ? 'Crédito bancário' : 'Débito bancário'), orig: val },
+        meta: {
+          cat,
+          etapa,
+          forn,
+          item,
+          desc: descPrefix + (mv.descricao || (isEntrada ? 'Crédito bancário' : 'Débito bancário')),
+          orig: val,
+          pedidoId,
+          pedidoNumero,
+          parcelaNumero,
+          parcelaTipo,
+        },
       })
     }
 
