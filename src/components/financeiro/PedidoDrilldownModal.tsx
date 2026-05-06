@@ -7,16 +7,18 @@
  *   - divergencia baixa vs extrato (regra C)
  *   - status dessincronizado (regra D)
  */
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { X, ExternalLink, Calendar, Banknote, AlertTriangle, CheckCircle2, ArrowRight } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { X, ExternalLink, Calendar, Banknote, AlertTriangle, CheckCircle2, ArrowRight, Wrench, Sparkles, Loader2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
 import { usePedidos } from '@/hooks/useCompras'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useMovimentacoes } from '@/hooks/useOperacional'
 import { formatCurrency, cn } from '@/lib/utils'
+import { aplicarCorrecaoParcela, type CorrecaoAcao } from '@/lib/correcoes'
 
 const fmtDate = (iso: string | null | undefined) =>
   iso ? new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR') : '—'
@@ -120,6 +122,31 @@ export function PedidoDrilldownModal({ pedidoId, onClose }: Props) {
   const valorTotalPedido = Number(pedido.valor_total_real ?? 0)
   const difCobertura = totais.totalParcelas - valorTotalPedido
 
+  // ─── Sugestao IA ────────────────────────────────────────
+  const [iaState, setIaState] = useState<{ status: 'idle' | 'loading' | 'ok' | 'error'; data?: any; error?: string }>({ status: 'idle' })
+  const handleSugerirIA = async () => {
+    setIaState({ status: 'loading' })
+    try {
+      const { data, error } = await supabase.functions.invoke('sugerir-correcao-pedido', {
+        body: { pedido_id: pedidoId },
+      })
+      if (error) throw new Error(error.message)
+      if (data?.error) throw new Error(data.error)
+      setIaState({ status: 'ok', data })
+      toast.success('Sugestões da IA carregadas')
+    } catch (e: any) {
+      setIaState({ status: 'error', error: e.message ?? String(e) })
+      toast.error(`Falha na IA: ${e.message ?? e}`)
+    }
+  }
+  const sugestoesPorParcela = useMemo(() => {
+    const m = new Map<string, any>()
+    if (iaState.status === 'ok' && Array.isArray(iaState.data?.sugestoes)) {
+      for (const s of iaState.data.sugestoes) m.set(s.parcela_id, s)
+    }
+    return m
+  }, [iaState])
+
   return (
     <ModalShell onClose={onClose}>
       {/* Header */}
@@ -135,10 +162,42 @@ export function PedidoDrilldownModal({ pedidoId, onClose }: Props) {
             {pedido.fornecedor_nome || 'Sem fornecedor'} · {pedido.item_descricao || pedido.item_codigo || 'Item'}
           </p>
         </div>
+        <button
+          onClick={handleSugerirIA}
+          disabled={iaState.status === 'loading'}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/40 bg-gradient-to-br from-purple-500/10 to-pink-500/10 px-3 py-1.5 text-[11px] font-semibold text-purple-700 hover:from-purple-500/15 hover:to-pink-500/15 transition-all disabled:opacity-60"
+          title="Pede para a IA diagnosticar e sugerir correções"
+        >
+          {iaState.status === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+          {iaState.status === 'loading' ? 'Analisando…' : iaState.status === 'ok' ? 'Reanalisar IA' : 'Sugerir correção (IA)'}
+        </button>
         <button onClick={onClose} className="rounded-lg p-2 hover:bg-accent transition-colors">
           <X className="h-4 w-4" />
         </button>
       </div>
+
+      {/* Diagnostico IA */}
+      {iaState.status === 'ok' && iaState.data?.diagnostico && (
+        <div className="border-b bg-gradient-to-br from-purple-500/5 to-pink-500/5 px-6 py-3">
+          <div className="flex items-start gap-2">
+            <Sparkles className="mt-0.5 h-3.5 w-3.5 text-purple-600 shrink-0" />
+            <div className="flex-1 text-xs">
+              <span className="font-semibold text-purple-700">Diagnóstico IA: </span>
+              <span className="text-foreground/80">{iaState.data.diagnostico}</span>
+              {iaState.data.custo_cents != null && (
+                <span className="ml-2 text-[10px] text-muted-foreground">
+                  · {iaState.data.modelo} · ~{(iaState.data.custo_cents / 100).toFixed(3)} cent
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {iaState.status === 'error' && (
+        <div className="border-b bg-red-500/5 px-6 py-2 text-[11px] text-red-600">
+          Falha na IA: {iaState.error}
+        </div>
+      )}
 
       {/* Resumo */}
       <div className="grid grid-cols-4 gap-3 border-b bg-muted/20 px-6 py-3 text-xs">
@@ -175,7 +234,13 @@ export function PedidoDrilldownModal({ pedidoId, onClose }: Props) {
         ) : (
           <ul className="space-y-2">
             {parcelasPedido.map(p => (
-              <ParcelaRow key={p.id} parcela={p} movs={movsByParcela.get(p.id) ?? []} />
+              <ParcelaRow
+                key={p.id}
+                parcela={p}
+                movs={movsByParcela.get(p.id) ?? []}
+                pedidoId={pedidoId}
+                sugestaoIA={sugestoesPorParcela.get(p.id)}
+              />
             ))}
           </ul>
         )}
@@ -260,12 +325,84 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
+interface AcaoOpcao {
+  acao: CorrecaoAcao
+  label: string
+  descricao: string
+  tone: 'safe' | 'warning' | 'danger'
+}
+
+function acoesPossiveis(ctx: {
+  valor: number; valor_pago: number; saldo: number; isPaga: boolean
+  somaMovs: number; statusDessinc: boolean; divPagoMovs: boolean
+}): AcaoOpcao[] {
+  const out: AcaoOpcao[] = []
+  // Saldo aberto + ja pagou algo: pode reduzir ou marcar paga
+  if (!ctx.isPaga && ctx.valor_pago > 0 && ctx.saldo > 0.01) {
+    out.push({
+      acao: 'reduzir_ao_pago',
+      label: `Reduzir parcela ao valor pago (${formatCurrency(ctx.valor_pago)})`,
+      descricao: `Ajusta valor de ${formatCurrency(ctx.valor)} → ${formatCurrency(ctx.valor_pago)} e marca como paga. Use quando o pedido foi superestimado.`,
+      tone: 'warning',
+    })
+    out.push({
+      acao: 'marcar_paga',
+      label: `Marcar como totalmente paga (${formatCurrency(ctx.valor)})`,
+      descricao: `Iguala valor_pago ao valor da parcela. Use quando o pagamento existe mas não está conciliado.`,
+      tone: 'safe',
+    })
+  }
+  // Movs vinculadas mas valor_pago != soma — pode sincronizar
+  if (ctx.divPagoMovs) {
+    out.push({
+      acao: 'sync_valor_pago_movs',
+      label: `Sincronizar valor_pago = Σ movs (${formatCurrency(ctx.somaMovs)})`,
+      descricao: `Atualiza valor_pago para o que o extrato realmente mostra. Use quando a baixa foi registrada com valor errado.`,
+      tone: 'safe',
+    })
+  }
+  // Status incoerente
+  if (ctx.statusDessinc) {
+    if (ctx.valor_pago < ctx.valor) {
+      out.push({
+        acao: 'reduzir_ao_pago',
+        label: `Reduzir parcela ao valor pago (${formatCurrency(ctx.valor_pago)})`,
+        descricao: `Status diz "paga" mas valor_pago < valor. Ajusta o valor da parcela para coincidir.`,
+        tone: 'warning',
+      })
+    }
+  }
+  // Reabrir e zerar (sempre disponivel se algo foi tocado)
+  if (ctx.valor_pago > 0 || ctx.isPaga) {
+    out.push({
+      acao: 'reabrir',
+      label: 'Reabrir parcela (zerar valor_pago)',
+      descricao: `Volta para "a vencer" com valor_pago = 0. ATENÇÃO: invalida baixa anterior. Use só em retrabalho.`,
+      tone: 'danger',
+    })
+  }
+  return out
+}
+
+interface SugestaoIA {
+  parcela_id: string
+  parcela_label?: string
+  acao: CorrecaoAcao | 'aguardar' | 'investigar'
+  justificativa: string
+  confianca: number
+  parametros?: Record<string, unknown>
+}
+
 function ParcelaRow({
   parcela: p,
   movs,
+  pedidoId,
+  sugestaoIA,
 }: {
   parcela: any
   movs: Array<{ id: string; data: string; descricao: string; valor: number }>
+  pedidoId: string
+  sugestaoIA?: SugestaoIA
 }) {
   const v = Number(p.valor || 0)
   const vp = Number(p.valor_pago || 0)
@@ -277,6 +414,53 @@ function ParcelaRow({
   const saldoOculto = !isPaga && saldo > 0.01 && movs.length > 0
   const divPagoMovs = movs.length > 0 && Math.abs(somaMovs - vp) > 0.5
   const statusDessinc = (p.status === 'paga' && vp < v - 0.5) || vp > v + 0.5
+
+  const [showAcoes, setShowAcoes] = useState(false)
+  const [aplicando, setAplicando] = useState(false)
+  const qc = useQueryClient()
+  const acoes = useMemo(
+    () => acoesPossiveis({ valor: v, valor_pago: vp, saldo, isPaga, somaMovs, statusDessinc, divPagoMovs }),
+    [v, vp, saldo, isPaga, somaMovs, statusDessinc, divPagoMovs]
+  )
+  const algumProblema = saldoOculto || statusDessinc || divPagoMovs
+
+  const handleAplicar = async (a: AcaoOpcao | { acao: CorrecaoAcao; label: string; descricao: string }, origem: 'humano' | 'ia' = 'humano') => {
+    if (!confirm(`Confirmar:\n\n${a.label}\n${a.descricao}\n\nEsta ação será registrada em audit_logs.`)) return
+    setAplicando(true)
+    try {
+      const { resumo } = await aplicarCorrecaoParcela({
+        parcela: { ...p, pedido_id: p.pedido_id ?? pedidoId },
+        acao: a.acao,
+        somaMovs: a.acao === 'sync_valor_pago_movs' ? somaMovs : undefined,
+        origemAgente: origem,
+      })
+      toast.success(resumo)
+      await qc.invalidateQueries({ queryKey: ['parcelas'] })
+      await qc.invalidateQueries({ queryKey: ['pedidos'] })
+      setShowAcoes(false)
+    } catch (e: any) {
+      toast.error(`Falhou: ${e.message ?? e}`)
+    } finally {
+      setAplicando(false)
+    }
+  }
+
+  const handleAplicarSugestaoIA = () => {
+    if (!sugestaoIA) return
+    if (sugestaoIA.acao === 'aguardar' || sugestaoIA.acao === 'investigar') return
+    const labelMap: Record<string, string> = {
+      reduzir_ao_pago: `Reduzir parcela ao valor pago (${formatCurrency(vp)})`,
+      marcar_paga: `Marcar como totalmente paga (${formatCurrency(v)})`,
+      sync_valor_pago_movs: `Sincronizar valor_pago = Σ movs (${formatCurrency(somaMovs)})`,
+      reabrir: 'Reabrir parcela (zerar valor_pago)',
+      criar_residuo: 'Criar parcela residual (não suportado pela IA neste fluxo)',
+    }
+    handleAplicar({
+      acao: sugestaoIA.acao,
+      label: labelMap[sugestaoIA.acao] ?? sugestaoIA.acao,
+      descricao: sugestaoIA.justificativa,
+    }, 'ia')
+  }
 
   const tone = saldoOculto || statusDessinc || divPagoMovs ? 'critical' : isPaga ? 'ok' : 'pending'
   const borderCls =
@@ -312,6 +496,22 @@ function ParcelaRow({
             pago {formatCurrency(vp)}
           </div>
         </div>
+        {acoes.length > 0 && (
+          <button
+            onClick={() => setShowAcoes(s => !s)}
+            disabled={aplicando}
+            className={cn(
+              'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors',
+              algumProblema
+                ? 'border-red-500/40 bg-red-500/10 text-red-700 hover:bg-red-500/15'
+                : 'border-border bg-background hover:bg-accent',
+            )}
+            title="Corrigir esta parcela"
+          >
+            <Wrench className="h-3 w-3" />
+            Corrigir
+          </button>
+        )}
       </div>
 
       {/* Movs vinculadas */}
@@ -362,6 +562,76 @@ function ParcelaRow({
         <div className="border-t border-emerald-500/20 bg-emerald-500/5 px-4 py-1 text-[10px] text-emerald-700 inline-flex items-center gap-1">
           <CheckCircle2 className="h-3 w-3" />
           Quitada · sem divergência
+        </div>
+      )}
+
+      {/* Sugestao da IA (se houver) */}
+      {sugestaoIA && (
+        <div className="border-t border-purple-500/20 bg-gradient-to-br from-purple-500/[0.06] to-pink-500/[0.06] px-4 py-2.5">
+          <div className="flex items-start gap-2">
+            <Sparkles className="mt-0.5 h-3.5 w-3.5 text-purple-600 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 text-[11px] font-semibold text-purple-700">
+                IA sugere: <code className="rounded bg-background px-1.5 py-0.5 text-[10px] font-mono">{sugestaoIA.acao}</code>
+                <span className="text-[10px] font-normal text-muted-foreground">
+                  confiança {Math.round((sugestaoIA.confianca ?? 0) * 100)}%
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-foreground/85">{sugestaoIA.justificativa}</p>
+              {(sugestaoIA.acao !== 'aguardar' && sugestaoIA.acao !== 'investigar') && (
+                <button
+                  onClick={handleAplicarSugestaoIA}
+                  disabled={aplicando}
+                  className="mt-2 inline-flex items-center gap-1 rounded-md bg-purple-600 px-2.5 py-1 text-[10px] font-semibold text-white hover:bg-purple-700 transition-colors disabled:opacity-50"
+                >
+                  {aplicando ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+                  Aprovar e aplicar
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Menu de acoes deterministicas */}
+      {showAcoes && acoes.length > 0 && (
+        <div className="border-t bg-background px-4 py-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Ações disponíveis
+            </span>
+            <button
+              onClick={() => setShowAcoes(false)}
+              className="text-[10px] text-muted-foreground hover:text-foreground"
+            >
+              Cancelar
+            </button>
+          </div>
+          <div className="space-y-1.5">
+            {acoes.map((a, idx) => {
+              const toneCls =
+                a.tone === 'safe' ? 'border-emerald-500/30 hover:bg-emerald-500/5' :
+                a.tone === 'warning' ? 'border-amber-500/30 hover:bg-amber-500/5' :
+                'border-red-500/30 hover:bg-red-500/5'
+              return (
+                <button
+                  key={idx}
+                  onClick={() => handleAplicar(a)}
+                  disabled={aplicando}
+                  className={cn(
+                    'flex w-full items-start gap-2 rounded-md border bg-background px-3 py-2 text-left text-[11px] transition-colors disabled:opacity-50',
+                    toneCls,
+                  )}
+                >
+                  {aplicando ? <Loader2 className="h-3 w-3 mt-0.5 shrink-0 animate-spin" /> : <ArrowRight className="h-3 w-3 mt-0.5 shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold">{a.label}</div>
+                    <div className="text-muted-foreground">{a.descricao}</div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
         </div>
       )}
     </li>
