@@ -94,7 +94,26 @@ export function useHealthChecks() {
     }
     const movById = new Map<string, any>()
     for (const m of (movs as any[])) movById.set(m.id, m)
+    // Data da mov mais recente vinculada a cada parcela (ISO YYYY-MM-DD).
+    // Usado pra distinguir "parcelamento em curso" (mov recente) de
+    // "parcela esquecida" (sem movimento ha tempo).
+    const movsLatestDateByParcela = new Map<string, string>()
+    for (const c of (linksMovs as any[])) {
+      for (const l of (c.conciliacao_parcelas || [])) {
+        if (!l.parcela_id) continue
+        const mv = movById.get(c.movimentacao_id)
+        if (!mv?.data) continue
+        const cur = movsLatestDateByParcela.get(l.parcela_id)
+        if (!cur || mv.data > cur) movsLatestDateByParcela.set(l.parcela_id, mv.data)
+      }
+    }
     const pedidoById = new Map(pedidos.map(p => [p.id, p]))
+
+    const diasEntre = (a: string, b: string): number => {
+      const da = new Date(a + 'T00:00:00')
+      const db = new Date(b + 'T00:00:00')
+      return Math.floor((da.getTime() - db.getTime()) / 86400000)
+    }
 
     // ═══════════════════════════════════════════════════════════
     // 1. Pedidos confirmados sem parcela (não estão no fluxo)
@@ -295,40 +314,52 @@ export function useHealthChecks() {
     })
 
     // ═══════════════════════════════════════════════════════════
-    // 9. Saldo de parcela oculto no fluxo (regra A — caso "Charles")
-    //    parcela com movs vinculadas mas valor_pago < valor e status != paga
-    //    => useCashFlowEvents pula a parcela inteira (linha 295) e o residuo
-    //    nunca aparece como previsao futura.
+    // 9. Parcela parcialmente paga atrasada (regra A — refinada)
+    //    Saldo aberto + vencimento ja passou ha > 7 dias + sem mov recente
+    //    nos ultimos 14 dias. So entao indica "parcela esquecida".
+    //    (parcelas em curso de pagamento parcial nao sao mais sinalizadas:
+    //    o residuo agora aparece no fluxo de caixa via useCashFlowEvents.)
     // ═══════════════════════════════════════════════════════════
-    const saldoInvisivel: HealthCheckItem[] = []
-    let valorOculto = 0
+    const DIAS_ATRASO_MIN = 7
+    const DIAS_SEM_MOV_MIN = 14
+    const parcEsquecida: HealthCheckItem[] = []
+    let valorEsquecido = 0
     parcelas.forEach(p => {
       const v = Number(p.valor || 0)
       const vp = Number(p.valor_pago || 0)
       const saldo = v - vp
-      if (saldo <= 0.01) return
+      if (saldo <= 0.5) return
+      if (vp <= 0) return // sem nada pago: cai na regra "parcelas vencidas"
       const isPaga = p.status === 'paga' || vp >= v - 0.005
       if (isPaga) return
       const movsCount = movsByParcelaId.get(p.id)?.size ?? 0
-      if (movsCount === 0) return
+      if (movsCount === 0) return // sem movs vinculadas: cai em outra regra
+      // Vencimento precisa ja ter passado ha mais que o limite
+      if (!p.data_vencimento || p.data_vencimento >= today) return
+      const diasAtraso = diasEntre(today, p.data_vencimento)
+      if (diasAtraso < DIAS_ATRASO_MIN) return
+      // Ultima mov vinculada precisa ser antiga
+      const ultimaMov = movsLatestDateByParcela.get(p.id)
+      const diasUltimaMov = ultimaMov ? diasEntre(today, ultimaMov) : 99999
+      if (diasUltimaMov < DIAS_SEM_MOV_MIN) return
       const ped = p.pedido_id ? pedidoById.get(p.pedido_id) : undefined
-      saldoInvisivel.push({
+      parcEsquecida.push({
         id: p.id,
         label: `Pedido #${ped?.numero_pedido ?? '?'} P${p.numero_parcela} — ${ped?.fornecedor_nome ?? p.fornecedor_nome ?? 'Sem forn.'}`,
-        description: `Saldo invisível: ${fmtBRL(saldo)} • Pago ${fmtBRL(vp)}/${fmtBRL(v)} via ${movsCount} mov(s)`,
+        description: `Atraso ${diasAtraso}d • última mov ${diasUltimaMov}d atrás • saldo ${fmtBRL(saldo)} (pago ${fmtBRL(vp)}/${fmtBRL(v)})`,
         value: saldo,
         pedidoId: p.pedido_id ?? undefined,
       })
-      valorOculto += saldo
+      valorEsquecido += saldo
     })
     all.push({
-      id: 'saldo-invisivel-fluxo',
-      title: 'Saldo de parcela oculto no fluxo',
-      severity: saldoInvisivel.length === 0 ? 'ok' : saldoInvisivel.length <= 2 ? 'warn' : 'critical',
-      summary: saldoInvisivel.length === 0
-        ? 'Nenhum saldo de parcela escondido do fluxo de caixa'
-        : `${saldoInvisivel.length} parcela(s) parcialmente paga(s) com ${fmtBRL(valorOculto)} oculto(s) do fluxo`,
-      items: saldoInvisivel.slice(0, 30),
+      id: 'parcela-parcial-atrasada',
+      title: 'Parcela parcialmente paga atrasada',
+      severity: parcEsquecida.length === 0 ? 'ok' : parcEsquecida.length <= 2 ? 'warn' : 'critical',
+      summary: parcEsquecida.length === 0
+        ? 'Nenhuma parcela parcialmente paga sem movimento recente'
+        : `${parcEsquecida.length} parcela(s) com saldo de ${fmtBRL(valorEsquecido)}, vencidas e sem mov nos últimos ${DIAS_SEM_MOV_MIN}d`,
+      items: parcEsquecida.slice(0, 30),
       route: '/pagamentos',
       routeLabel: 'Ir para Pagamentos',
     })

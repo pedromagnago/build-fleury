@@ -234,6 +234,23 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     for (const s of movsByParcelaId.values()) for (const id of s) movsConciliadasIds.add(id)
     for (const s of movsByMutuoParcelaId.values()) for (const id of s) movsConciliadasIds.add(id)
 
+    // Soma do valor real (extrato) das movs vinculadas a cada parcela.
+    // Usado para emitir SOMENTE o residuo da parcela quando ela ainda tem
+    // saldo aberto: residuo = valor_da_parcela - soma_das_movs. As movs
+    // ja viram eventos reais (bloco acima); o residuo entra como evento
+    // firme na data de vencimento, evitando que saldo parcial suma do fluxo.
+    const movByIdLookup = new Map<string, any>()
+    for (const mv of (movs as any[])) movByIdLookup.set(mv.id, mv)
+    const movsValueByParcelaId = new Map<string, number>()
+    for (const [parcelaId, movIds] of movsByParcelaId.entries()) {
+      let soma = 0
+      for (const movId of movIds) {
+        const mv = movByIdLookup.get(movId)
+        if (mv) soma += Math.abs(Number(mv.valor || 0))
+      }
+      movsValueByParcelaId.set(parcelaId, soma)
+    }
+
     // ═══════════════════════════════════════════════════════════
     // EVENTO REAL — TODAS as movs bancarias viram eventos com valor + data REAIS.
     // Garante: saldo historico do Fluxo == saldo da Conciliacao (sem aproximacao).
@@ -289,15 +306,27 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       if (!p.data_vencimento) return
       // Considera paga também quando valor_pago cobre o valor (status pode estar dessincronizado em parcelas antigas)
       const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
-      // Se ja tem mov bancaria vinculada, a mov ja virou evento — pula a parcela
-      // SEMPRE (mesmo se valor_pago/data_pagamento_real nao foi sincronizado pela
-      // baixa). Evita dupla contagem entre evento-plano e mov-real do extrato.
-      if ((movsByParcelaId.get(p.id)?.size ?? 0) > 0) return
-      // Em 'realizado' ou 'planejado': só parcelas pagas (parcela em aberto é previsão de pedido).
+      const movsCount = movsByParcelaId.get(p.id)?.size ?? 0
+      const somaMovs = movsValueByParcelaId.get(p.id) ?? 0
+
+      // Parcela com movs vinculadas e ja paga: as movs reais ja viraram eventos
+      // no bloco anterior — nao reemite. Evita dupla contagem.
+      if (movsCount > 0 && isPaga) return
+      // Em 'realizado'/'planejado': só parcelas pagas (parcela em aberto é previsão).
       if (apenasRealizado && !isPaga) return
 
-      const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
-      if (calcVal <= 0) return
+      // Calcula valor a emitir.
+      // - Sem movs: comportamento padrao (valor pago se paga, ou saldo aberto).
+      // - Com movs + saldo aberto: emite SOMENTE o residuo (valor - soma das movs reais)
+      //   na data de vencimento. As movs ja sao eventos com seus valores reais.
+      let calcVal: number
+      const isResiduo = movsCount > 0
+      if (isResiduo) {
+        calcVal = Math.max(0, Number(p.valor) - somaMovs)
+      } else {
+        calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
+      }
+      if (calcVal <= 0.5) return
 
       // Data efetiva: pagamento_real (se paga) > prevista_pagamento > vencimento.
       // Nao paga e ja vencida: empurra para amanha so na projecao (nao em realizado/planejado).
@@ -319,7 +348,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
         etapaStr = etapaObj?.nome
         fornStr = ped.fornecedor_nome
         itemStr = ped.item_descricao || itemObj?.descricao
-        descStr = `Parc ${p.numero_parcela} — ${ped.fornecedor_nome || ''}`
+        descStr = `Parc ${p.numero_parcela}${isResiduo ? ' (saldo)' : ''} — ${ped.fornecedor_nome || ''}`
       } else if (p.despesa_indireta_id && (p as any).despesas_indiretas) {
         const di = (p as any).despesas_indiretas
         catStr = di.categoria || 'Despesa Indireta'
