@@ -184,9 +184,9 @@ export function PedidoDrilldownModal({ pedidoId, onClose }: Props) {
             <div className="flex-1 text-xs">
               <span className="font-semibold text-purple-700">Diagnóstico IA: </span>
               <span className="text-foreground/80">{iaState.data.diagnostico}</span>
-              {iaState.data.custo_cents != null && (
+              {iaState.data.custo_usd != null && (
                 <span className="ml-2 text-[10px] text-muted-foreground">
-                  · {iaState.data.modelo} · ~{(iaState.data.custo_cents / 100).toFixed(3)} cent
+                  · {iaState.data.modelo} · ~US$ {iaState.data.custo_usd.toFixed(4)}
                 </span>
               )}
             </div>

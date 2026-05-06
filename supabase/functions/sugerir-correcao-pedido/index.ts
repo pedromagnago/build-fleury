@@ -1,17 +1,17 @@
-// Painel de Controle — Sugestao de correcao via Claude (Anthropic).
+// Painel de Controle — Sugestao de correcao via OpenAI.
 //
 // POST { pedido_id: string }
-// Resposta: { diagnostico, sugestoes: [{ parcela_id, acao, justificativa, confianca, parametros? }], modelo, custo_cents }
+// Resposta: { diagnostico, sugestoes: [{ parcela_id, acao, justificativa, confianca, parametros? }], modelo, custo_cents, usage }
 //
 // Le pedido + parcelas + movs vinculadas usando o JWT do user (respeita RLS).
-// Manda o contexto pro Claude e retorna sugestoes estruturadas. NUNCA aplica
+// Manda o contexto pro modelo e retorna sugestoes estruturadas. NUNCA aplica
 // — o front mostra a sugestao e o user aprova com 1 clique (executa pelos
 // helpers em src/lib/correcoes.ts, registrando audit_logs com agente='ia').
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0'
 
-const ANTHROPIC_KEY = Deno.env.get('ANTHROPIC_API_KEY')!
-const MODEL = Deno.env.get('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-6'
+const OPENAI_KEY = Deno.env.get('OPENAI_API_KEY')!
+const MODEL = Deno.env.get('OPENAI_SUGGEST_MODEL') ?? 'gpt-4o-mini'
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SUPABASE_ANON = Deno.env.get('SUPABASE_ANON_KEY')!
 
@@ -45,17 +45,17 @@ Pistas para escolher:
 - Se valor_pago = soma das movs com diferenca pequena (<5%): erro de digitacao → sync_valor_pago_movs.
 - Se diferenca for centavos (<R$ 1): provavel arredondamento → marcar_paga.
 
-Responda EXCLUSIVAMENTE em JSON valido (sem markdown, sem comentarios):
+Responda EXCLUSIVAMENTE em JSON valido seguindo este schema (sem markdown, sem comentarios):
 {
   "diagnostico": "1-2 frases em portugues do que foi observado no pedido como um todo",
   "sugestoes": [
     {
       "parcela_id": "uuid",
-      "parcela_label": "P1 contratual" | "ADI 3" etc,
-      "acao": "reduzir_ao_pago"|"marcar_paga"|"sync_valor_pago_movs"|"reabrir"|"criar_residuo"|"aguardar"|"investigar",
-      "justificativa": "1-2 frases em portugues explicando o porque desta acao em particular",
-      "confianca": 0.0-1.0,
-      "parametros": {} // opcional, ex: { soma_movs: 69160.82 } para sync; { valor_residuo, data_vencimento } para criar_residuo
+      "parcela_label": "P1 contratual ou ADI 3 etc",
+      "acao": "reduzir_ao_pago|marcar_paga|sync_valor_pago_movs|reabrir|criar_residuo|aguardar|investigar",
+      "justificativa": "1-2 frases em portugues explicando o porque desta acao",
+      "confianca": 0.0,
+      "parametros": {}
     }
   ]
 }
@@ -68,8 +68,8 @@ serve(async (req) => {
   if (req.method !== 'POST') return new Response('Method not allowed', { status: 405, headers: CORS })
 
   try {
-    if (!ANTHROPIC_KEY) {
-      return jsonError(500, 'ANTHROPIC_API_KEY nao configurada na edge function')
+    if (!OPENAI_KEY) {
+      return jsonError(500, 'OPENAI_API_KEY nao configurada na edge function')
     }
 
     const auth = req.headers.get('Authorization') ?? ''
@@ -80,12 +80,10 @@ serve(async (req) => {
       return jsonError(400, 'pedido_id obrigatorio')
     }
 
-    // Cliente supabase com o JWT do user (respeita RLS)
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON, {
       global: { headers: { Authorization: auth } },
     })
 
-    // 1) Pedido
     const { data: pedido, error: errPed } = await supabase
       .from('pedidos')
       .select('id, numero_pedido, valor_total_real, data_entrega_prevista, cond_pagamento, status, fornecedor_id, item_compra_id, observacoes')
@@ -94,7 +92,6 @@ serve(async (req) => {
     if (errPed) return jsonError(500, errPed.message)
     if (!pedido) return jsonError(404, 'pedido nao encontrado ou sem permissao')
 
-    // 2) Parcelas
     const { data: parcelas, error: errPar } = await supabase
       .from('parcelas')
       .select('id, numero_parcela, tipo, valor, valor_pago, data_vencimento, data_pagamento_real, status, descricao')
@@ -103,7 +100,6 @@ serve(async (req) => {
       .order('numero_parcela', { ascending: true })
     if (errPar) return jsonError(500, errPar.message)
 
-    // 3) Conciliacoes -> movs vinculadas (separadas por parcela)
     const parcelaIds = (parcelas ?? []).map(p => p.id)
     const linkRows: any[] = []
     if (parcelaIds.length > 0) {
@@ -115,7 +111,6 @@ serve(async (req) => {
       linkRows.push(...(links ?? []))
     }
 
-    // mapeia parcela -> [movs]
     const movsByParcela: Record<string, Array<{ data: string; descricao: string; valor: number }>> = {}
     for (const c of linkRows) {
       const mb = c.movimentacoes_bancarias
@@ -129,7 +124,6 @@ serve(async (req) => {
       }
     }
 
-    // 4) Fornecedor (nome) — opcional para o prompt
     let fornNome: string | null = null
     if (pedido.fornecedor_id) {
       const { data: f } = await supabase.from('fornecedores').select('nome').eq('id', pedido.fornecedor_id).maybeSingle()
@@ -161,48 +155,48 @@ serve(async (req) => {
       hoje: new Date().toISOString().slice(0, 10),
     }
 
-    // 5) Chama Claude
     const userMsg = `Pedido com inconsistencias para auditar:\n\n${JSON.stringify(ctx, null, 2)}`
 
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'x-api-key': ANTHROPIC_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_KEY}`,
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 1500,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userMsg }],
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userMsg },
+        ],
       }),
     })
 
     if (!r.ok) {
       const txt = await r.text()
-      return jsonError(502, `Anthropic API ${r.status}: ${txt.slice(0, 500)}`)
+      return jsonError(502, `OpenAI ${r.status}: ${txt.slice(0, 500)}`)
     }
     const apiResp = await r.json()
-    const text: string = (apiResp?.content?.[0]?.text ?? '').trim()
-    const usage = apiResp?.usage ?? { input_tokens: 0, output_tokens: 0 }
+    const text: string = (apiResp?.choices?.[0]?.message?.content ?? '').trim()
+    const usage = apiResp?.usage ?? { prompt_tokens: 0, completion_tokens: 0 }
 
-    // Tenta extrair o primeiro objeto JSON, mesmo se vier com fences
-    const stripped = text.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim()
     let parsed: any
     try {
-      parsed = JSON.parse(stripped)
+      parsed = JSON.parse(text)
     } catch {
-      // tenta achar o primeiro { ... } valido
+      const stripped = text.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim()
       const m = stripped.match(/\{[\s\S]*\}$/)
       if (m) parsed = JSON.parse(m[0])
-      else return jsonError(502, `Resposta do modelo nao e JSON: ${stripped.slice(0, 200)}`)
+      else return jsonError(502, `Resposta do modelo nao e JSON: ${text.slice(0, 200)}`)
     }
 
-    // Custo aproximado (Sonnet 4.6: $3/M input, $15/M output)
-    const custo_cents = Math.round(((usage.input_tokens / 1_000_000) * 300) + ((usage.output_tokens / 1_000_000) * 1500))
+    // Custo USD aproximado para gpt-4o-mini ($0.15/M input, $0.60/M output).
+    // Se trocar de modelo via env, este numero fica so como referencia.
+    const custo_usd = ((usage.prompt_tokens / 1_000_000) * 0.15) + ((usage.completion_tokens / 1_000_000) * 0.60)
 
-    return new Response(JSON.stringify({ ...parsed, modelo: MODEL, custo_cents, usage }), {
+    return new Response(JSON.stringify({ ...parsed, modelo: MODEL, custo_usd, usage }), {
       headers: { ...CORS, 'Content-Type': 'application/json' },
     })
   } catch (e) {
