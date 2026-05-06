@@ -11,6 +11,7 @@
 
 import { useState, useMemo } from 'react'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { InconsistenciasTable } from '@/components/financeiro/InconsistenciasTable'
 import {
   Gauge, ChevronDown, ChevronRight, TrendingUp, TrendingDown,
   Package, CreditCard, Wallet, FileCheck2, Landmark, AlertTriangle,
@@ -97,6 +98,7 @@ export default function PainelControlePage() {
   const { data: etapas = [] } = useEtapas()
 
   const [expandedSection, setExpandedSection] = useState<'diretos' | 'indiretos' | 'capital' | null>('diretos')
+  const [showMacro, setShowMacro] = useState(false)
   const qtdCasas = currentCompany?.qtd_casas ?? 1
 
   // ─── Agregações ────────────────────────────────────────────────────────────
@@ -251,9 +253,23 @@ export default function PainelControlePage() {
         icon={Gauge}
       />
 
-      {/* ─── CAMADA 1: KPI CARDS ─── */}
+      {/* ─── CAMADA 0: INCONSISTÊNCIAS DETECTADAS (foco operacional) ─── */}
+      <InconsistenciasTable />
+
+      {/* ─── CAMADA 1: KPI CARDS (contexto macro, recolhível) ─── */}
+      <div className="-mb-2">
+        <button
+          onClick={() => setShowMacro(s => !s)}
+          className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {showMacro ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          Auditoria macro {showMacro ? '(esconder)' : '(mostrar contexto agregado)'}
+        </button>
+      </div>
+
+      {showMacro && (
+      <div className="space-y-6">
       <div>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Macros consolidados</h2>
         <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
           <KpiCard
             icon={Wallet}
@@ -474,6 +490,8 @@ export default function PainelControlePage() {
           </div>
         </div>
       </div>
+      </div>
+      )}
     </div>
   )
 }
