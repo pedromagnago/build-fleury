@@ -7,12 +7,16 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { useHealthChecks, type CheckSeverity } from '@/hooks/useHealthChecks'
 import { useHealthSnapshots } from '@/hooks/useHealthSnapshots'
+import { useProject } from '@/contexts/ProjectContext'
 import { formatCurrency, cn } from '@/lib/utils'
-import { AlertTriangle, XCircle, CheckCircle2, ExternalLink, Search, X, ChevronDown, Download, Eye } from 'lucide-react'
+import { AlertTriangle, XCircle, CheckCircle2, ExternalLink, Search, X, ChevronDown, Download, Eye, RefreshCw, Loader2 } from 'lucide-react'
 import { PedidoDrilldownModal } from './PedidoDrilldownModal'
 import { HealthTrendSparkline } from './HealthTrendSparkline'
+import { regenerarParcelasDoPedido } from '@/lib/regenerarParcelasDoPedido'
 
 const SEV: Record<CheckSeverity, { label: string; icon: typeof CheckCircle2; pill: string; row: string }> = {
   critical: {
@@ -39,6 +43,8 @@ export function InconsistenciasTable() {
   const { flatItems, stats, checks, isLoading } = useHealthChecks()
   const { upsertToday } = useHealthSnapshots()
   const navigate = useNavigate()
+  const qc = useQueryClient()
+  const { currentCompany } = useProject()
   // Persiste o snapshot do dia 1x quando os checks terminam de calcular
   const snapshotedRef = useRef(false)
   useEffect(() => {
@@ -50,6 +56,70 @@ export function InconsistenciasTable() {
   const [filterCheck, setFilterCheck] = useState<string | 'all'>('all')
   const [search, setSearch] = useState('')
   const [drilldownPedidoId, setDrilldownPedidoId] = useState<string | null>(null)
+  const [regenerandoId, setRegenerandoId] = useState<string | null>(null)
+
+  const handleRegenerar = async (pedidoId: string, label: string) => {
+    if (!currentCompany) return
+    const ok = window.confirm(
+      `Regenerar parcelas de "${label}"?\n\n` +
+      `• Parcelas pagas/parcialmente pagas serão preservadas.\n` +
+      `• Parcelas pendentes/vencidas serão recriadas com base em cond_pagamento + data_entrega.\n\n` +
+      `Esta ação não pode ser desfeita.`
+    )
+    if (!ok) return
+    setRegenerandoId(pedidoId)
+    try {
+      const r = await regenerarParcelasDoPedido(pedidoId, currentCompany.id)
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['pedidos'] })
+      toast.success(
+        `${r.criadas} parcela(s) recriadas, ${r.deletadas} apagadas. ${r.pagasPreservadas} paga(s) preservada(s).`
+      )
+    } catch (err: any) {
+      toast.error('Erro ao regenerar: ' + (err.message ?? String(err)))
+    } finally {
+      setRegenerandoId(null)
+    }
+  }
+
+  const REGENERAVEIS = new Set(['parcelas-vs-pedido', 'pedido-cancelado-com-parcela'])
+  const [bulkRegenerando, setBulkRegenerando] = useState<{ done: number; total: number } | null>(null)
+
+  const handleBulkRegenerar = async (items: typeof flatItems) => {
+    if (!currentCompany) return
+    const elegiveis = items.filter(it => it.pedidoId && REGENERAVEIS.has(it.checkId))
+    if (elegiveis.length === 0) return
+    const ok = window.confirm(
+      `Regenerar parcelas de ${elegiveis.length} pedido(s) filtrado(s)?\n\n` +
+      `• Parcelas pagas/parcialmente pagas serão preservadas.\n` +
+      `• Parcelas pendentes/vencidas serão recriadas.\n\n` +
+      `Processado em sequência. Esta ação não pode ser desfeita.`
+    )
+    if (!ok) return
+    setBulkRegenerando({ done: 0, total: elegiveis.length })
+    let sucesso = 0
+    let falha = 0
+    for (let i = 0; i < elegiveis.length; i++) {
+      const it = elegiveis[i]
+      if (!it) continue
+      try {
+        await regenerarParcelasDoPedido(it.pedidoId!, currentCompany.id)
+        sucesso++
+      } catch (err) {
+        console.error(`Falha ao regenerar ${it.label}:`, err)
+        falha++
+      }
+      setBulkRegenerando({ done: i + 1, total: elegiveis.length })
+    }
+    qc.invalidateQueries({ queryKey: ['parcelas'] })
+    qc.invalidateQueries({ queryKey: ['pedidos'] })
+    setBulkRegenerando(null)
+    if (falha === 0) {
+      toast.success(`${sucesso} pedido(s) regenerado(s) com sucesso.`)
+    } else {
+      toast.warning(`${sucesso} ok • ${falha} falharam (ver console).`)
+    }
+  }
 
   // Lista de regras com items para popular o dropdown
   const regrasComItems = useMemo(
@@ -145,6 +215,24 @@ export function InconsistenciasTable() {
           )}
         </div>
 
+        {/* Bulk Regenerar (só quando o filtro contém pedidos regeneráveis) */}
+        {(() => {
+          const elegiveis = filtrados.filter(it => it.pedidoId && REGENERAVEIS.has(it.checkId))
+          if (elegiveis.length === 0) return null
+          return (
+            <button
+              onClick={() => handleBulkRegenerar(filtrados)}
+              disabled={bulkRegenerando !== null}
+              className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Regenerar parcelas de todos os pedidos visíveis (preserva pagas)"
+            >
+              {bulkRegenerando
+                ? <><Loader2 className="h-3 w-3 animate-spin" />{bulkRegenerando.done}/{bulkRegenerando.total}</>
+                : <><RefreshCw className="h-3 w-3" />Regenerar {elegiveis.length}</>}
+            </button>
+          )
+        })()}
+
         {/* Export CSV */}
         <button
           onClick={handleExportCSV}
@@ -218,6 +306,19 @@ export function InconsistenciasTable() {
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                          {it.pedidoId && REGENERAVEIS.has(it.checkId) && (
+                            <button
+                              onClick={() => handleRegenerar(it.pedidoId!, it.label)}
+                              disabled={regenerandoId === it.pedidoId}
+                              className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-500/25 transition-colors disabled:opacity-50"
+                              title="Apaga parcelas pendentes e recria com base em cond_pagamento. Pagas são preservadas."
+                            >
+                              {regenerandoId === it.pedidoId
+                                ? <Loader2 className="h-3 w-3 animate-spin" />
+                                : <RefreshCw className="h-3 w-3" />}
+                              Regenerar
+                            </button>
+                          )}
                           {it.pedidoId && (
                             <button
                               onClick={() => setDrilldownPedidoId(it.pedidoId!)}
