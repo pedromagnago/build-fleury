@@ -82,7 +82,10 @@ export function InconsistenciasTable() {
     }
   }
 
-  const REGENERAVEIS = new Set(['parcelas-vs-pedido', 'pedido-cancelado-com-parcela'])
+  // Regras em que faz sentido regenerar parcelas a partir do pedido.
+  // 'pedido-cancelado-com-parcela' fica de fora: regenerar não resolve —
+  // a ação correta é cancelar as parcelas pendentes ou reativar o pedido.
+  const REGENERAVEIS = new Set(['parcelas-vs-pedido'])
   const [bulkRegenerando, setBulkRegenerando] = useState<{ done: number; total: number } | null>(null)
 
   const handleBulkRegenerar = async (items: typeof flatItems) => {

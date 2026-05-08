@@ -927,7 +927,20 @@ function PedidosTab({ search }: { search: string }) {
     planejado: 'bg-slate-500/10 text-slate-500',
     pedido_enviado: 'bg-blue-500/10 text-blue-500',
     entregue: 'bg-emerald-500/10 text-emerald-500',
+    parcialmente_pago: 'bg-amber-500/10 text-amber-600',
     pago: 'bg-green-500/10 text-green-600',
+    cancelado: 'bg-red-500/10 text-red-500',
+  }
+  const statusLabel = (s: string | null | undefined): string => {
+    switch (s) {
+      case 'planejado':         return 'Plan.'
+      case 'pedido_enviado':    return 'Enviado'
+      case 'entregue':          return 'Entregue'
+      case 'parcialmente_pago': return 'Parc. pago'
+      case 'pago':              return 'Pago'
+      case 'cancelado':         return 'Cancelado'
+      default:                  return s ?? '—'
+    }
   }
 
   const filtered = pedidos.filter((p) => {
@@ -1430,7 +1443,7 @@ function PedidosTab({ search }: { search: string }) {
                           <span className="opacity-50">|</span>
                           <span>Entr: <span className="text-foreground">{group.data_entrega ? localDate(group.data_entrega).toLocaleDateString('pt-BR') : '—'}</span></span>
                           <span className="opacity-50">|</span>
-                          <span className={`rounded-full px-2 py-0.5 font-bold ${statusColors[group.status] ?? ''}`}>{group.status === 'confirmado' ? 'Confirmado' : group.status === 'planejado' ? 'Plan.' : group.status.charAt(0).toUpperCase() + group.status.slice(1)}</span>
+                          <span className={`rounded-full px-2 py-0.5 font-bold ${statusColors[group.status] ?? ''}`}>{statusLabel(group.status)}</span>
                        </div>
                     </td>
                     <td className="px-3 py-2 text-right border-b text-primary tracking-tight font-bold">
@@ -1586,7 +1599,7 @@ function PedidosTab({ search }: { search: string }) {
                                       <td className="py-1.5 text-right font-medium">{p.valor_total_real != null ? formatCurrency(p.valor_total_real) : '—'}</td>
                                       <td className="py-1.5 text-center">
                                         <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${statusColors[p.status] ?? ''}`}>
-                                          {p.status === 'confirmado' ? 'Conf.' : p.status === 'planejado' ? 'Plan.' : (p.status ?? '').charAt(0).toUpperCase() + (p.status ?? '').slice(1)}
+                                          {statusLabel(p.status)}
                                         </span>
                                       </td>
                                       <td className="py-1.5 text-center">

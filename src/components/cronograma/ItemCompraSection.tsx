@@ -314,7 +314,7 @@ function ItemRow({ item, expanded, toggle, pedidos, parcelasByPedido, consumido,
       {/* Pedidos expand */}
       {expanded && pedidos.map(ped => {
         const parcs = parcelasByPedido.get(ped.id) ?? []
-        const stColor = ped.status === 'entregue' ? 'text-emerald-600' : ped.status === 'confirmado' ? 'text-blue-600' : ped.status === 'cancelado' ? 'text-red-400' : 'text-muted-foreground'
+        const stColor = ped.status === 'entregue' ? 'text-emerald-600' : ped.status === 'pago' || ped.status === 'parcialmente_pago' ? 'text-blue-600' : ped.status === 'cancelado' ? 'text-red-400' : 'text-muted-foreground'
         return (
           <tr key={ped.id} className="bg-muted/10 border-t text-[10px]">
             <td />

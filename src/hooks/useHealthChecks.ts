@@ -7,7 +7,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useParcelas } from '@/hooks/useFinanceiro'
-import { usePedidos, useItensCompra } from '@/hooks/useCompras'
+import { usePedidos, useItensCompra, STATUS_PEDIDO_ATIVO } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useMedicoes, useDistribuicao, useMovimentacoes } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
@@ -116,19 +116,20 @@ export function useHealthChecks() {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // 1. Pedidos confirmados sem parcela (não estão no fluxo)
+    // 1. Pedidos ativos sem parcela (não estão no fluxo)
+    //    Ativo = qualquer status do ciclo de vida exceto 'cancelado'.
     // ═══════════════════════════════════════════════════════════
     const parcelaPedidoIds = new Set(parcelas.map(p => p.pedido_id).filter(Boolean))
     const pedidosSemParcela = pedidos.filter(
-      p => p.status === 'confirmado' && !parcelaPedidoIds.has(p.id)
+      p => STATUS_PEDIDO_ATIVO.includes(p.status as any) && !parcelaPedidoIds.has(p.id)
     )
     all.push({
       id: 'pedidos-sem-parcela',
       title: 'Pedidos sem parcela',
       severity: pedidosSemParcela.length === 0 ? 'ok' : pedidosSemParcela.length <= 3 ? 'warn' : 'critical',
       summary: pedidosSemParcela.length === 0
-        ? 'Todos os pedidos confirmados têm parcelas'
-        : `${pedidosSemParcela.length} pedido(s) confirmado(s) sem parcela gerada`,
+        ? 'Todos os pedidos ativos têm parcelas'
+        : `${pedidosSemParcela.length} pedido(s) ativo(s) sem parcela gerada`,
       items: pedidosSemParcela.map(p => ({
         id: p.id,
         label: `Pedido #${p.numero_pedido || '?'} — ${p.fornecedor_nome || 'Sem forn.'}`,
@@ -529,12 +530,15 @@ export function useHealthChecks() {
     })
 
     // ═══════════════════════════════════════════════════════════
-    // 16. Pedido cancelado/rascunho com parcelas ativas
+    // 16. Pedido cancelado com parcelas ativas
+    //     Só dispara para 'cancelado' — demais status (planejado,
+    //     pedido_enviado, parcialmente_pago, pago, entregue) são
+    //     parte do ciclo normal e devem ter parcelas.
     // ═══════════════════════════════════════════════════════════
     const pedidosCanceladosComParcela: HealthCheckItem[] = []
     let valorCanceladoComParc = 0
     for (const ped of pedidos) {
-      if (ped.status === 'confirmado') continue
+      if (ped.status !== 'cancelado') continue
       const somaParc = parcelasPorPedido.get(ped.id) ?? 0
       if (somaParc <= 0.5) continue
       pedidosCanceladosComParcela.push({
@@ -548,11 +552,11 @@ export function useHealthChecks() {
     }
     all.push({
       id: 'pedido-cancelado-com-parcela',
-      title: 'Pedido não-confirmado com parcelas',
+      title: 'Pedido cancelado com parcelas',
       severity: pedidosCanceladosComParcela.length === 0 ? 'ok' : 'critical',
       summary: pedidosCanceladosComParcela.length === 0
-        ? 'Pedidos cancelados/rascunho não têm parcelas pendentes'
-        : `${pedidosCanceladosComParcela.length} pedido(s) não-confirmados com ${fmtBRL(valorCanceladoComParc)} em parcelas`,
+        ? 'Pedidos cancelados não têm parcelas pendentes'
+        : `${pedidosCanceladosComParcela.length} pedido(s) cancelado(s) com ${fmtBRL(valorCanceladoComParc)} em parcelas`,
       items: pedidosCanceladosComParcela.slice(0, 30),
       route: '/pagamentos',
       routeLabel: 'Ir para Pagamentos',

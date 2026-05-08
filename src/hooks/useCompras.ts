@@ -39,6 +39,26 @@ export interface ItemCompra {
   fornecedor_nome?: string
 }
 
+// Status válidos no banco (ver CHECK constraint pedidos_status_check).
+// 'planejado' é o default da importação; demais refletem o ciclo do pedido.
+export type PedidoStatus =
+  | 'planejado'
+  | 'pedido_enviado'
+  | 'entregue'
+  | 'parcialmente_pago'
+  | 'pago'
+  | 'cancelado'
+
+// Pedido "ativo" para fins financeiros: já está no fluxo, deve ter parcelas.
+// Apenas 'cancelado' fica de fora.
+export const STATUS_PEDIDO_ATIVO: readonly PedidoStatus[] = [
+  'planejado',
+  'pedido_enviado',
+  'entregue',
+  'parcialmente_pago',
+  'pago',
+] as const
+
 export interface Pedido {
   id: string
   company_id: string
@@ -52,7 +72,7 @@ export interface Pedido {
   cond_pagamento: string | null
   data_entrega_prevista: string | null
   data_entrega_real: string | null
-  status: 'planejado' | 'confirmado' | 'entregue' | 'cancelado'
+  status: PedidoStatus
   observacoes: string | null
   created_at: string
   // Joined
