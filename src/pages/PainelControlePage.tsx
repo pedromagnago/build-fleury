@@ -12,6 +12,7 @@
 import { useState, useMemo } from 'react'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { InconsistenciasTable } from '@/components/financeiro/InconsistenciasTable'
+import { AuditoriaContabilCard } from '@/components/financeiro/AuditoriaContabilCard'
 import {
   Gauge, ChevronDown, ChevronRight, TrendingUp, TrendingDown,
   Package, CreditCard, Wallet, FileCheck2, Landmark, AlertTriangle,
@@ -287,7 +288,10 @@ export default function PainelControlePage() {
         icon={Gauge}
       />
 
-      {/* ─── CAMADA 0: INCONSISTÊNCIAS DETECTADAS (foco operacional) ─── */}
+      {/* ─── CAMADA 0: AUDITORIA CONTÁBIL (3 equações que devem fechar) ─── */}
+      <AuditoriaContabilCard />
+
+      {/* ─── CAMADA 1: INCONSISTÊNCIAS DETECTADAS (foco operacional) ─── */}
       <InconsistenciasTable />
 
       {/* ─── CAMADA 1: KPI CARDS (contexto macro, recolhível) ─── */}

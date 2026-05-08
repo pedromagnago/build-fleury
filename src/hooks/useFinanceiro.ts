@@ -189,6 +189,78 @@ export function useDeleteParcela() {
   })
 }
 
+/**
+ * Saídas conciliadas a mutuo_id (sem mutuo_parcela_id nem parcela_id).
+ *
+ * São amortizações avulsas — quando o usuário pagou principal de um mútuo via
+ * mov bancária mas não vinculou a uma parcela específica do cronograma.
+ * Não aparecem em /pagamentos pelas tabelas normais (parcelas/mutuo_parcelas)
+ * porque não existem como linha lá. Este hook materializa o registro como uma
+ * "parcela virtual" com os mesmos campos para listagem unificada.
+ */
+export interface AmortizacaoAvulsa {
+  id: string                  // = movimentacao_id
+  movimentacao_id: string
+  mutuo_id: string
+  mutuo_nome: string
+  data: string
+  valor: number
+  descricao: string | null
+  conta_bancaria_id: string | null
+}
+
+export function useAmortizacoesAvulsas() {
+  const { currentCompany } = useProject()
+  return useQuery({
+    queryKey: ['amortizacoes-avulsas', currentCompany?.id],
+    queryFn: async (): Promise<AmortizacaoAvulsa[]> => {
+      if (!currentCompany) return []
+      const { data, error } = await supabase
+        .from('conciliacao_parcelas')
+        .select(`
+          mutuo_id, parcela_id, mutuo_parcela_id, medicao_id,
+          conciliacoes!inner(
+            company_id, status, movimentacao_id,
+            movimentacoes_bancarias!inner(id, data, valor, tipo, descricao, conta_id)
+          ),
+          mutuos!inner(nome)
+        `)
+        .not('mutuo_id', 'is', null)
+        .is('parcela_id', null)
+        .is('mutuo_parcela_id', null)
+        .is('medicao_id', null)
+      if (error) throw error
+      const out: AmortizacaoAvulsa[] = []
+      const seen = new Set<string>()
+      for (const row of (data ?? []) as any[]) {
+        const conc = Array.isArray(row.conciliacoes) ? row.conciliacoes[0] : row.conciliacoes
+        if (!conc) continue
+        if (conc.company_id !== currentCompany.id) continue
+        if (conc.status === 'rejeitado') continue
+        const mov = Array.isArray(conc.movimentacoes_bancarias)
+          ? conc.movimentacoes_bancarias[0]
+          : conc.movimentacoes_bancarias
+        if (!mov || mov.tipo !== 'saida') continue
+        if (seen.has(mov.id)) continue
+        seen.add(mov.id)
+        const mut = Array.isArray(row.mutuos) ? row.mutuos[0] : row.mutuos
+        out.push({
+          id: mov.id,
+          movimentacao_id: mov.id,
+          mutuo_id: row.mutuo_id,
+          mutuo_nome: mut?.nome ?? '—',
+          data: mov.data,
+          valor: Math.abs(Number(mov.valor || 0)),
+          descricao: mov.descricao,
+          conta_bancaria_id: mov.conta_id,
+        })
+      }
+      return out.sort((a, b) => b.data.localeCompare(a.data))
+    },
+    enabled: !!currentCompany,
+  })
+}
+
 export function useContasBancarias() {
   const { currentCompany } = useProject()
   const companyId = currentCompany?.id

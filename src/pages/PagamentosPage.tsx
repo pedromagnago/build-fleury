@@ -6,6 +6,7 @@ import {
   useParcelas, useCreateParcela, useDeleteParcela,
   useContasBancarias, useCreateContaBancaria,
   useUpdateContaBancaria, useDeleteContaBancaria,
+  useAmortizacoesAvulsas,
   type Parcela, type ContaBancaria,
 } from '@/hooks/useFinanceiro'
 import { usePedidos, useFornecedores, type Pedido, type Fornecedor } from '@/hooks/useCompras'
@@ -110,7 +111,8 @@ export default function PagamentosPage() {
 // PARCELAS TAB — with full payment flow modal
 // ═══════════════════════════════════════════════════════════════
 
-type TypeFilter = 'todos' | 'pedidos' | 'mutuos' | 'avulsas'
+type TypeFilter = 'todos' | 'pedidos' | 'mutuos' | 'avulsas' | 'amortizacoes'
+type ParcelaTipoFilter = 'todos' | 'contratual' | 'adiantamento'
 type DueFilter = 'todas' | 'hoje' | 'semana' | 'mes' | 'vencidas' | 'pagas'
 
 // Estorno unificado: limpa conciliacao + mov + zera parcela/mutuo_parcela.
@@ -173,10 +175,12 @@ function ParcelasTab({ search }: { search: string }) {
   const [editingParcela, setEditingParcela] = useState<Parcela | null>(null)
   const [viewingVinculos, setViewingVinculos] = useState<Parcela | null>(null)
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('todos')
+  const [parcelaTipoFilter, setParcelaTipoFilter] = useState<ParcelaTipoFilter>('todos')
   const [dueFilter, setDueFilter] = useState<DueFilter>('todas')
   const selection = useSelection()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: mutuos = [] } = useMutuos()
+  const { data: amortizacoesAvulsas = [] } = useAmortizacoesAvulsas()
 
   // Build fornecedor lookup map for bulk actions
   const fornecedorMap = useMemo(() => {
@@ -265,6 +269,12 @@ function ParcelasTab({ search }: { search: string }) {
     if (!matchesSearch) return false
     if (typeFilter === 'pedidos' && !p.pedido_id) return false
     if (typeFilter === 'avulsas' && p.pedido_id) return false
+    // Filtro pelo tipo da parcela: contratual = plano de cond_pagamento;
+    // adiantamento = PIX antecipado fora do cronograma. Default null = contratual.
+    if (parcelaTipoFilter !== 'todos') {
+      const t = (p as any).tipo ?? 'contratual'
+      if (t !== parcelaTipoFilter) return false
+    }
     // Filtro de vencimento — pagas só aparecem se 'todas' ou 'pagas'
     const venc = p.data_vencimento ?? ''
     if (dueFilter === 'pagas') return p.status === 'paga'
@@ -315,17 +325,54 @@ function ParcelasTab({ search }: { search: string }) {
     return result
   }, [mutuos, search])
 
+  // Amortizações avulsas viram "parcelas virtuais" (já pagas) pra somar no total.
+  const amortizacoesParcelas = useMemo(() => {
+    const result: Array<Parcela & { _source: 'amortizacao'; _mutuoNome: string }> = []
+    for (const a of amortizacoesAvulsas) {
+      result.push({
+        id: a.id,
+        company_id: currentCompany?.id ?? '',
+        pedido_id: null,
+        despesa_indireta_id: null,
+        numero_parcela: 0,
+        valor: a.valor,
+        valor_pago: a.valor, // amortização avulsa já está paga (tem mov bancária)
+        data_vencimento: a.data,
+        data_pagamento_real: a.data,
+        data_prevista_pagamento: null,
+        status: 'paga',
+        forma_pagamento: null,
+        conta_bancaria_id: a.conta_bancaria_id,
+        comprovante_path: null,
+        deleted_at: null,
+        created_at: a.data,
+        descricao: `Amortização avulsa — ${a.mutuo_nome}`,
+        _source: 'amortizacao',
+        _mutuoNome: a.mutuo_nome,
+      } as any)
+    }
+    if (search) {
+      const q = search.toLowerCase()
+      return result.filter(p => p.descricao?.toLowerCase().includes(q) || p._mutuoNome.toLowerCase().includes(q))
+    }
+    return result
+  }, [amortizacoesAvulsas, search, currentCompany])
+
   const allFiltered = useMemo(() => {
     // If type filter is 'mutuos', show only mutuos
     if (typeFilter === 'mutuos') {
       return mutuoParcelas.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
     }
+    if (typeFilter === 'amortizacoes') {
+      return amortizacoesParcelas.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
+    }
     const combined = [
       ...filtered.map(p => ({ ...p, _source: 'pedido' as const, _mutuoNome: '' })),
       ...(typeFilter === 'todos' ? mutuoParcelas : []),
+      ...(typeFilter === 'todos' ? amortizacoesParcelas : []),
     ]
     return combined.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
-  }, [filtered, mutuoParcelas, typeFilter])
+  }, [filtered, mutuoParcelas, amortizacoesParcelas, typeFilter])
 
   const totals = allFiltered.reduce(
     (acc, p) => ({
@@ -425,9 +472,18 @@ function ParcelasTab({ search }: { search: string }) {
         </div>
         {/* Type Filter Chips */}
         <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
-          {([['todos', 'Todas'], ['pedidos', 'Pedidos'], ['mutuos', 'Mútuos'], ['avulsas', 'Avulsas']] as const).map(([k, label]) => (
+          {([['todos', 'Todas'], ['pedidos', 'Pedidos'], ['mutuos', 'Mútuos'], ['amortizacoes', 'Amortiz.'], ['avulsas', 'Avulsas']] as const).map(([k, label]) => (
             <button key={k} onClick={() => setTypeFilter(k)}
               className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${typeFilter === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+              title={k === 'amortizacoes' ? 'Saídas conciliadas a mútuo (avulso) — pagamento de principal sem parcela específica' : undefined}
+            >{label}</button>
+          ))}
+        </div>
+        {/* Parcela Tipo (contratual / adiantamento) */}
+        <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5" title="Contratual = parcela do cronograma. Adiantamento = PIX antecipado fora do cronograma.">
+          {([['todos', 'Todas'], ['contratual', 'Contr.'], ['adiantamento', 'Adiant.']] as const).map(([k, label]) => (
+            <button key={k} onClick={() => setParcelaTipoFilter(k)}
+              className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${parcelaTipoFilter === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
             >{label}</button>
           ))}
         </div>

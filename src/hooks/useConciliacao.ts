@@ -114,6 +114,20 @@ export function useImportExtrato() {
         }
         const base = txn.fitid || `gen_${txn.date}_${idx}`
         const centavos = Math.abs(Math.round(txn.amount * 100))
+        // Detector heurístico de transferência interna: se a descrição menciona
+        // 'transferência' OU expressões equivalentes ('PAG Boleto', 'PIX Recebido'
+        // sem entidade conhecida), classifica numa categoria fixa pra que a
+        // auditoria contábil isole essas movs do gap real do extrato.
+        const memo = (txn.memoClean ?? '').toLowerCase()
+        const memoRaw = (txn.memoRaw ?? '').toLowerCase()
+        const isTransferencia =
+          memo.includes('transferência') ||
+          memo.includes('transferencia') ||
+          memoRaw.includes('transferência') ||
+          memoRaw.includes('transferencia')
+        const categoria = isTransferencia
+          ? (tipo === 'entrada' ? 'Entrada de Transferência' : 'Saída de Transferência')
+          : null
         rows.push({
           company_id: currentCompany.id,
           conta_id: contaId,
@@ -121,6 +135,7 @@ export function useImportExtrato() {
           descricao: txn.memoClean,
           valor: Math.abs(txn.amount),
           tipo,
+          categoria,
           fitid: `${base}_${centavos}_${Date.now()}_${idx}`,
           memo_raw: txn.memoRaw,
           saldo_acumulado: txn.balance,
