@@ -747,6 +747,79 @@ function buildLinkRow(conciliacaoId: string, v: VinculoPayload) {
   return base
 }
 
+const round2 = (n: number) => Math.round(n * 100) / 100
+
+// Expande um vínculo a uma parcela de pedido em N vínculos (consumo FIFO).
+// Pagamento abate a parcela escolhida primeiro; se exceder o saldo dela, segue
+// para a próxima em aberto na ordem (numero_parcela, data_vencimento). Se ainda
+// sobrar após esgotar todas, cria parcela extra no pedido e soma ao valor_total_real.
+// Vínculos a outras origens (medicao, mutuo, parcela de despesa indireta) passam
+// sem alteração.
+async function expandirVinculoParcelaFifo(
+  v: VinculoPayload,
+  dataPgto: string,
+  companyId: string,
+): Promise<VinculoPayload[]> {
+  if (v.origem !== 'parcela') return [v]
+  const { data: p } = await supabase.from('parcelas')
+    .select('pedido_id').eq('id', v.origem_id).single()
+  if (!p?.pedido_id) return [v]
+
+  const { data: abertasRaw } = await supabase.from('parcelas')
+    .select('id, numero_parcela, valor, valor_pago, data_vencimento')
+    .eq('pedido_id', p.pedido_id)
+    .neq('status', 'paga')
+    .order('numero_parcela', { ascending: true })
+    .order('data_vencimento', { ascending: true })
+  const abertas = (abertasRaw ?? []) as Array<{ id: string; numero_parcela: number; valor: number; valor_pago: number | null; data_vencimento: string }>
+  if (abertas.length === 0) return [v]
+
+  const idx = abertas.findIndex(x => x.id === v.origem_id)
+  const ordenadas = idx > 0
+    ? [abertas[idx]!, ...abertas.slice(0, idx), ...abertas.slice(idx + 1)]
+    : abertas
+
+  let restante = round2(Number(v.valor_aplicado))
+  const out: VinculoPayload[] = []
+  for (const par of ordenadas) {
+    if (restante <= 0.005) break
+    const saldo = round2(Number(par.valor) - Number(par.valor_pago ?? 0))
+    if (saldo <= 0.005) continue
+    const aplicar = Math.min(saldo, restante)
+    out.push({ origem: 'parcela', origem_id: par.id, valor_aplicado: round2(aplicar), observacao: v.observacao ?? null })
+    restante = round2(restante - aplicar)
+  }
+
+  if (restante > 0.005) {
+    const { data: ult } = await supabase.from('parcelas')
+      .select('numero_parcela').eq('pedido_id', p.pedido_id)
+      .order('numero_parcela', { ascending: false }).limit(1).maybeSingle()
+    const proximoNum = (ult?.numero_parcela ?? 0) + 1
+    const { data: nova } = await supabase.from('parcelas').insert({
+      company_id: companyId,
+      pedido_id: p.pedido_id,
+      numero_parcela: proximoNum,
+      valor: restante,
+      valor_pago: 0,
+      data_vencimento: dataPgto,
+      status: 'futura',
+      tipo: 'contratual',
+    } as any).select('id').single()
+    if (nova) {
+      out.push({ origem: 'parcela', origem_id: nova.id, valor_aplicado: round2(restante), observacao: v.observacao ?? null })
+      const { data: ped } = await supabase.from('pedidos')
+        .select('valor_total_real').eq('id', p.pedido_id).single()
+      if (ped) {
+        await supabase.from('pedidos').update({
+          valor_total_real: round2((Number(ped.valor_total_real) || 0) + restante),
+        }).eq('id', p.pedido_id)
+      }
+    }
+  }
+
+  return out.length > 0 ? out : [v]
+}
+
 export function useUndoConciliacao() {
   const qc = useQueryClient()
   const { currentCompany } = useProject()
@@ -964,39 +1037,15 @@ export function useCreateConciliacao() {
       if (error) throw error
       if (!conc) throw new Error('Falha ao criar concilia\u00e7\u00e3o')
 
-      // Auto-split: se o vínculo é a uma parcela contratual de pedido cuja data
-      // de pagamento é ANTES do data_vencimento, cria uma parcela 'adiantamento'
-      // nova e troca o id do vínculo. Trigger no banco recalcula as contratuais.
+      // Consumo FIFO: cada vínculo a parcela de pedido vira N vínculos (uma por
+      // parcela consumida em ordem). O plano de parcelas não é alterado pelo
+      // pagamento — apenas valor_pago é sincronizado pelo trigger SQL a partir
+      // dos vínculos. Se o pagamento exceder o saldo total do pedido, uma parcela
+      // extra é criada e somada ao valor_total_real.
       const vinculosFinal: VinculoPayload[] = []
       for (const v of vinculos) {
-        if (v.origem !== 'parcela') { vinculosFinal.push(v); continue }
-        const { data: p } = await supabase.from('parcelas')
-          .select('pedido_id, tipo, data_vencimento, descricao, company_id')
-          .eq('id', v.origem_id).single()
-        const ehContratualPedido = p?.pedido_id && (p as any).tipo !== 'adiantamento'
-          && dataPgto && p.data_vencimento && dataPgto < p.data_vencimento
-        if (ehContratualPedido) {
-          const { data: ult } = await supabase.from('parcelas')
-            .select('numero_parcela').eq('pedido_id', p.pedido_id)
-            .order('numero_parcela', { ascending: false }).limit(1).maybeSingle()
-          const proximoNum = (ult?.numero_parcela ?? 0) + 1
-          const { data: nova } = await supabase.from('parcelas').insert({
-            company_id: (p as any).company_id || currentCompany.id,
-            pedido_id: p.pedido_id,
-            numero_parcela: proximoNum,
-            valor: v.valor_aplicado,
-            valor_pago: 0,
-            data_vencimento: dataPgto,
-            data_pagamento_real: dataPgto,
-            status: 'paga',
-            tipo: 'adiantamento',
-            descricao: p.descricao || null,
-            conta_bancaria_id: contaId,
-            forma_pagamento: formaInferida,
-          } as any).select('id').single()
-          if (nova) { vinculosFinal.push({ ...v, origem_id: nova.id }); continue }
-        }
-        vinculosFinal.push(v)
+        const expandido = await expandirVinculoParcelaFifo(v, dataPgto, currentCompany.id)
+        vinculosFinal.push(...expandido)
       }
 
       await supabase.from('conciliacao_parcelas').insert(

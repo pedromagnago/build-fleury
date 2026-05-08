@@ -10,6 +10,7 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { Toaster } from 'sonner'
 import '@/lib/tours/tour.css'
 
+import LandingPage from '@/pages/LandingPage'
 import Login from '@/pages/Login'
 import ResetSenhaPage from '@/pages/ResetSenhaPage'
 import Onboarding from '@/pages/Onboarding'
@@ -52,6 +53,7 @@ export default function App() {
           <BrowserRouter>
             <Routes>
               {/* Public routes */}
+              <Route path="/" element={<LandingPage />} />
               <Route path="/login" element={<Login />} />
               <Route path="/reset-senha" element={<ResetSenhaPage />} />
 

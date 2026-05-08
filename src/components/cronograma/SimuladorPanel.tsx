@@ -208,6 +208,17 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
     })
   }, [weeks, items, currentCompany, parcelas])
 
+  // Totalizadores agregados (somatórios horizontais). Espelham o que cada linha
+  // exibe ao longo das colunas de período — usados na coluna fixa "Total" à direita
+  // para evitar scroll horizontal só pra ver o total da linha.
+  const totals = useMemo(() => {
+    const ent = items.filter(i => i.tipo === 'entrada').reduce((s, i) => s + i.valor, 0)
+    const fir = items.filter(i => i.tipo === 'firme').reduce((s, i) => s + i.valor, 0)
+    const bru = items.filter(i => i.tipo === 'bruto').reduce((s, i) => s + i.valor, 0)
+    const finalAcum = grid.length > 0 ? grid[grid.length - 1]!.acum : saldoInicial
+    return { ent, fir, bru, delta: ent - fir - bru, finalAcum }
+  }, [items, grid, saldoInicial])
+
   const numOv = Object.keys(overrides).length
 
   // Indice do bucket que contem HOJE (para auto-scroll e highlight)
@@ -386,6 +397,9 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
               </td>
             )
           })}
+          <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-semibold shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+            {(() => { const t = etapaItems.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
+          </td>
         </tr>
       )
 
@@ -419,6 +433,9 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
                 </td>
               )
             })}
+            <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-medium text-foreground/70 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+              {(() => { const t = fornItems.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
+            </td>
           </tr>
         )
 
@@ -455,6 +472,9 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
                   </td>
                 )
               })}
+              <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-medium text-foreground/60 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                {(() => { const t = its.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
+              </td>
             </tr>
           )
         }
@@ -600,7 +620,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
               <p className="text-sm font-bold text-emerald-700 mt-0.5">{formatCurrency(totalEntradas)}</p>
             </div>
             <div className="rounded-lg border bg-red-50/50 dark:bg-red-950/10 p-2.5">
-              <p className="text-[9px] font-semibold uppercase text-red-600 tracking-wider">Pedidos (Firme)</p>
+              <p className="text-[9px] font-semibold uppercase text-red-600 tracking-wider">Saídas (Firme)</p>
               <p className="text-sm font-bold text-red-700 mt-0.5">{formatCurrency(totalFirme)}</p>
             </div>
             <div className="rounded-lg border bg-orange-50/50 dark:bg-orange-950/10 p-2.5">
@@ -652,6 +672,9 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
                   </th>
                 )
               })}
+              <th className="sticky right-0 z-40 bg-muted border-l px-3 py-2.5 text-center text-[10px] font-bold uppercase text-muted-foreground tracking-wider w-[140px] min-w-[140px] shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.08)]">
+                Total
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -666,6 +689,9 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
               {grid.map((w, i) => (
                 <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{fc(w.sEnt)}</td>
               ))}
+              <td className="sticky right-0 z-20 bg-emerald-50 dark:bg-emerald-950 border-l px-3 py-2.5 text-right tabular-nums font-bold text-emerald-700 dark:text-emerald-400 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                {fc(totals.ent)}
+              </td>
             </tr>
             {expanded.ent && subRows('entrada')}
 
@@ -674,12 +700,15 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
               <td className="sticky left-0 z-20 bg-red-50 dark:bg-red-950 border-r px-3 py-2.5 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
                 <span className="flex items-center gap-1.5 text-red-700 dark:text-red-400">
                   {expanded.fir ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                  (-) Pedidos
+                  (-) Saídas
                 </span>
               </td>
               {grid.map((w, i) => (
                 <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-red-700 dark:text-red-400">{fc(w.sFir)}</td>
               ))}
+              <td className="sticky right-0 z-20 bg-red-50 dark:bg-red-950 border-l px-3 py-2.5 text-right tabular-nums font-bold text-red-700 dark:text-red-400 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                {fc(totals.fir)}
+              </td>
             </tr>
             {expanded.fir && subRows('firme')}
 
@@ -694,11 +723,14 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
               {grid.map((w, i) => (
                 <td key={i} className="border-r px-2 py-2.5 text-right tabular-nums text-orange-700 dark:text-orange-400">{fc(w.sBru)}</td>
               ))}
+              <td className="sticky right-0 z-20 bg-orange-50 dark:bg-orange-950 border-l px-3 py-2.5 text-right tabular-nums font-bold text-orange-700 dark:text-orange-400 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                {fc(totals.bru)}
+              </td>
             </tr>
             {expanded.bru && subRows('bruto')}
 
             {/* SEPARADOR */}
-            <tr className="h-1.5 bg-muted/30"><td colSpan={25} /></tr>
+            <tr className="h-1.5 bg-muted/30"><td colSpan={grid.length + 2} /></tr>
 
             {/* SALDO SEMANA */}
             <tr className="border-y font-semibold bg-muted/10">
@@ -706,6 +738,9 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
               {grid.map((w, i) => (
                 <td key={i} className={`border-r px-2 py-2.5 text-right tabular-nums ${w.delta < 0 ? 'text-red-600' : ''}`}>{formatCurrency(w.delta)}</td>
               ))}
+              <td className={`sticky right-0 z-20 bg-muted border-l px-3 py-2.5 text-right tabular-nums font-bold ${totals.delta < 0 ? 'text-red-600' : ''} shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]`}>
+                {formatCurrency(totals.delta)}
+              </td>
             </tr>
 
             {/* SALDO ACUMULADO */}
@@ -714,6 +749,9 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
               {grid.map((w, i) => (
                 <td key={i} className={`border-r px-2 py-3 text-right tabular-nums ${w.acum < 0 ? 'text-red-600 bg-red-50/50 dark:bg-red-950/20' : ''}`}>{formatCurrency(w.acum)}</td>
               ))}
+              <td className={`sticky right-0 z-20 bg-blue-50 dark:bg-blue-950 border-l px-3 py-3 text-right tabular-nums ${totals.finalAcum < 0 ? 'text-red-600' : 'text-primary'} shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]`}>
+                {formatCurrency(totals.finalAcum)}
+              </td>
             </tr>
           </tbody>
         </table>

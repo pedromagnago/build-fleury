@@ -653,9 +653,12 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     // 2) Parcelas individuais com valor exato
     for (const c of cands) {
       if (Math.abs(c.saldo - absValor) <= 0.01) {
+        const label = c.pedidoNumero != null
+          ? `${c.fornecedor ?? ''} · Pedido #${c.pedidoNumero} · P${c.parcelaNumero ?? '?'}`
+          : `${c.descricao} · P${c.parcelaNumero ?? '?'}${c.fornecedor ? ` · ${c.fornecedor}` : ''}`
         out.push({
           key: `single-${c.id}`,
-          label: `${c.descricao} · P${c.parcelaNumero ?? '?'} · ${c.fornecedor ?? ''}`,
+          label,
           ids: [c.id],
           total: c.saldo,
           tipo: 'comb',

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Search, Info, CheckCircle2, AlertTriangle, Coins, Square, CheckSquare, ListChecks, Filter } from 'lucide-react'
+import { Search, Info, CheckCircle2, AlertTriangle, Coins, Square, CheckSquare, ListChecks, Filter, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
 import { ReconciliationResult } from '@/hooks/useConciliacao'
 
 type BankFilter = 'pendentes' | 'conciliadas' | 'all'
@@ -23,6 +23,10 @@ function fmtDate(d: string): string {
   if (!d) return '—'
   const [y, m, day] = d.split('-')
   return `${day}/${m}/${y}`
+}
+
+function norm(s: string | null | undefined): string {
+  return (s ?? '').toString().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim()
 }
 
 export function BankColumn({
@@ -49,13 +53,26 @@ export function BankColumn({
       m = m.filter(mov => mov.conciliado)
     }
 
-    if (search.trim()) {
-      const s = search.toLowerCase()
-      m = m.filter(x =>
-        (x.descricao?.toLowerCase().includes(s)) ||
-        (x.memo_raw?.toLowerCase().includes(s)) ||
-        (x.valor && String(x.valor).includes(s))
-      )
+    const q = norm(search)
+    if (q) {
+      // Multi-token AND, sem acento — casa "pix dione 13/04", "saida 1500", "cartao".
+      // Cobre descricao, memo_raw, categoria, tipo (entrada/saida), dataBR/ISO, valor.
+      const tokens = q.split(/\s+/).filter(Boolean)
+      m = m.filter(x => {
+        const dataBr = fmtDate(x.data)
+        const ddmm = dataBr.length >= 5 ? dataBr.slice(0, 5) : ''
+        const tipoLabel = x.tipo === 'saida' ? 'SAIDA' : x.tipo === 'entrada' ? 'ENTRADA' : (x.tipo ?? '')
+        const hay = norm([
+          x.descricao,
+          x.memo_raw,
+          x.categoria,
+          x.observacao,
+          tipoLabel,
+          x.valor,
+          dataBr, ddmm, x.data,
+        ].filter(Boolean).join(' '))
+        return tokens.every(t => hay.includes(t))
+      })
     }
 
     m.sort((a, b) => (b.data || '').localeCompare(a.data || ''))
@@ -69,6 +86,26 @@ export function BankColumn({
   }), [movimentacoes])
 
   const allFilteredSelected = filteredMovs.length > 0 && filteredMovs.every(m => selectedIds.has(m.id))
+
+  // Totalizadores de fluxo de caixa (visíveis + seleção restrita ao filtro atual)
+  const totals = useMemo(() => {
+    const acc = { entradas: 0, saidas: 0, selEntradas: 0, selSaidas: 0, selCount: 0 }
+    for (const m of filteredMovs) {
+      const v = Number(m.valor) || 0
+      const isCredit = m.tipo !== 'saida'
+      if (isCredit) acc.entradas += v
+      else acc.saidas += v
+      if (selectedIds.has(m.id)) {
+        acc.selCount++
+        if (isCredit) acc.selEntradas += v
+        else acc.selSaidas += v
+      }
+    }
+    return acc
+  }, [filteredMovs, selectedIds])
+
+  const saldo = totals.entradas - totals.saidas
+  const selSaldo = totals.selEntradas - totals.selSaidas
 
   return (
     <div className="flex flex-col rounded-xl border bg-card overflow-hidden shadow-sm">
@@ -134,7 +171,7 @@ export function BankColumn({
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   className="w-full rounded-md border bg-background pl-8 pr-3 py-1.5 text-xs focus:ring-1 focus:ring-primary outline-none"
-                  placeholder="Buscar no extrato..."
+                  placeholder="Buscar (descrição, categoria, data, valor)…"
                 />
               </div>
               {/* Select all button */}
@@ -255,6 +292,46 @@ export function BankColumn({
           </div>
         )}
       </div>
+
+      {/* Rodapé: totalizadores de fluxo de caixa */}
+      {filteredMovs.length > 0 && (
+        <div className="border-t bg-muted/30 px-3 py-2 text-[10px] space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-bold uppercase tracking-wider text-muted-foreground">
+              Visível · {filteredMovs.length}
+            </span>
+            <div className="flex items-center gap-2 tabular-nums">
+              <span className="flex items-center gap-0.5 text-emerald-600 font-semibold" title="Entradas (créditos)">
+                <ArrowDownCircle className="h-3 w-3" />{fmt(totals.entradas)}
+              </span>
+              <span className="flex items-center gap-0.5 text-red-600 font-semibold" title="Saídas (débitos)">
+                <ArrowUpCircle className="h-3 w-3" />{fmt(totals.saidas)}
+              </span>
+              <span className={`font-bold ${saldo >= 0 ? 'text-emerald-600' : 'text-red-600'}`} title="Saldo (entradas − saídas)">
+                = {fmt(saldo)}
+              </span>
+            </div>
+          </div>
+          {totals.selCount > 0 && (
+            <div className="flex items-center justify-between gap-2 border-t border-dashed pt-1">
+              <span className="font-bold uppercase tracking-wider text-blue-600">
+                Selecionado · {totals.selCount}
+              </span>
+              <div className="flex items-center gap-2 tabular-nums">
+                <span className="flex items-center gap-0.5 text-emerald-600 font-semibold">
+                  <ArrowDownCircle className="h-3 w-3" />{fmt(totals.selEntradas)}
+                </span>
+                <span className="flex items-center gap-0.5 text-red-600 font-semibold">
+                  <ArrowUpCircle className="h-3 w-3" />{fmt(totals.selSaidas)}
+                </span>
+                <span className={`font-bold ${selSaldo >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                  = {fmt(selSaldo)}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
