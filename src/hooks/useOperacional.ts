@@ -125,6 +125,38 @@ export function useUpdateMedicao() {
   })
 }
 
+export function useDeleteMedicao() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, company_id, numero }: { id: string; company_id: string; numero: number }) => {
+      const { count, error: cErr } = await supabase
+        .from('conciliacao_parcelas')
+        .select('id', { count: 'exact', head: true })
+        .eq('medicao_id', id)
+      if (cErr) throw cErr
+      if ((count ?? 0) > 0) {
+        throw new Error(`Medição vinculada a ${count} conciliação(ões) — desfaça antes de excluir.`)
+      }
+
+      const { error: dErr } = await supabase
+        .from('cronograma_distribuicao')
+        .delete()
+        .eq('company_id', company_id)
+        .eq('medicao_numero', numero)
+      if (dErr) throw dErr
+
+      const { error: mErr } = await supabase.from('medicoes').delete().eq('id', id)
+      if (mErr) throw mErr
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+      toast.success('Medição excluída')
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+}
+
 // ─── MOVIMENTAÇÕES BANCÁRIAS ──────────────────────────
 export interface Movimentacao {
   id: string

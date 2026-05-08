@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEtapas } from '@/hooks/useEtapas'
 import {
-  useMedicoes, useCreateMedicao, useUpdateMedicao,
+  useMedicoes, useCreateMedicao, useUpdateMedicao, useDeleteMedicao,
   useDistribuicao, useCreateDistribuicao,
   type Distribuicao,
 } from '@/hooks/useOperacional'
@@ -32,6 +32,7 @@ export default function MedicoesPanel() {
   const createMedicao = useCreateMedicao()
   const createDist = useCreateDistribuicao()
   const updateMedicao = useUpdateMedicao()
+  const deleteMedicao = useDeleteMedicao()
   const qc = useQueryClient()
   const { currentCompany } = useProject()
 
@@ -462,6 +463,25 @@ export default function MedicoesPanel() {
                             title="Editar medição"
                           >
                             <Pencil className="h-2.5 w-2.5 text-muted-foreground" />
+                          </button>
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation()
+                              if (!currentCompany) return
+                              const tot = medTotals.get(med.numero) ?? { casas: 0, valor: 0 }
+                              const label = med.observacoes || `Med ${String(med.numero).padStart(2, '0')}`
+                              const warn = (tot.casas > 0 || tot.valor > 0)
+                                ? `\n\nATENÇÃO: esta medição tem ${formatNumber(tot.casas, 2, 2)} casas e ${formatCurrency(tot.valor)} distribuídos. As distribuições também serão removidas.`
+                                : ''
+                              if (!window.confirm(`Excluir ${label}?${warn}`)) return
+                              try {
+                                await deleteMedicao.mutateAsync({ id: med.id, company_id: currentCompany.id, numero: med.numero })
+                              } catch {/* toast já vem do hook */}
+                            }}
+                            className="rounded p-0.5 hover:bg-red-500/10 text-muted-foreground/50 hover:text-red-500 transition-colors"
+                            title="Excluir medição"
+                          >
+                            <Trash2 className="h-2.5 w-2.5" />
                           </button>
                         </div>
                         {(dataInicio || dataFim) && (
