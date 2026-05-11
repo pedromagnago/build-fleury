@@ -527,22 +527,30 @@ export function useDashboardKPIs() {
 
       const [itensRes, parcelasRes, etapasRes, pedidosRes] = await Promise.all([
         supabase.from('itens_compra').select('id, valor_total_orcado, valor_consumido').eq('company_id', companyId).is('deleted_at', null),
-        supabase.from('parcelas').select('valor, data_vencimento, data_prevista_pagamento, data_pagamento_real, status, valor_pago, pedidos!inner(itens_compra(deleted_at))').eq('company_id', companyId).is('deleted_at', null),
+        supabase.from('parcelas').select('valor, data_vencimento, data_prevista_pagamento, data_pagamento_real, status, valor_pago, pedidos!inner(deleted_at, status, itens_compra(deleted_at))').eq('company_id', companyId).is('deleted_at', null),
         supabase.from('etapas').select('status').eq('company_id', companyId),
-        supabase.from('pedidos').select('item_compra_id, valor_total_real').eq('company_id', companyId),
+        // F3.2: filtra pedidos soft-deletados e cancelados para não inflar "consumido"
+        supabase.from('pedidos').select('item_compra_id, valor_total_real, status').eq('company_id', companyId).is('deleted_at', null),
       ])
 
       const itens = (itensRes.data ?? []) as Array<{ id: string; valor_total_orcado: number; valor_consumido: number }>
       const rawParcelas = (parcelasRes.data ?? []) as Array<any>
-      const parcelas = rawParcelas.filter(p => !p.pedidos?.itens_compra?.deleted_at).map(p => ({
-        valor: p.valor, data_vencimento: p.data_vencimento, data_prevista_pagamento: p.data_prevista_pagamento, data_pagamento_real: p.data_pagamento_real, status: p.status, valor_pago: p.valor_pago
-      })) as Array<{ valor: number; data_vencimento: string; data_prevista_pagamento: string | null; data_pagamento_real: string | null; status: string; valor_pago: number }>
+      // Exclui parcelas de pedidos cancelados/soft-deletados ou de itens soft-deletados
+      const parcelas = rawParcelas
+        .filter(p => !p.pedidos?.itens_compra?.deleted_at)
+        .filter(p => !p.pedidos?.deleted_at)
+        .filter(p => p.pedidos?.status !== 'cancelado')
+        .map(p => ({
+          valor: p.valor, data_vencimento: p.data_vencimento, data_prevista_pagamento: p.data_prevista_pagamento, data_pagamento_real: p.data_pagamento_real, status: p.status, valor_pago: p.valor_pago
+        })) as Array<{ valor: number; data_vencimento: string; data_prevista_pagamento: string | null; data_pagamento_real: string | null; status: string; valor_pago: number }>
       const etapas = (etapasRes.data ?? []) as Array<{ status: string }>
       const rawPedidos = (pedidosRes.data ?? []) as Array<any>
-      
-      // Only count pedidos logic that map to active items
+
+      // Conta apenas pedidos que mapeiam a itens ativos E não estão cancelados
       const validItemIds = new Set(itens.map(i => i.id));
-      const pedidos = rawPedidos.filter(p => validItemIds.has(p.item_compra_id))
+      const pedidos = rawPedidos
+        .filter(p => validItemIds.has(p.item_compra_id))
+        .filter(p => p.status !== 'cancelado')
 
       const totalOrcado = itens.reduce((s, i) => s + (i.valor_total_orcado ?? 0), 0)
       const totalConsumido = pedidos.reduce((s, p) => s + (p.valor_total_real ?? 0), 0)
@@ -593,6 +601,283 @@ export function useDashboardKPIs() {
         planejadoBruto,
         coberturaPercent,
       }
+    },
+    enabled: !!companyId,
+    refetchInterval: 60000,
+  })
+}
+
+// ============================================================================
+// F3.1 + F3.3: Orçamento Realizado — fonte de verdade única para o "consumido"
+// ============================================================================
+// Em vez de confiar no campo materializado itens_compra.valor_consumido (que
+// depende de triggers e historicamente sai dessincronizado), este hook deriva
+// quatro camadas a partir das fontes operacionais reais (pedidos + parcelas),
+// excluindo cancelados e soft-deletes:
+//
+//   orcado       = itens_compra.valor_total_orcado                  (do orçamento)
+//   comprometido = SUM(pedidos.valor_total_real) [não cancelados]   (todos pedidos vivos)
+//   recebido     = SUM(pedidos.valor_total_real) status >= entregue (pedidos com NF)
+//   pago         = SUM(parcelas.valor_pago) status = paga
+//
+// O alinhamento `valor_consumido_db` vs `comprometido` permite detectar
+// divergências e mostrar banner pro operador (F4.4 health-check).
+
+export interface ItemOrcamentoRealizado {
+  item_id: string
+  orcado: number
+  comprometido: number
+  recebido: number
+  pago: number
+  saldo: number               // orcado - comprometido
+  valor_consumido_db: number  // o que está em itens_compra.valor_consumido
+  divergente: boolean         // true se valor_consumido_db ≠ comprometido (tol R$0,01)
+}
+
+export interface OrcamentoRealizadoSnapshot {
+  porItem: Map<string, ItemOrcamentoRealizado>
+  totais: {
+    orcado: number
+    comprometido: number
+    recebido: number
+    pago: number
+    saldo: number
+  }
+  divergencias: number  // quantidade de itens com valor_consumido_db ≠ comprometido
+}
+
+const STATUS_RECEBIDO = new Set(['entregue', 'parcialmente_pago', 'pago'])
+
+// ============================================================================
+// F4.3: Reconciliação NF → Pedido → Parcela → Pagamento
+// ============================================================================
+// Objetivo: dado um período, mostrar cada NF aplicada e todas as suas
+// derivações operacionais (pedido criado, parcelas geradas, pagamentos),
+// destacando quebras de consistência:
+//   - linha de NF sem pedido vinculado
+//   - pedido criado por NF mas sem parcelas
+//   - SUM(parcelas) ≠ valor_total_real do pedido
+//   - parcela paga sem comprovante / conciliação
+
+export interface ReconciliacaoParcela {
+  id: string
+  numero_parcela: number
+  valor: number
+  valor_pago: number
+  status: string
+  data_vencimento: string
+  data_pagamento_real: string | null
+}
+export interface ReconciliacaoLinha {
+  match_id: string
+  ordem: number | null
+  descricao_original: string
+  quantidade: number | null
+  valor_unitario: number | null
+  valor_total: number | null
+  acao: string
+  item_compra_id: string | null
+  pedido_criado_id: string | null
+  pedido_substituido_id: string | null
+  numero_pedido: string | null
+  pedido_status: string | null
+  pedido_valor_total: number | null
+  parcelas: ReconciliacaoParcela[]
+  total_parcelado: number
+  total_pago: number
+  inconsistencias: string[]
+}
+export interface ReconciliacaoNF {
+  doc_id: string
+  numero_doc: string | null
+  serie: string | null
+  data_emissao: string | null
+  fornecedor_nome: string | null
+  fornecedor_cnpj: string | null
+  valor_total: number | null
+  status: string | null
+  applied_at: string | null
+  linhas: ReconciliacaoLinha[]
+  soma_linhas: number
+  diferenca_nf: number
+  inconsistencias: string[]
+}
+
+export function useReconciliacao(filtros?: { dataInicio?: string; dataFim?: string }) {
+  const { currentCompany } = useProject()
+  const companyId = currentCompany?.id
+  return useQuery({
+    queryKey: ['reconciliacao', companyId, filtros?.dataInicio, filtros?.dataFim],
+    queryFn: async (): Promise<ReconciliacaoNF[]> => {
+      if (!companyId) throw new Error('No company')
+      // 1) NFs aplicadas no período (recepcao_docs)
+      let q = supabase.from('recepcao_docs')
+        .select('id, numero_doc, serie, data_emissao, fornecedor_nome, fornecedor_cnpj, valor_total, status, applied_at')
+        .eq('company_id', companyId)
+        .eq('status', 'aplicado')
+        .order('data_emissao', { ascending: false })
+      if (filtros?.dataInicio) q = q.gte('data_emissao', filtros.dataInicio)
+      if (filtros?.dataFim) q = q.lte('data_emissao', filtros.dataFim)
+      const { data: docs, error: docsErr } = await q
+      if (docsErr) throw docsErr
+      const docList = (docs ?? []) as any[]
+      if (docList.length === 0) return []
+      const docIds = docList.map(d => d.id)
+      // 2) Matches dessas NFs
+      const { data: matches, error: matchesErr } = await supabase.from('recepcao_matches')
+        .select('id, doc_id, ordem, descricao_original, quantidade, valor_unitario, valor_total, acao, item_compra_id, pedido_criado_id, pedido_substituido_id')
+        .in('doc_id', docIds)
+      if (matchesErr) throw matchesErr
+      const matchList = (matches ?? []) as any[]
+      // 3) Pedidos referenciados
+      const pedidoIds = Array.from(new Set(matchList.flatMap(m => [m.pedido_criado_id, m.pedido_substituido_id].filter(Boolean)))) as string[]
+      const pedidosMap = new Map<string, { numero_pedido: string | null; status: string | null; valor_total_real: number | null }>()
+      if (pedidoIds.length > 0) {
+        const { data: peds } = await supabase.from('pedidos')
+          .select('id, numero_pedido, status, valor_total_real')
+          .in('id', pedidoIds)
+        for (const p of (peds ?? []) as any[]) pedidosMap.set(p.id, p)
+      }
+      // 4) Parcelas dos pedidos
+      const parcelasPorPedido = new Map<string, ReconciliacaoParcela[]>()
+      if (pedidoIds.length > 0) {
+        const { data: pars } = await supabase.from('parcelas')
+          .select('id, pedido_id, numero_parcela, valor, valor_pago, status, data_vencimento, data_pagamento_real')
+          .in('pedido_id', pedidoIds)
+          .is('deleted_at', null)
+        for (const par of (pars ?? []) as any[]) {
+          const arr = parcelasPorPedido.get(par.pedido_id) ?? []
+          arr.push({
+            id: par.id, numero_parcela: par.numero_parcela, valor: par.valor, valor_pago: par.valor_pago ?? 0,
+            status: par.status, data_vencimento: par.data_vencimento, data_pagamento_real: par.data_pagamento_real,
+          })
+          parcelasPorPedido.set(par.pedido_id, arr)
+        }
+      }
+      // 5) Monta a estrutura final, computando inconsistências
+      const matchesPorDoc = new Map<string, any[]>()
+      for (const m of matchList) {
+        const arr = matchesPorDoc.get(m.doc_id) ?? []
+        arr.push(m)
+        matchesPorDoc.set(m.doc_id, arr)
+      }
+      return docList.map(d => {
+        const linhasRaw = matchesPorDoc.get(d.id) ?? []
+        const linhas: ReconciliacaoLinha[] = linhasRaw.map(m => {
+          const pedidoId = m.pedido_criado_id ?? m.pedido_substituido_id
+          const ped = pedidoId ? pedidosMap.get(pedidoId) : undefined
+          const parcelas = pedidoId ? (parcelasPorPedido.get(pedidoId) ?? []) : []
+          const totalParcelado = parcelas.reduce((s, p) => s + (p.valor ?? 0), 0)
+          const totalPago = parcelas.reduce((s, p) => s + (p.valor_pago ?? 0), 0)
+          const inc: string[] = []
+          if (m.acao !== 'ignorar' && m.acao !== 'criar_item' && !pedidoId) inc.push('linha sem pedido vinculado')
+          if (pedidoId && ped && parcelas.length === 0) inc.push('pedido sem parcelas')
+          if (pedidoId && ped && parcelas.length > 0 && ped.valor_total_real != null && Math.abs(totalParcelado - ped.valor_total_real) > 0.01) inc.push(`SUM(parcelas) ${totalParcelado.toFixed(2)} ≠ pedido ${ped.valor_total_real.toFixed(2)}`)
+          return {
+            match_id: m.id,
+            ordem: m.ordem,
+            descricao_original: m.descricao_original,
+            quantidade: m.quantidade,
+            valor_unitario: m.valor_unitario,
+            valor_total: m.valor_total,
+            acao: m.acao,
+            item_compra_id: m.item_compra_id,
+            pedido_criado_id: m.pedido_criado_id,
+            pedido_substituido_id: m.pedido_substituido_id,
+            numero_pedido: ped?.numero_pedido ?? null,
+            pedido_status: ped?.status ?? null,
+            pedido_valor_total: ped?.valor_total_real ?? null,
+            parcelas,
+            total_parcelado: totalParcelado,
+            total_pago: totalPago,
+            inconsistencias: inc,
+          }
+        })
+        const somaLinhas = linhas.reduce((s, l) => s + (l.valor_total ?? 0), 0)
+        const diferencaNf = (d.valor_total ?? 0) - somaLinhas
+        const incDoc: string[] = []
+        if (Math.abs(diferencaNf) > 0.01) incDoc.push(`Soma linhas ≠ total NF (${diferencaNf.toFixed(2)})`)
+        if (linhas.some(l => l.inconsistencias.length > 0)) incDoc.push('linhas com inconsistência')
+        return {
+          doc_id: d.id, numero_doc: d.numero_doc, serie: d.serie, data_emissao: d.data_emissao,
+          fornecedor_nome: d.fornecedor_nome, fornecedor_cnpj: d.fornecedor_cnpj,
+          valor_total: d.valor_total, status: d.status, applied_at: d.applied_at,
+          linhas, soma_linhas: somaLinhas, diferenca_nf: diferencaNf, inconsistencias: incDoc,
+        }
+      })
+    },
+    enabled: !!companyId,
+  })
+}
+
+export function useOrcamentoRealizado() {
+  const { currentCompany } = useProject()
+  const companyId = currentCompany?.id
+  return useQuery({
+    queryKey: ['orcamento-realizado', companyId],
+    queryFn: async (): Promise<OrcamentoRealizadoSnapshot> => {
+      if (!companyId) throw new Error('No company')
+      const [itensRes, pedidosRes, parcelasRes] = await Promise.all([
+        supabase.from('itens_compra')
+          .select('id, valor_total_orcado, valor_consumido')
+          .eq('company_id', companyId).is('deleted_at', null),
+        supabase.from('pedidos')
+          .select('id, item_compra_id, valor_total_real, status')
+          .eq('company_id', companyId).is('deleted_at', null),
+        supabase.from('parcelas')
+          .select('valor_pago, status, pedidos!inner(item_compra_id, deleted_at, status)')
+          .eq('company_id', companyId).is('deleted_at', null),
+      ])
+      const itens = (itensRes.data ?? []) as Array<{ id: string; valor_total_orcado: number; valor_consumido: number }>
+      const pedidos = (pedidosRes.data ?? []) as Array<{ id: string; item_compra_id: string; valor_total_real: number | null; status: string }>
+      const parcelas = (parcelasRes.data ?? []) as Array<any>
+
+      const porItem = new Map<string, ItemOrcamentoRealizado>()
+      // Inicializa com os itens vivos (mesmo sem pedidos)
+      for (const it of itens) {
+        porItem.set(it.id, {
+          item_id: it.id,
+          orcado: it.valor_total_orcado ?? 0,
+          comprometido: 0,
+          recebido: 0,
+          pago: 0,
+          saldo: it.valor_total_orcado ?? 0,
+          valor_consumido_db: it.valor_consumido ?? 0,
+          divergente: false,
+        })
+      }
+      // Soma pedidos não cancelados em comprometido; pedidos "entregues+" em recebido
+      for (const p of pedidos) {
+        if (p.status === 'cancelado') continue
+        const linha = porItem.get(p.item_compra_id)
+        if (!linha) continue   // pedido apontando pra item inválido (filtrado por deleted_at)
+        const v = p.valor_total_real ?? 0
+        linha.comprometido += v
+        if (STATUS_RECEBIDO.has(p.status)) linha.recebido += v
+      }
+      // Pago: somente parcelas de pedidos vivos e não cancelados, com status paga
+      for (const par of parcelas) {
+        const ped = par.pedidos
+        if (!ped || ped.deleted_at || ped.status === 'cancelado') continue
+        if (par.status !== 'paga') continue
+        const linha = porItem.get(ped.item_compra_id)
+        if (!linha) continue
+        linha.pago += par.valor_pago ?? 0
+      }
+      // Finaliza saldo e flag de divergência
+      let divergencias = 0
+      const totais = { orcado: 0, comprometido: 0, recebido: 0, pago: 0, saldo: 0 }
+      for (const linha of porItem.values()) {
+        linha.saldo = linha.orcado - linha.comprometido
+        linha.divergente = Math.abs(linha.valor_consumido_db - linha.comprometido) > 0.01
+        if (linha.divergente) divergencias++
+        totais.orcado += linha.orcado
+        totais.comprometido += linha.comprometido
+        totais.recebido += linha.recebido
+        totais.pago += linha.pago
+      }
+      totais.saldo = totais.orcado - totais.comprometido
+      return { porItem, totais, divergencias }
     },
     enabled: !!companyId,
     refetchInterval: 60000,

@@ -10,13 +10,111 @@ import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
 import { parseNfeXml } from '@/lib/recepcao/xmlNfeParser'
-import { extrairDoc, searchItensCompra, fileToBase64, type ItemMatchSugerido } from '@/lib/recepcao/api'
+import { extrairDoc, searchItensCompra, fileToBase64, carregarAliasesFornecedor, aplicarBoostHistorico, resolverFornecedorLocal, type ItemMatchSugerido, type AliasMap } from '@/lib/recepcao/api'
 import { indexarEmbeddingsPendentes, embedQuery } from '@/lib/recepcao/indexador'
 import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
-import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus } from 'lucide-react'
+import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle } from 'lucide-react'
 import { useEtapas } from '@/hooks/useEtapas'
 
 type Acao = 'substituir_pedido' | 'criar_pedido' | 'criar_item' | 'ignorar'
+
+// Zonas de confiança do matching IA
+// Score >= AUTO: pré-seleciona automaticamente (alta confiança)
+// AUTO > Score >= SUGESTAO: pré-seleciona MAS exige confirmação explícita do operador
+// Score < SUGESTAO: não pré-seleciona; operador escolhe (ou cria item novo)
+const THRESHOLD_AUTO = 0.80
+const THRESHOLD_SUGESTAO = 0.55
+
+type ZonaConfianca = 'alta' | 'media' | 'baixa' | 'nenhuma'
+function zonaDeScore(score: number | null | undefined): ZonaConfianca {
+  if (score == null) return 'nenhuma'
+  if (score >= THRESHOLD_AUTO) return 'alta'
+  if (score >= THRESHOLD_SUGESTAO) return 'media'
+  return 'baixa'
+}
+
+// F2.3: gera próximo código sugerido pra um item dentro de uma etapa.
+// Lê os códigos existentes da etapa, acha o maior sufixo numérico e propõe +1.
+function gerarCodigoSugerido(
+  etapaCodigo: string | null | undefined,
+  itensDaEtapa: Array<{ codigo: string | null | undefined }>,
+): string {
+  const prefixo = (etapaCodigo ?? '').trim()
+  if (!prefixo) {
+    // Fallback: sem código de etapa, usa ITEM-NNN baseado no total
+    return `ITEM-${String(itensDaEtapa.length + 1).padStart(3, '0')}`
+  }
+  const maxNum = itensDaEtapa.reduce((max, it) => {
+    const c = it.codigo ?? ''
+    if (!c.startsWith(prefixo)) return max
+    const resto = c.slice(prefixo.length).replace(/^[.\-_ ]/, '')
+    const n = parseInt(resto, 10)
+    return Number.isFinite(n) && n > max ? n : max
+  }, 0)
+  return `${prefixo}.${String(maxNum + 1).padStart(3, '0')}`
+}
+
+// Avisos contextuais (F1.4): cruzam o que a NF diz com o que o orçamento prevê
+interface AvisoLinha {
+  severidade: 'amber' | 'red'
+  texto: string
+  detalhe?: string
+}
+const TOL_PRECO_AMBER = 0.05  // ±5% até 15% → âmbar
+const TOL_PRECO_RED = 0.15    // > 15% → vermelho
+
+function calcularAvisos(linha: LinhaExtraida, itemOrcado: {
+  custo_unitario_orcado: number
+  valor_total_orcado: number
+  valor_consumido: number
+  qtd_total: number | null
+  unidade: string | null
+} | null): AvisoLinha[] {
+  const avisos: AvisoLinha[] = []
+  if (!itemOrcado) return avisos
+  // 1) Variação de preço unitário
+  if (linha.valor_unitario != null && itemOrcado.custo_unitario_orcado > 0) {
+    const delta = (linha.valor_unitario / itemOrcado.custo_unitario_orcado) - 1
+    const absDelta = Math.abs(delta)
+    if (absDelta > TOL_PRECO_RED) {
+      avisos.push({
+        severidade: 'red',
+        texto: `${delta > 0 ? '+' : ''}${(delta * 100).toFixed(0)}% vs orçado`,
+        detalhe: `Unit. NF R$ ${linha.valor_unitario.toFixed(2)} vs orçado R$ ${itemOrcado.custo_unitario_orcado.toFixed(2)}`,
+      })
+    } else if (absDelta > TOL_PRECO_AMBER) {
+      avisos.push({
+        severidade: 'amber',
+        texto: `${delta > 0 ? '+' : ''}${(delta * 100).toFixed(0)}% vs orçado`,
+        detalhe: `Unit. NF R$ ${linha.valor_unitario.toFixed(2)} vs orçado R$ ${itemOrcado.custo_unitario_orcado.toFixed(2)}`,
+      })
+    }
+  }
+  // 2) Excede saldo do orçamento (em valor)
+  const saldoValor = (itemOrcado.valor_total_orcado ?? 0) - (itemOrcado.valor_consumido ?? 0)
+  if (linha.valor_total != null && saldoValor > 0 && linha.valor_total > saldoValor) {
+    avisos.push({
+      severidade: 'red',
+      texto: 'Excede saldo do item',
+      detalhe: `NF R$ ${linha.valor_total.toFixed(2)} > saldo R$ ${saldoValor.toFixed(2)}`,
+    })
+  } else if (linha.valor_total != null && saldoValor <= 0) {
+    avisos.push({
+      severidade: 'red',
+      texto: 'Item sem saldo',
+      detalhe: `Item já consumiu R$ ${itemOrcado.valor_consumido.toFixed(2)} de R$ ${itemOrcado.valor_total_orcado.toFixed(2)}`,
+    })
+  }
+  // 3) Quantidade da NF excede o total orçado do item (sinal grosso)
+  if (linha.quantidade != null && itemOrcado.qtd_total != null && linha.quantidade > itemOrcado.qtd_total) {
+    avisos.push({
+      severidade: 'amber',
+      texto: `Qtd NF ${linha.quantidade} > orçado ${itemOrcado.qtd_total}`,
+      detalhe: `Quantidade desta NF (${linha.quantidade} ${linha.unidade ?? ''}) supera o total orçado do item`,
+    })
+  }
+  return avisos
+}
 
 interface LinhaExtraida {
   ordem: number
@@ -34,6 +132,9 @@ interface LinhaExtraida {
   // Sugestões
   sugestoesItens?: ItemMatchSugerido[]
   carregandoSugestoes?: boolean
+  // Estado de confiança / confirmação
+  precisaConfirmar?: boolean   // true quando pré-selecionado em zona "media" e ainda não confirmado
+  confirmado?: boolean         // true quando operador confirmou explicitamente (manual ou clicando "confirmar")
 }
 
 interface Extracao {
@@ -61,8 +162,12 @@ export default function RecepcaoPage() {
   const [indexando, setIndexando] = useState(false)
   const [criandoItemIdx, setCriandoItemIdx] = useState<number | null>(null)
   const [criandoFornecedor, setCriandoFornecedor] = useState(false)
-  const [novoItemForm, setNovoItemForm] = useState({ descricao: '', etapa_id: '', categoria: 'MATERIAL', valor_orcado: '' })
+  const [novoItemForm, setNovoItemForm] = useState({ descricao: '', etapa_id: '', categoria: 'MATERIAL', valor_orcado: '', codigo: '', unidade: '', qtd_total: '' })
   const [novoFornForm, setNovoFornForm] = useState({ nome: '', cnpj: '' })
+  // F1.5: o operador precisa aceitar conscientemente a divergência NF×soma de linhas pra liberar o "Aplicar"
+  const [diferencaAceita, setDiferencaAceita] = useState(false)
+  // F2.1: filtro de visão da revisão (foco no que precisa atenção)
+  const [filtroVisao, setFiltroVisao] = useState<'todas' | 'pendentes' | 'sem_match' | 'confirmadas'>('todas')
 
   const handleIndexar = async () => {
     if (!currentCompany) return
@@ -171,27 +276,61 @@ export default function RecepcaoPage() {
   const iniciarRevisao = async (e: Omit<Extracao, 'itens'> & { itens: any[] }) => {
     const linhas: LinhaExtraida[] = e.itens.map((i: any) => ({ ...i, carregandoSugestoes: true }))
     setExtracao({ ...e, itens: linhas } as Extracao)
+    setDiferencaAceita(false)
     if (!currentCompany) return
+    // Garante que itens novos/alterados estejam indexados antes de buscar matches
+    // (no-op se já está tudo indexado; custa ~R$0,001 por item novo)
+    try {
+      const r = await indexarEmbeddingsPendentes(currentCompany.id)
+      if (r.indexados > 0) toast.info(`IA indexou ${r.indexados} item(ns) novo(s) do orçamento para o match.`)
+    } catch (err) {
+      // Não bloqueia o fluxo — cai pra trigram-only
+      console.warn('Falha ao auto-indexar embeddings:', err)
+    }
+    // Resolve fornecedor da NF e carrega aliases históricos pra boostar matches recorrentes
+    const fornecedorIdResolvido = resolverFornecedorLocal(
+      fornecedores as any[],
+      e.fornecedor.nome,
+      e.fornecedor.cnpj,
+    )
+    let aliases: AliasMap = new Map()
+    if (fornecedorIdResolvido) {
+      try {
+        aliases = await carregarAliasesFornecedor(currentCompany.id, fornecedorIdResolvido)
+        if (aliases.size > 0) {
+          toast.info(`IA carregou ${aliases.size} match(es) anteriores deste fornecedor.`)
+        }
+      } catch (err) {
+        console.warn('Falha ao carregar aliases do fornecedor:', err)
+      }
+    }
     // Carrega sugestões em paralelo (com embedding do query — match semantico)
     Promise.all(linhas.map(async (l, idx) => {
       try {
         // Tenta gerar embedding do query (se falhar, cai pra so trigram)
         let queryEmb: number[] | undefined
         try { queryEmb = await embedQuery(l.descricao) } catch { /* ignora */ }
-        const sugs = await searchItensCompra({ company_id: currentCompany.id, query: l.descricao, query_embedding: queryEmb, limit: 10 })
+        const sugsRaw = await searchItensCompra({ company_id: currentCompany.id, query: l.descricao, query_embedding: queryEmb, limit: 10 })
+        const sugs = aplicarBoostHistorico(sugsRaw, l.descricao, aliases)
         setExtracao(prev => {
           if (!prev) return prev
           const novas = [...prev.itens]
           novas[idx] = { ...novas[idx]!, sugestoesItens: sugs, carregandoSugestoes: false }
-          // Pré-seleciona top match se score >= 0.5
-          if (sugs.length > 0 && sugs[0]!.score_combined >= 0.5) {
-            novas[idx]!.item_compra_id = sugs[0]!.item_id
-            // Verifica se item tem pedido em previsão (planejado, sem nota) → sugere substituir
-            const pedidoExistente = pedidos.find(p => p.item_compra_id === sugs[0]!.item_id && p.status === 'planejado')
+          const top = sugs[0]
+          const zona = zonaDeScore(top?.score_combined)
+          if (top && (zona === 'alta' || zona === 'media')) {
+            novas[idx]!.item_compra_id = top.item_id
+            const pedidoExistente = pedidos.find(p => p.item_compra_id === top.item_id && p.status === 'planejado')
             novas[idx]!.acao = pedidoExistente ? 'substituir_pedido' : 'criar_pedido'
             if (pedidoExistente) novas[idx]!.pedido_substituido_id = pedidoExistente.id
+            // Zona alta → auto-confirmado; zona média → exige confirmação explícita
+            novas[idx]!.precisaConfirmar = zona === 'media'
+            novas[idx]!.confirmado = zona === 'alta'
           } else {
+            // Zona baixa ou sem sugestão → operador decide (default cria item novo)
             novas[idx]!.acao = 'criar_item'
+            novas[idx]!.precisaConfirmar = false
+            novas[idx]!.confirmado = false
           }
           return { ...prev, itens: novas }
         })
@@ -203,7 +342,33 @@ export default function RecepcaoPage() {
 
   const totalLinhas = extracao?.itens.reduce((s, l) => s + (l.valor_total ?? 0), 0) ?? 0
   const diferenca = (extracao?.documento.valor_total ?? 0) - totalLinhas
-  const linhasOk = extracao?.itens.filter(l => l.acao && l.acao !== 'ignorar').length ?? 0
+  // F1.5: tolerância = 1 centavo (R$ 0,01). Acima disso, exige aceite explícito do operador.
+  const TOLERANCIA_DIFERENCA = 0.01
+  const temDivergencia = Math.abs(diferenca) > TOLERANCIA_DIFERENCA
+  const divergenciaBloqueia = temDivergencia && !diferencaAceita
+  // Uma linha está "ok pra aplicar" se tem ação ≠ ignorar e não está pendente de confirmação
+  const linhasOk = extracao?.itens.filter(l => l.acao && l.acao !== 'ignorar' && !(l.precisaConfirmar && !l.confirmado)).length ?? 0
+  const linhasAConfirmar = extracao?.itens.filter(l => l.precisaConfirmar && !l.confirmado).length ?? 0
+  const linhasAutoOk = extracao?.itens.filter(l => l.confirmado && l.acao && l.acao !== 'ignorar' && (l.acao === 'criar_pedido' || l.acao === 'substituir_pedido')).length ?? 0
+  const linhasCriarItem = extracao?.itens.filter(l => l.acao === 'criar_item').length ?? 0
+  // F2.1: lista visível preserva o índice original pra handlers continuarem funcionando
+  const linhasVisiveis = (extracao?.itens ?? [])
+    .map((l, idx) => ({ l, idx }))
+    .filter(({ l }) => {
+      switch (filtroVisao) {
+        case 'pendentes': return !!l.precisaConfirmar && !l.confirmado
+        case 'sem_match': return l.acao === 'criar_item'
+        case 'confirmadas': return !!l.confirmado && (l.acao === 'criar_pedido' || l.acao === 'substituir_pedido')
+        default: return true
+      }
+    })
+
+  const confirmarTodasPendentes = () => {
+    setExtracao(prev => prev ? {
+      ...prev,
+      itens: prev.itens.map(l => (l.precisaConfirmar && !l.confirmado) ? { ...l, confirmado: true, precisaConfirmar: false } : l)
+    } : prev)
+  }
 
   const aplicar = async () => {
     if (!extracao || !currentCompany) return
@@ -302,6 +467,7 @@ export default function RecepcaoPage() {
       toast.success(`Documento aplicado: ${totalCriados} pedido(s) criado(s), ${totalSubstituidos} previsão(ões) substituída(s)${totalIgnoradosOuItem > 0 ? `, ${totalIgnoradosOuItem} pendente(s)` : ''}`)
       setExtracao(null)
       setTextoColado('')
+      setDiferencaAceita(false)
     } catch (err) {
       toast.error('Erro ao aplicar: ' + (err instanceof Error ? err.message : String(err)))
     } finally {
@@ -331,11 +497,11 @@ export default function RecepcaoPage() {
             <button
               onClick={handleIndexar}
               disabled={indexando}
-              className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
-              title="Gera embeddings dos itens pra match semantico (1x, ~R$0,001 por 100 itens)"
+              className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-medium hover:bg-muted disabled:opacity-50 text-muted-foreground"
+              title="Manutenção: a indexação roda automaticamente ao receber uma nota. Use isto só pra forçar reindexação."
             >
               {indexando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Database className="h-3.5 w-3.5" />}
-              {indexando ? 'Indexando…' : 'Indexar embeddings'}
+              {indexando ? 'Re-indexando…' : 'Re-indexar (manutenção)'}
             </button>
           </div>
           {/* Dropzone */}
@@ -387,22 +553,47 @@ export default function RecepcaoPage() {
       {/* Modal: Criar item rapido */}
       {criandoItemIdx !== null && extracao && currentCompany && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setCriandoItemIdx(null)}>
-          <div className="w-full max-w-md rounded-xl border bg-card shadow-2xl p-5" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-bold mb-2">Criar item de orcamento rapido</h3>
-            <p className="text-[11px] text-muted-foreground mb-3">Cria um novo item_compra para vincular a esta linha da nota. Voce pode ajustar depois em Compras &gt; Itens.</p>
+          <div className="w-full max-w-lg rounded-xl border bg-card shadow-2xl p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-bold mb-2">Criar item de orçamento rápido</h3>
+            <p className="text-[11px] text-muted-foreground mb-3">Cria um novo item de compra com código, unidade e quantidade — assim ele entra no orçamento corretamente e fica auditável depois.</p>
             <div className="space-y-2">
               <div>
-                <label className="text-[10px] uppercase text-muted-foreground">Descricao</label>
+                <label className="text-[10px] uppercase text-muted-foreground">Descrição<span className="text-red-500">*</span></label>
                 <input value={novoItemForm.descricao} onChange={e => setNovoItemForm({ ...novoItemForm, descricao: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm" />
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-[10px] uppercase text-muted-foreground">Etapa</label>
-                  <select value={novoItemForm.etapa_id} onChange={e => setNovoItemForm({ ...novoItemForm, etapa_id: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm">
+                  <label className="text-[10px] uppercase text-muted-foreground">Etapa<span className="text-red-500">*</span></label>
+                  <select
+                    value={novoItemForm.etapa_id}
+                    onChange={e => {
+                      const etapaId = e.target.value
+                      const etapa = (etapas as any[]).find(et => et.id === etapaId)
+                      const itensDaEtapa = (itens as any[]).filter(i => i.etapa_id === etapaId)
+                      // Só sobrescreve o código se ainda estiver vazio ou se tinha sido sugerido automaticamente
+                      const codigoNovo = etapa
+                        ? gerarCodigoSugerido(etapa.codigo, itensDaEtapa)
+                        : novoItemForm.codigo
+                      setNovoItemForm({ ...novoItemForm, etapa_id: etapaId, codigo: codigoNovo })
+                    }}
+                    className="w-full rounded border bg-background px-2 py-1.5 text-sm"
+                  >
                     <option value="">— escolher —</option>
-                    {(etapas as any[]).map(et => <option key={et.id} value={et.id}>{et.nome}</option>)}
+                    {(etapas as any[]).map(et => <option key={et.id} value={et.id}>{et.codigo ? `${et.codigo} · ` : ''}{et.nome}</option>)}
                   </select>
                 </div>
+                <div>
+                  <label className="text-[10px] uppercase text-muted-foreground">Código<span className="text-red-500">*</span></label>
+                  <input
+                    value={novoItemForm.codigo}
+                    onChange={e => setNovoItemForm({ ...novoItemForm, codigo: e.target.value })}
+                    placeholder="ex.: 01.02.001"
+                    className="w-full rounded border bg-background px-2 py-1.5 text-sm font-mono"
+                    title="Sugestão automática baseada na etapa. Pode editar."
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
                 <div>
                   <label className="text-[10px] uppercase text-muted-foreground">Tipo</label>
                   <select value={novoItemForm.categoria} onChange={e => setNovoItemForm({ ...novoItemForm, categoria: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm">
@@ -411,39 +602,76 @@ export default function RecepcaoPage() {
                     <option value="EQUIPAMENTO">Equipamento</option>
                   </select>
                 </div>
+                <div>
+                  <label className="text-[10px] uppercase text-muted-foreground">Unidade<span className="text-red-500">*</span></label>
+                  <input value={novoItemForm.unidade} onChange={e => setNovoItemForm({ ...novoItemForm, unidade: e.target.value.toUpperCase() })} placeholder="UN / KG / M" className="w-full rounded border bg-background px-2 py-1.5 text-sm font-mono" />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase text-muted-foreground">Qtd total<span className="text-red-500">*</span></label>
+                  <input type="number" step="0.01" min="0" value={novoItemForm.qtd_total} onChange={e => setNovoItemForm({ ...novoItemForm, qtd_total: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm font-mono text-right" />
+                </div>
               </div>
               <div>
-                <label className="text-[10px] uppercase text-muted-foreground">Valor unitario orcado (R$)</label>
-                <input type="number" step="0.01" value={novoItemForm.valor_orcado} onChange={e => setNovoItemForm({ ...novoItemForm, valor_orcado: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm font-mono text-right" />
+                <label className="text-[10px] uppercase text-muted-foreground">Valor unitário orçado (R$)<span className="text-red-500">*</span></label>
+                <input type="number" step="0.01" min="0" value={novoItemForm.valor_orcado} onChange={e => setNovoItemForm({ ...novoItemForm, valor_orcado: e.target.value })} className="w-full rounded border bg-background px-2 py-1.5 text-sm font-mono text-right" />
               </div>
+              {(() => {
+                const qtdNum = parseFloat(novoItemForm.qtd_total.replace(',', '.')) || 0
+                const valorNum = parseFloat(novoItemForm.valor_orcado.replace(',', '.')) || 0
+                const totalCalc = qtdNum * valorNum
+                if (qtdNum > 0 && valorNum > 0) {
+                  return (
+                    <div className="rounded bg-muted/30 p-2 text-[11px] flex justify-between">
+                      <span className="text-muted-foreground">Total orçado calculado</span>
+                      <span className="font-bold">{formatCurrency(totalCalc)}</span>
+                    </div>
+                  )
+                }
+                return null
+              })()}
             </div>
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={() => setCriandoItemIdx(null)} className="rounded border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
               <button
                 onClick={async () => {
-                  if (!novoItemForm.descricao.trim() || !novoItemForm.etapa_id) {
-                    toast.error('Preencha descricao e etapa')
-                    return
-                  }
+                  const descricao = novoItemForm.descricao.trim()
+                  const codigo = novoItemForm.codigo.trim()
+                  const unidade = novoItemForm.unidade.trim()
+                  const qtdNum = parseFloat(novoItemForm.qtd_total.replace(',', '.'))
+                  const valorNum = parseFloat(novoItemForm.valor_orcado.replace(',', '.'))
+                  if (!descricao) { toast.error('Preencha a descrição'); return }
+                  if (!novoItemForm.etapa_id) { toast.error('Selecione a etapa'); return }
+                  if (!codigo) { toast.error('Preencha o código (a sugestão aparece ao escolher a etapa)'); return }
+                  if (!unidade) { toast.error('Preencha a unidade (ex.: UN, KG, M)'); return }
+                  if (!Number.isFinite(qtdNum) || qtdNum <= 0) { toast.error('Quantidade total deve ser > 0'); return }
+                  if (!Number.isFinite(valorNum) || valorNum <= 0) { toast.error('Valor unitário deve ser > 0'); return }
+                  // Checa duplicidade de código na company
+                  const dup = (itens as any[]).find(i => i.codigo === codigo)
+                  if (dup) { toast.error(`Código "${codigo}" já existe no item "${dup.descricao}". Use outro.`); return }
                   try {
-                    const valorNum = parseFloat(novoItemForm.valor_orcado.replace(',', '.')) || 0
+                    const valorTotalOrcado = qtdNum * valorNum
                     const { data: novo, error: errIns } = await supabase.from('itens_compra').insert({
                       company_id: currentCompany.id,
                       etapa_id: novoItemForm.etapa_id,
-                      descricao: novoItemForm.descricao.trim(),
+                      codigo,
+                      descricao,
                       tipo: novoItemForm.categoria,
                       categoria: novoItemForm.categoria,
+                      unidade,
+                      qtd_total: qtdNum,
                       custo_unitario_orcado: valorNum,
-                      valor_total_orcado: valorNum,
+                      valor_total_orcado: valorTotalOrcado,
                     }).select('id').single()
                     if (errIns) throw errIns
                     if (novo) {
                       const idxLocal = criandoItemIdx
                       setExtracao(prev => prev ? {
                         ...prev,
-                        itens: prev.itens.map((l, i) => i === idxLocal ? { ...l, item_compra_id: novo.id, acao: 'criar_pedido' } : l)
+                        itens: prev.itens.map((l, i) => i === idxLocal ? { ...l, item_compra_id: novo.id, acao: 'criar_pedido', confirmado: true, precisaConfirmar: false } : l)
                       } : prev)
-                      toast.success('Item criado e vinculado a esta linha')
+                      toast.success(`Item ${codigo} criado e vinculado`)
+                      // Indexa o novo item em background pra próximas linhas/notas (não bloqueia UI)
+                      indexarEmbeddingsPendentes(currentCompany.id).catch(err => console.warn('Falha indexar item novo:', err))
                     }
                     setCriandoItemIdx(null)
                   } catch (err) {
@@ -558,18 +786,85 @@ export default function RecepcaoPage() {
                 <p className={`font-bold text-sm ${Math.abs(diferenca) > 0.01 ? 'text-amber-600' : 'text-muted-foreground'}`}>{formatCurrency(diferenca)}</p>
               </div>
               <div>
-                <p className="text-[10px] uppercase text-muted-foreground">Itens / Decididos</p>
-                <p className="font-bold text-sm">{linhasOk} / {extracao.itens.length}</p>
+                <p className="text-[10px] uppercase text-muted-foreground">Status IA</p>
+                <div className="flex items-center gap-2 mt-0.5 text-[11px]">
+                  <span className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 text-emerald-700 px-1.5 py-0.5" title="Auto-vinculadas (alta confiança ≥80%)">
+                    <ShieldCheck className="h-3 w-3" /> {linhasAutoOk}
+                  </span>
+                  <span className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 ${linhasAConfirmar > 0 ? 'bg-amber-500/15 text-amber-700 font-bold' : 'bg-muted text-muted-foreground'}`} title="Pré-selecionadas pela IA mas exigem confirmação (média confiança 55–80%)">
+                    <HelpCircle className="h-3 w-3" /> {linhasAConfirmar}
+                  </span>
+                  <span className="inline-flex items-center gap-0.5 rounded bg-blue-500/15 text-blue-700 px-1.5 py-0.5" title="Sem match no orçamento — criar item novo ou ignorar">
+                    <Plus className="h-3 w-3" /> {linhasCriarItem}
+                  </span>
+                </div>
               </div>
             </div>
             {extracao.modelo && (
               <p className="mt-2 text-[10px] text-muted-foreground">Extraído por {extracao.modelo} · custo R$ {((extracao.custo_cents ?? 0) / 100).toFixed(4)}</p>
             )}
-            {Math.abs(diferenca) > 0.01 && (
-              <div className="mt-2 flex items-center gap-1.5 rounded-md bg-amber-500/10 p-2 text-[11px] text-amber-700">
-                <AlertTriangle className="h-3.5 w-3.5" /> Soma das linhas ({formatCurrency(totalLinhas)}) difere do total da NF ({formatCurrency(extracao.documento.valor_total ?? 0)}). Confira os valores.
+            {linhasAConfirmar > 0 && (
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-amber-500/10 p-2 text-[11px] text-amber-700">
+                <span className="inline-flex items-center gap-1.5">
+                  <HelpCircle className="h-3.5 w-3.5" /> {linhasAConfirmar} linha(s) com match de confiança média — confirme antes de aplicar.
+                </span>
+                <button
+                  onClick={confirmarTodasPendentes}
+                  className="inline-flex items-center gap-1 rounded bg-amber-500 hover:bg-amber-600 text-white px-2 py-1 text-[10px] font-bold whitespace-nowrap"
+                  title="Aceita todas as sugestões de média confiança de uma vez"
+                >
+                  <Check className="h-3 w-3" /> Confirmar todas
+                </button>
               </div>
             )}
+            {temDivergencia && (
+              <div className={`mt-2 flex items-center justify-between gap-2 rounded-md p-2 text-[11px] ${divergenciaBloqueia ? 'bg-red-500/10 text-red-700 border border-red-500/40' : 'bg-emerald-500/10 text-emerald-800 border border-emerald-500/30'}`}>
+                <div className="flex items-center gap-1.5">
+                  <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span>
+                    Soma das linhas ({formatCurrency(totalLinhas)}) difere do total da NF ({formatCurrency(extracao.documento.valor_total ?? 0)}) — diferença <strong>{formatCurrency(diferenca)}</strong>.
+                    {divergenciaBloqueia ? ' Confira os valores ou aceite a diferença pra aplicar.' : ' Diferença aceita pelo operador.'}
+                  </span>
+                </div>
+                {divergenciaBloqueia ? (
+                  <button
+                    onClick={() => setDiferencaAceita(true)}
+                    className="inline-flex items-center gap-1 rounded bg-amber-500 hover:bg-amber-600 text-white px-2 py-1 text-[10px] font-bold whitespace-nowrap"
+                    title="Aceita conscientemente a diferença (frete, desconto, imposto não-detalhado) e libera o Aplicar"
+                  >
+                    <Check className="h-3 w-3" /> Aceitar diferença
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setDiferencaAceita(false)}
+                    className="inline-flex items-center gap-1 rounded border border-emerald-500/40 text-emerald-700 hover:bg-emerald-500/10 px-2 py-1 text-[10px] whitespace-nowrap"
+                    title="Reverter aceite — voltar a bloquear o Aplicar"
+                  >
+                    <X className="h-3 w-3" /> Reverter aceite
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Filtros de visão (F2.1) */}
+          <div className="flex items-center gap-1 flex-wrap">
+            <span className="text-[10px] uppercase text-muted-foreground mr-1">Ver:</span>
+            {([
+              { key: 'todas', label: `Todas (${extracao.itens.length})` },
+              { key: 'pendentes', label: `A confirmar (${linhasAConfirmar})`, disabled: linhasAConfirmar === 0 },
+              { key: 'sem_match', label: `Sem match (${linhasCriarItem})`, disabled: linhasCriarItem === 0 },
+              { key: 'confirmadas', label: `Confirmadas (${linhasAutoOk})`, disabled: linhasAutoOk === 0 },
+            ] as Array<{ key: typeof filtroVisao; label: string; disabled?: boolean }>).map(b => (
+              <button
+                key={b.key}
+                onClick={() => setFiltroVisao(b.key)}
+                disabled={b.disabled}
+                className={`rounded px-2 py-1 text-[11px] font-medium border ${filtroVisao === b.key ? 'bg-primary text-primary-foreground border-primary' : 'bg-card hover:bg-muted text-foreground border-border'} disabled:opacity-40 disabled:cursor-not-allowed`}
+              >
+                {b.label}
+              </button>
+            ))}
           </div>
 
           {/* Linhas */}
@@ -586,12 +881,23 @@ export default function RecepcaoPage() {
                 </tr>
               </thead>
               <tbody>
-                {extracao.itens.map((linha, idx) => {
+                {linhasVisiveis.length === 0 && (
+                  <tr><td colSpan={6} className="px-3 py-6 text-center text-[11px] text-muted-foreground">Nenhuma linha neste filtro.</td></tr>
+                )}
+                {linhasVisiveis.map(({ l: linha, idx }) => {
                   const sugTop = linha.sugestoesItens?.[0]
                   const itemSelecionado = linha.item_compra_id ? itens.find(i => i.id === linha.item_compra_id) : null
                   const pedidoSel = linha.pedido_substituido_id ? pedidos.find(p => p.id === linha.pedido_substituido_id) : null
+                  const zona = zonaDeScore(sugTop?.score_combined)
+                  const precisaConf = !!linha.precisaConfirmar && !linha.confirmado
+                  // Destaque de fundo por estado: pendente confirmação > alta confiança > nenhum
+                  const bgRow = precisaConf
+                    ? 'bg-amber-500/10 hover:bg-amber-500/15'
+                    : linha.confirmado && zona === 'alta'
+                      ? 'bg-emerald-500/5 hover:bg-emerald-500/10'
+                      : 'hover:bg-muted/10'
                   return (
-                    <tr key={idx} className="border-t hover:bg-muted/10">
+                    <tr key={idx} className={`border-t ${bgRow}`}>
                       <td className="px-3 py-2 text-center text-muted-foreground">{idx + 1}</td>
                       <td className="px-3 py-2">
                         <div className="font-medium">{linha.descricao}</div>
@@ -610,15 +916,61 @@ export default function RecepcaoPage() {
                         ) : itemSelecionado ? (
                           <div>
                             <div className="font-medium text-[11px]">{itemSelecionado.descricao}</div>
-                            <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                            <div className="flex items-center gap-1 text-[9px] text-muted-foreground flex-wrap">
                               <span>{itemSelecionado.codigo}</span>
                               {sugTop && (
-                                <span className={`rounded px-1 ${sugTop.score_combined > 0.7 ? 'bg-emerald-500/15 text-emerald-700' : sugTop.score_combined > 0.4 ? 'bg-amber-500/15 text-amber-700' : 'bg-muted text-muted-foreground'}`}>
+                                <span
+                                  className={`inline-flex items-center gap-0.5 rounded px-1 ${zona === 'alta' ? 'bg-emerald-500/15 text-emerald-700' : zona === 'media' ? 'bg-amber-500/15 text-amber-700' : 'bg-muted text-muted-foreground'}`}
+                                  title={zona === 'alta' ? 'Alta confiança — auto-vinculado' : zona === 'media' ? 'Média confiança — requer confirmação' : 'Baixa confiança'}
+                                >
+                                  {zona === 'alta' && <ShieldCheck className="h-2.5 w-2.5" />}
+                                  {zona === 'media' && <HelpCircle className="h-2.5 w-2.5" />}
                                   {Math.round(sugTop.score_combined * 100)}%
+                                </span>
+                              )}
+                              {sugTop?.match_historico && (
+                                <span className="inline-flex items-center gap-0.5 rounded bg-blue-500/15 text-blue-700 px-1" title={sugTop.score_original != null ? `Item recorrente deste fornecedor (histórico). Score base: ${Math.round(sugTop.score_original * 100)}%` : 'Item recorrente deste fornecedor (histórico)'}>
+                                  <Database className="h-2.5 w-2.5" /> histórico
+                                </span>
+                              )}
+                              {linha.confirmado && !precisaConf && (
+                                <span className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 text-emerald-700 px-1" title="Confirmado">
+                                  <Check className="h-2.5 w-2.5" /> ok
                                 </span>
                               )}
                               {pedidoSel && <span className="rounded bg-blue-500/15 text-blue-700 px-1">→ #{pedidoSel.numero_pedido} (subst.)</span>}
                             </div>
+                            {(() => {
+                              const avisos = calcularAvisos(linha, itemSelecionado)
+                              if (avisos.length === 0) return null
+                              return (
+                                <div className="mt-1 flex gap-1 flex-wrap">
+                                  {avisos.map((a, i) => (
+                                    <span
+                                      key={i}
+                                      className={`inline-flex items-center gap-0.5 rounded px-1 text-[9px] ${a.severidade === 'red' ? 'bg-red-500/15 text-red-700' : 'bg-amber-500/15 text-amber-700'}`}
+                                      title={a.detalhe ?? ''}
+                                    >
+                                      <AlertTriangle className="h-2.5 w-2.5" /> {a.texto}
+                                    </span>
+                                  ))}
+                                </div>
+                              )
+                            })()}
+                            {precisaConf && (
+                              <button
+                                onClick={() => {
+                                  setExtracao(prev => prev ? {
+                                    ...prev,
+                                    itens: prev.itens.map((l, i) => i === idx ? { ...l, confirmado: true, precisaConfirmar: false } : l)
+                                  } : prev)
+                                }}
+                                className="mt-1 inline-flex items-center gap-1 rounded bg-amber-500 hover:bg-amber-600 text-white px-1.5 py-0.5 text-[10px] font-bold"
+                                title="Confirmar este match"
+                              >
+                                <Check className="h-2.5 w-2.5" /> Confirmar match
+                              </button>
+                            )}
                             <select
                               value={linha.item_compra_id ?? ''}
                               onChange={e => {
@@ -631,6 +983,8 @@ export default function RecepcaoPage() {
                                     item_compra_id: novoItemId,
                                     pedido_substituido_id: pedidoExistente?.id ?? null,
                                     acao: pedidoExistente ? 'substituir_pedido' : (l.acao === 'substituir_pedido' ? 'criar_pedido' : l.acao),
+                                    confirmado: true,
+                                    precisaConfirmar: false,
                                   } : l)
                                 } : prev)
                               }}
@@ -654,6 +1008,8 @@ export default function RecepcaoPage() {
                                   item_compra_id: novoItemId,
                                   pedido_substituido_id: pedidoExistente?.id ?? null,
                                   acao: pedidoExistente ? 'substituir_pedido' : 'criar_pedido',
+                                  confirmado: true,
+                                  precisaConfirmar: false,
                                 } : l)
                               } : prev)
                             }}
@@ -671,7 +1027,15 @@ export default function RecepcaoPage() {
                               onClick={() => {
                                 setCriandoItemIdx(idx)
                                 const valor = linha.valor_unitario ?? linha.valor_total ?? 0
-                                setNovoItemForm({ descricao: linha.descricao, etapa_id: '', categoria: 'MATERIAL', valor_orcado: String(valor) })
+                                setNovoItemForm({
+                                  descricao: linha.descricao,
+                                  etapa_id: '',
+                                  categoria: 'MATERIAL',
+                                  valor_orcado: String(valor),
+                                  codigo: '',
+                                  unidade: linha.unidade ?? 'UN',
+                                  qtd_total: linha.quantidade != null ? String(linha.quantidade) : '',
+                                })
                               }}
                               className="text-[9px] inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-blue-700 hover:bg-blue-500/10 self-start"
                             >
@@ -687,7 +1051,7 @@ export default function RecepcaoPage() {
                             const acao = e.target.value as Acao
                             setExtracao(prev => prev ? {
                               ...prev,
-                              itens: prev.itens.map((l, i) => i === idx ? { ...l, acao } : l)
+                              itens: prev.itens.map((l, i) => i === idx ? { ...l, acao, confirmado: true, precisaConfirmar: false } : l)
                             } : prev)
                           }}
                           className="w-full rounded border bg-background px-1.5 py-1 text-[11px]"
@@ -719,11 +1083,26 @@ export default function RecepcaoPage() {
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-2">
-            <button onClick={() => { setExtracao(null); setTextoColado('') }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
+            {linhasAConfirmar > 0 && (
+              <span className="text-[11px] text-amber-700 mr-2">
+                Confirme {linhasAConfirmar} linha(s) antes de aplicar.
+              </span>
+            )}
+            {divergenciaBloqueia && (
+              <span className="text-[11px] text-red-700 mr-2">
+                Aceite a diferença NF×linhas antes de aplicar.
+              </span>
+            )}
+            <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false) }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
             <button
               onClick={aplicar}
-              disabled={aplicando || linhasOk === 0}
-              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+              disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia}
+              title={
+                linhasAConfirmar > 0 ? 'Há linhas com match de média confiança que precisam ser confirmadas'
+                : divergenciaBloqueia ? 'Soma das linhas difere do total da NF — aceite a diferença pra liberar'
+                : ''
+              }
+              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {aplicando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
               Aplicar {linhasOk > 0 ? `(${linhasOk} linha${linhasOk > 1 ? 's' : ''})` : ''}
