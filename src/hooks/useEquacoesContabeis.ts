@@ -64,6 +64,10 @@ interface ConciliacaoLink {
   medicao_id: string | null
   mov_valor: number
   mov_tipo: string
+  /** Valor do rateio (cp.valor_aplicado). Pode ser < mov_valor quando a mov é
+   * dividida entre múltiplas origens. Usar este (não mov_valor) ao classificar
+   * uma parcela individual, senão rateio aparece como divergência falsa. */
+  valor_aplicado: number
 }
 
 export function useEquacoesContabeis() {
@@ -103,7 +107,7 @@ export function useEquacoesContabeis() {
         .select(`
           id, status, movimentacao_id,
           movimentacoes_bancarias!inner(valor, tipo),
-          conciliacao_parcelas(parcela_id, mutuo_id, mutuo_parcela_id, medicao_id)
+          conciliacao_parcelas(parcela_id, mutuo_id, mutuo_parcela_id, medicao_id, valor_aplicado)
         `)
         .eq('company_id', currentCompany.id)
         .neq('status', 'rejeitado')
@@ -126,6 +130,7 @@ export function useEquacoesContabeis() {
             medicao_id: cp.medicao_id,
             mov_valor: Number(mov?.valor ?? 0),
             mov_tipo: String(mov?.tipo ?? ''),
+            valor_aplicado: Number(cp.valor_aplicado ?? 0),
           })
         }
       }
@@ -233,9 +238,12 @@ export function useEquacoesContabeis() {
     // ═════════════════════════════════════════════════════════════════════════
     // EQUAÇÃO B — EXECUÇÃO: para cada parcela, valor_pago = Σ saídas vinculadas
     //
-    // Soma POR PARCELA (não dedup global) — uma mov vinculada a 2 parcelas
-    // soma 2x aqui, o que é correto: cada parcela espera ver o valor_pago
-    // proporcional ao seu rateio. Se a mov foi rateada errado, isso aparece.
+    // Usa cp.valor_aplicado (rateio) em vez de mov.valor — quando uma mov é
+    // rateada entre N parcelas, cada parcela espera ver SUA parte, não o total
+    // da mov, senão rateio legítimo vira divergência falsa.
+    //
+    // Filtra status='sugerido' — sugestões pendentes não são vínculos
+    // realizados; só contam links confirmados/aprovados (baixa pré-extrato).
     // ═════════════════════════════════════════════════════════════════════════
     // Inclui parcelas órfãs também — qualquer parcela é candidata a ter
     // mov conciliada, e excluir órfãs aqui criava gap "fantasma" (a órfã
@@ -243,11 +251,12 @@ export function useEquacoesContabeis() {
     const sigmaPagoParc = parcelas
       .reduce((s, p) => s + Number(p.valor_pago || 0), 0)
 
-    // Σ saídas vinculadas (com repetição quando mov→N parcelas)
+    // Σ saídas vinculadas (rateio por parcela; sugestões pendentes excluídas)
     let sigmaSaidasParcela = 0
     for (const l of links) {
       if (!l.parcela_id || l.mov_tipo !== 'saida') continue
-      sigmaSaidasParcela += Number(l.mov_valor || 0)
+      if (l.status === 'sugerido') continue
+      sigmaSaidasParcela += Number(l.valor_aplicado || 0)
     }
 
     const gapB = sigmaSaidasParcela - sigmaPagoParc
@@ -264,8 +273,9 @@ export function useEquacoesContabeis() {
     const movsByParc = new Map<string, { soma: number; n: number }>()
     for (const l of links) {
       if (!l.parcela_id || l.mov_tipo !== 'saida') continue
+      if (l.status === 'sugerido') continue
       const cur = movsByParc.get(l.parcela_id) ?? { soma: 0, n: 0 }
-      cur.soma += Number(l.mov_valor || 0)
+      cur.soma += Number(l.valor_aplicado || 0)
       cur.n += 1
       movsByParc.set(l.parcela_id, cur)
     }
