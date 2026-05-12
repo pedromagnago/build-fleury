@@ -658,7 +658,11 @@ function ParcelasTab({ search }: { search: string }) {
         count={selection.count}
         onClear={selection.clear}
         summary={(() => {
-          const sel = parcelas.filter(p => selection.selected.has(p.id))
+          // Usa allFiltered (parcelas + mutuoParcelas + amortizacoesParcelas)
+          // pra que a barra mostre totais corretamente em qualquer aba (Pedidos,
+          // Mútuos, Amortizações, Avulsas). Filtrar só `parcelas` deixava o
+          // summary vazio quando o usuário selecionava mútuos/amortizações.
+          const sel = allFiltered.filter(p => selection.selected.has(p.id))
           if (sel.length === 0) return undefined
           const total = sel.reduce((s, p) => s + Number(p.valor || 0), 0)
           const pago = sel.reduce((s, p) => s + Number(p.valor_pago || 0), 0)
@@ -780,9 +784,19 @@ function PaymentModal({
   const descLabel = `Pgto ${pedido?.fornecedor_nome ?? '—'} - ${parcela.pedido_item ?? parcela.descricao ?? 'Avulsa'}`
 
   const handlePay = async () => {
-    setSaving(true)
     const valorPago = parseFloat(form.valor_pago) || 0
 
+    // Validações ANTES de entrar no try — feedback claro, sem silenciar etapas.
+    if (valorPago <= 0) {
+      toast.error('Informe um valor de pagamento maior que zero')
+      return
+    }
+    if (!form.conta_bancaria_id) {
+      toast.error('Selecione a conta bancária — sem conta a baixa não vira movimento no extrato')
+      return
+    }
+
+    setSaving(true)
     try {
       // 1. Upload comprovante (if any)
       let comprovantePath: string | null = null
@@ -793,98 +807,98 @@ function PaymentModal({
         else comprovantePath = filePath
       }
 
-      // 2. Update parcela
-      const { error: e1 } = await supabase
+      // 2. Update parcela — usa .select() pra garantir que pelo menos 1 linha foi
+      // afetada. RLS pode silenciar UPDATE retornando { data: null, error: null }
+      // sem nenhuma linha tocada; sem checar isso, o fluxo continuaria como se
+      // tivesse pago e a parcela ficaria intacta. Esse era o sintoma reportado.
+      const { data: updRows, error: e1 } = await supabase
         .from('parcelas')
         .update({
           data_pagamento_real: form.data_pagamento,
           valor_pago: parcela.valor_pago + valorPago,
           forma_pagamento: form.forma_pagamento,
-          conta_bancaria_id: form.conta_bancaria_id || null,
+          conta_bancaria_id: form.conta_bancaria_id,
           status: (parcela.valor_pago + valorPago) >= parcela.valor ? 'paga' : 'parcialmente_paga',
           ...(comprovantePath ? { comprovante_path: comprovantePath } : {}),
           ...(form.observacoes ? { observacoes: form.observacoes } : {}),
         })
         .eq('id', parcela.id)
+        .select('id')
       if (e1) throw e1
+      if (!updRows || updRows.length === 0) {
+        throw new Error('UPDATE não afetou nenhuma linha (RLS ou parcela inexistente). Reabra a tela e tente de novo.')
+      }
 
       // 3. Update itens_compra: valor_consumido += valor_pago
       if (parcela.pedido_id) {
-        // Find item_compra_id via pedido
         const pedidoData = pedidos.find((p) => p.id === parcela.pedido_id)
         if (pedidoData?.item_compra_id) {
-          await supabase.rpc('increment_valor_consumido', {
+          const { error: eRpc } = await supabase.rpc('increment_valor_consumido', {
             p_item_id: pedidoData.item_compra_id,
             p_valor: valorPago,
-          }).then(({ error }) => {
-            if (error) {
-              // Fallback: direct SQL-like update via raw approach
-              console.warn('RPC not found, using direct update fallback')
-              supabase
-                .from('itens_compra')
-                .select('valor_consumido')
-                .eq('id', pedidoData.item_compra_id)
-                .single()
-                .then(({ data }) => {
-                  if (data) {
-                    supabase
-                      .from('itens_compra')
-                      .update({
-                        valor_consumido: (data.valor_consumido ?? 0) + valorPago,
-                        // valor_saldo: GENERATED ALWAYS — auto-calculated by PostgreSQL
-                      })
-                      .eq('id', pedidoData.item_compra_id)
-                      .then(() => {})
-                  }
-                })
-            }
           })
-        }
-      }
-
-      // 4. Create bank transaction + auto-conciliation (mov visivel na Conciliacao e no Fluxo)
-      if (form.conta_bancaria_id) {
-        const { data: movRow, error: eMov } = await supabase.from('movimentacoes_bancarias').insert({
-          company_id: companyId,
-          conta_id: form.conta_bancaria_id,
-          data: form.data_pagamento,
-          descricao: descLabel,
-          valor: valorPago,
-          tipo: 'saida',
-          parcela_id: parcela.id,
-        }).select('id').single()
-        if (eMov) throw eMov
-        if (movRow) {
-          const { data: concRow, error: eConc } = await supabase.from('conciliacoes').insert({
-            company_id: companyId,
-            movimentacao_id: movRow.id,
-            match_type: 'manual',
-            confidence: 100,
-            status: 'aprovado',
-          }).select('id').single()
-          if (eConc) throw eConc
-          if (concRow) {
-            await supabase.from('conciliacao_parcelas').insert({
-              conciliacao_id: concRow.id,
-              parcela_id: parcela.id,
-              valor_aplicado: valorPago,
-            })
+          if (eRpc) {
+            console.warn('RPC increment_valor_consumido falhou, usando fallback:', eRpc.message)
+            const { data: item } = await supabase
+              .from('itens_compra')
+              .select('valor_consumido')
+              .eq('id', pedidoData.item_compra_id)
+              .single()
+            if (item) {
+              await supabase
+                .from('itens_compra')
+                .update({ valor_consumido: (item.valor_consumido ?? 0) + valorPago })
+                .eq('id', pedidoData.item_compra_id)
+            }
           }
         }
       }
+
+      // 4. Create bank transaction + auto-conciliation (mov visível na Conciliação e no Fluxo).
+      // conta_bancaria_id já foi validada acima — este bloco SEMPRE executa.
+      const { data: movRow, error: eMov } = await supabase.from('movimentacoes_bancarias').insert({
+        company_id: companyId,
+        conta_id: form.conta_bancaria_id,
+        data: form.data_pagamento,
+        descricao: descLabel,
+        valor: valorPago,
+        tipo: 'saida',
+        parcela_id: parcela.id,
+      }).select('id').single()
+      if (eMov) throw eMov
+      if (!movRow) throw new Error('Mov bancária não foi criada (resposta vazia do banco)')
+
+      const { data: concRow, error: eConc } = await supabase.from('conciliacoes').insert({
+        company_id: companyId,
+        movimentacao_id: movRow.id,
+        match_type: 'manual',
+        confidence: 100,
+        status: 'aprovado',
+      }).select('id').single()
+      if (eConc) throw eConc
+      if (!concRow) throw new Error('Conciliação não foi criada (resposta vazia do banco)')
+
+      const { error: eCp } = await supabase.from('conciliacao_parcelas').insert({
+        conciliacao_id: concRow.id,
+        parcela_id: parcela.id,
+        valor_aplicado: valorPago,
+      })
+      if (eCp) throw eCp
 
       // 5. Audit log
       await supabase.from('audit_logs').insert({
         company_id: companyId,
         tabela: 'parcelas',
+        registro_id: parcela.id,
         acao: 'UPDATE', agente: 'humano',
         dados_antes: { operacao: 'pagamento', id: parcela.id, status: parcela.status, valor_pago: parcela.valor_pago },
-        dados_depois: { status: 'paga', valor_pago: parcela.valor_pago + valorPago, forma: form.forma_pagamento },
+        dados_depois: { status: 'paga', valor_pago: parcela.valor_pago + valorPago, forma: form.forma_pagamento, mov_id: movRow.id, conc_id: concRow.id },
       })
 
       toast.success('Pagamento registrado com sucesso')
       onDone()
     } catch (err) {
+      console.error('[Pagamento] falhou:', err)
       toast.error(`Erro: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setSaving(false)
