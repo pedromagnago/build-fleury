@@ -370,6 +370,31 @@ export default function RecepcaoPage() {
     } : prev)
   }
 
+  // F1.5 edição inline: o operador corrige valores extraídos errados sem precisar remover a linha.
+  // Quando muda quantidade ou unitário e o outro está preenchido, recalcula total.
+  // Quando muda total e quantidade está preenchida, recalcula unitário.
+  const editarLinha = (idx: number, campo: 'quantidade' | 'valor_unitario' | 'valor_total', novoValor: number | null) => {
+    setExtracao(prev => {
+      if (!prev) return prev
+      const itens = prev.itens.map((l, i) => {
+        if (i !== idx) return l
+        const ln = { ...l, [campo]: novoValor }
+        const q = ln.quantidade
+        const vu = ln.valor_unitario
+        const vt = ln.valor_total
+        if (campo === 'valor_total' && q != null && q > 0 && vt != null) {
+          ln.valor_unitario = vt / q
+        } else if (campo === 'valor_unitario' && q != null && q > 0 && vu != null) {
+          ln.valor_total = q * vu
+        } else if (campo === 'quantidade' && q != null && q > 0 && vu != null) {
+          ln.valor_total = q * vu
+        }
+        return ln
+      })
+      return { ...prev, itens }
+    })
+  }
+
   const aplicar = async () => {
     if (!extracao || !currentCompany) return
     setAplicando(true)
@@ -901,13 +926,42 @@ export default function RecepcaoPage() {
                       <td className="px-3 py-2 text-center text-muted-foreground">{idx + 1}</td>
                       <td className="px-3 py-2">
                         <div className="font-medium">{linha.descricao}</div>
-                        <div className="text-[10px] text-muted-foreground">
-                          {linha.quantidade ? `${linha.quantidade} ${linha.unidade ?? 'un'}` : ''}
-                          {linha.valor_unitario ? ` × ${formatCurrency(linha.valor_unitario)}` : ''}
-                          {linha.ncm ? ` · NCM ${linha.ncm}` : ''}
+                        <div className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground flex-wrap">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={linha.quantidade ?? ''}
+                            onChange={e => editarLinha(idx, 'quantidade', e.target.value === '' ? null : parseFloat(e.target.value))}
+                            className="w-16 rounded border bg-background px-1 py-0.5 text-[10px] font-mono text-right"
+                            title="Quantidade"
+                          />
+                          <span>{linha.unidade ?? 'un'}</span>
+                          <span>×</span>
+                          <span>R$</span>
+                          <input
+                            type="number"
+                            step="0.0001"
+                            min="0"
+                            value={linha.valor_unitario ?? ''}
+                            onChange={e => editarLinha(idx, 'valor_unitario', e.target.value === '' ? null : parseFloat(e.target.value))}
+                            className="w-20 rounded border bg-background px-1 py-0.5 text-[10px] font-mono text-right"
+                            title="Valor unitário — editar aqui recalcula o total"
+                          />
+                          {linha.ncm && <span className="ml-1">· NCM {linha.ncm}</span>}
                         </div>
                       </td>
-                      <td className="px-3 py-2 text-right font-mono font-bold">{formatCurrency(linha.valor_total ?? 0)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={linha.valor_total ?? ''}
+                          onChange={e => editarLinha(idx, 'valor_total', e.target.value === '' ? null : parseFloat(e.target.value))}
+                          className="w-24 rounded border bg-background px-1 py-1 text-xs font-mono font-bold text-right"
+                          title="Valor total — editar aqui recalcula o unitário"
+                        />
+                      </td>
                       <td className="px-3 py-2">
                         {linha.carregandoSugestoes ? (
                           <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
