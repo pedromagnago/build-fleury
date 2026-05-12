@@ -107,10 +107,15 @@ export function ExtratoContaView() {
     return m
   }, [concs])
 
+  // "Conciliado" pra UI = status 'confirmado' OU 'aprovado'. Baixa em lote /
+  // Quitar / amortização criam conciliações com 'aprovado' (operador endossou
+  // sem precisar bater no extrato); o DB já trata os dois iguais via trigger
+  // (20260512190000_trigger_aceita_aprovado.sql). Aqui alinhamos a UI.
+  const STATUS_CONCILIADO = new Set(['confirmado', 'aprovado'])
   const confirmedParcelaIds = useMemo(() => {
     const s = new Set<string>()
     for (const c of concs) {
-      if (c.status === 'confirmado') {
+      if (STATUS_CONCILIADO.has(c.status)) {
         for (const l of ((c as any).conciliacao_parcelas ?? [])) s.add(l.parcela_id)
       }
     }
@@ -128,6 +133,7 @@ export function ExtratoContaView() {
       let situacao: Situacao
       if (m.origem === 'manual' && !conc) situacao = 'manual'
       else if (m.conciliado) situacao = 'conciliado'
+      else if (conc && STATUS_CONCILIADO.has(conc.status)) situacao = 'conciliado'
       else if (conc && conc.status === 'sugerido') situacao = 'sugerido'
       else situacao = 'nao_conciliado'
 
