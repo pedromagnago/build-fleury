@@ -10,14 +10,14 @@ import {
   Search, FileWarning, ChevronDown, ChevronRight,
 } from 'lucide-react'
 import {
-  useConciliacoes, useUndoConciliacao, useConciliacaoHistory,
+  useConciliacoes, useUndoConciliacao, useConciliacaoHistory, STATUS_CONCILIADO,
 } from '@/hooks/useConciliacao'
 import { useMovimentacoes } from '@/hooks/useOperacional'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { formatCurrency } from '@/lib/utils'
 import { EditConciliacaoDialog } from './EditConciliacaoDialog'
 
-type StatusFilter = 'todos' | 'sugerido' | 'confirmado' | 'rejeitado'
+type StatusFilter = 'todos' | 'sugerido' | 'confirmado' | 'aprovado' | 'rejeitado'
 
 function fmtDate(d: string | null | undefined): string {
   if (!d) return '—'
@@ -35,6 +35,7 @@ function fmtDateTime(d: string | null | undefined): string {
 
 function statusBadge(status: string) {
   if (status === 'confirmado') return { Icon: CheckCircle2, cls: 'bg-emerald-500/10 text-emerald-600', label: 'Confirmada' }
+  if (status === 'aprovado') return { Icon: CheckCircle2, cls: 'bg-emerald-500/10 text-emerald-700', label: 'Aprovada' }
   if (status === 'sugerido') return { Icon: Clock, cls: 'bg-blue-500/10 text-blue-600', label: 'Sugerida' }
   return { Icon: XCircle, cls: 'bg-red-500/10 text-red-600', label: 'Rejeitada' }
 }
@@ -75,10 +76,11 @@ export function HistoricoConciliacoes() {
   }, [concs, statusFilter, search, movById])
 
   const counts = useMemo(() => {
-    const r = { todos: concs.length, sugerido: 0, confirmado: 0, rejeitado: 0 }
+    const r = { todos: concs.length, sugerido: 0, confirmado: 0, aprovado: 0, rejeitado: 0 }
     for (const c of concs) {
       if (c.status === 'sugerido') r.sugerido++
       else if (c.status === 'confirmado') r.confirmado++
+      else if (c.status === 'aprovado') r.aprovado++
       else if (c.status === 'rejeitado') r.rejeitado++
     }
     return r
@@ -94,7 +96,7 @@ export function HistoricoConciliacoes() {
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex rounded-lg border bg-card p-0.5 text-xs">
-          {(['todos', 'confirmado', 'sugerido', 'rejeitado'] as StatusFilter[]).map(s => (
+          {(['todos', 'confirmado', 'aprovado', 'sugerido', 'rejeitado'] as StatusFilter[]).map(s => (
             <button key={s} onClick={() => setStatusFilter(s)}
               className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 font-medium transition-colors ${
                 statusFilter === s ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
@@ -227,7 +229,7 @@ export function HistoricoConciliacoes() {
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-1">
-                        {c.status === 'confirmado' && (
+                        {STATUS_CONCILIADO.has(c.status) && (
                           <>
                             <button onClick={() => setEditing({ conc: c, mov })}
                               className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-bold text-blue-600 hover:bg-blue-500/10"

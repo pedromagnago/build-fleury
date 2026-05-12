@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react'
 import { Parcela, useSaldoContas } from '@/hooks/useFinanceiro'
-import { ReconciliationResult } from '@/hooks/useConciliacao'
+import { ReconciliationResult, STATUS_CONCILIADO } from '@/hooks/useConciliacao'
 import { SystemColumn } from './SystemColumn'
 import { BankColumn } from './BankColumn'
 import { ActionEngineColumn } from './ActionEngineColumn'
@@ -60,11 +60,13 @@ export function ConciliacaoWorkspace({
     setSelectedParcelaIds(new Set())
   }, [])
 
-  // Build a map: parcela_id -> conciliacao data for confirmed matches
+  // Build a map: parcela_id -> conciliacao data for confirmed matches.
+  // Inclui 'aprovado' (baixa em lote) — senão a parcela aparece como livre
+  // pra conciliar de novo no workspace, criando double-conciliação.
   const confirmedParcelaIds = useMemo(() => {
     const ids = new Set<string>()
     for (const conc of savedConcs) {
-      if (conc.status === 'confirmado') {
+      if (STATUS_CONCILIADO.has(conc.status)) {
         for (const link of (conc.conciliacao_parcelas ?? [])) {
           ids.add(link.parcela_id)
         }
@@ -77,7 +79,7 @@ export function ConciliacaoWorkspace({
   const movToParcelaMap = useMemo(() => {
     const map = new Map<string, string[]>()
     for (const conc of savedConcs) {
-      if (conc.status === 'confirmado' || conc.status === 'sugerido') {
+      if (STATUS_CONCILIADO.has(conc.status) || conc.status === 'sugerido') {
         const parcelaIds = (conc.conciliacao_parcelas ?? []).map((l: any) => l.parcela_id)
         if (parcelaIds.length > 0) {
           map.set(conc.movimentacao_id, parcelaIds)
@@ -91,7 +93,7 @@ export function ConciliacaoWorkspace({
   const parcelaToMovMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const conc of savedConcs) {
-      if (conc.status === 'confirmado' || conc.status === 'sugerido') {
+      if (STATUS_CONCILIADO.has(conc.status) || conc.status === 'sugerido') {
         for (const link of (conc.conciliacao_parcelas ?? [])) {
           map.set(link.parcela_id, conc.movimentacao_id)
         }

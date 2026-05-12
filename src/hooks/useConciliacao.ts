@@ -15,6 +15,17 @@ export type { StandardTransaction, ParseResult, PayableReceivable, Reconciliatio
 export { parseStatement, readFileAsText, reconcile }
 export type { ReconciliationConfig }
 
+// ─── Constants ──────────────────────────────────────────────
+// Status que indicam que a conciliação "tomou efeito": a parcela conta como
+// baixada e a mov conta como conciliada.
+// - 'confirmado' vem do match com extrato bancário
+// - 'aprovado' vem das baixas-em-lote (Pagamentos > Pagar), Quitar e amortização
+// O DB já trata os dois iguais via trigger (migration 20260512190000). Esta
+// constante existe pra evitar que telas/agregações esqueçam de incluir
+// 'aprovado' — bug recorrente que causava duplicação no extrato.
+export type ConciliacaoStatus = 'sugerido' | 'confirmado' | 'aprovado' | 'rejeitado'
+export const STATUS_CONCILIADO = new Set<ConciliacaoStatus>(['confirmado', 'aprovado'])
+
 // ─── Types ──────────────────────────────────────────────────
 
 export interface Conciliacao {
@@ -24,7 +35,7 @@ export interface Conciliacao {
   match_type: string
   confidence: number
   diferenca: number
-  status: 'sugerido' | 'confirmado' | 'rejeitado'
+  status: ConciliacaoStatus
   created_at: string
 }
 

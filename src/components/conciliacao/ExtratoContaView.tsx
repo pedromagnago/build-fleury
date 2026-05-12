@@ -13,7 +13,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Plus,
   Link as LinkIcon, Search, ChevronRight,
 } from 'lucide-react'
-import { useConciliacoes } from '@/hooks/useConciliacao'
+import { useConciliacoes, STATUS_CONCILIADO } from '@/hooks/useConciliacao'
 import { useContasBancarias, useParcelas } from '@/hooks/useFinanceiro'
 import { useMovimentacoes } from '@/hooks/useOperacional'
 import { formatCurrency } from '@/lib/utils'
@@ -107,11 +107,6 @@ export function ExtratoContaView() {
     return m
   }, [concs])
 
-  // "Conciliado" pra UI = status 'confirmado' OU 'aprovado'. Baixa em lote /
-  // Quitar / amortização criam conciliações com 'aprovado' (operador endossou
-  // sem precisar bater no extrato); o DB já trata os dois iguais via trigger
-  // (20260512190000_trigger_aceita_aprovado.sql). Aqui alinhamos a UI.
-  const STATUS_CONCILIADO = new Set(['confirmado', 'aprovado'])
   const confirmedParcelaIds = useMemo(() => {
     const s = new Set<string>()
     for (const c of concs) {

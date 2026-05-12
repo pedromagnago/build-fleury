@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { useContasBancarias, useParcelas } from '@/hooks/useFinanceiro'
 import { useMovimentacoes } from '@/hooks/useOperacional'
-import { useConciliacoes } from '@/hooks/useConciliacao'
+import { useConciliacoes, STATUS_CONCILIADO } from '@/hooks/useConciliacao'
 import { formatCurrency } from '@/lib/utils'
 
 function fmtDate(d: string | null | undefined): string {
@@ -91,7 +91,9 @@ function useComposicaoSaldos(periodDays: number = 90): ComposicaoPorConta[] {
 
       const parcelasConfirmadasIds = new Set<string>()
       for (const c of (concs as any[])) {
-        if (c.status === 'confirmado') {
+        // Inclui 'aprovado' (baixa em lote) além de 'confirmado' — senão parcelas
+        // pagas em lote viram "fantasmas" duplicadas no composição de saldo.
+        if (STATUS_CONCILIADO.has(c.status)) {
           for (const l of (c.conciliacao_parcelas ?? [])) {
             parcelasConfirmadasIds.add(l.parcela_id)
           }
