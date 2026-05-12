@@ -2,8 +2,9 @@ import { useState, useMemo, Fragment as React_Fragment } from 'react'
 // Alias para usar como <React.Fragment>
 const React = { Fragment: React_Fragment }
 import { PageHeader } from '@/components/ui/PageHeader'
-import { useOrcamentoRealizado, useReconciliacao } from '@/hooks/useFinanceiro'
+import { useOrcamentoRealizado, useReconciliacao, useAmortizacoesAvulsas } from '@/hooks/useFinanceiro'
 import { useParcelas } from '@/hooks/useFinanceiro'
+import { useMutuos } from '@/hooks/useMutuos'
 import { useMedicoes } from '@/hooks/useOperacional'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useItensCompra } from '@/hooks/useCompras'
@@ -23,33 +24,120 @@ export default function RelatoriosPage() {
   const { data: etapas = [] } = useEtapas()
   const { data: itens = [] } = useItensCompra()
   const { data: orcamento } = useOrcamentoRealizado()
+  const { data: mutuos = [] } = useMutuos()
+  const { data: amortizacoesAvulsas = [] } = useAmortizacoesAvulsas()
   const [filtroRec, setFiltroRec] = useState<{ inicio: string; fim: string }>({ inicio: '', fim: '' })
   const { data: reconciliacao = [], isLoading: carregandoRec } = useReconciliacao({ dataInicio: filtroRec.inicio || undefined, dataFim: filtroRec.fim || undefined })
 
-  // F4.1: filtros do relatório Financeiro
-  const [filtroFin, setFiltroFin] = useState<{ inicio: string; fim: string; status: string; fornecedor: string }>({
-    inicio: '', fim: '', status: '', fornecedor: '',
+  // F4.1 + R1-R4: filtros e unificação do relatório Financeiro
+  // Agora une 3 origens: parcelas de pedido, parcelas de mútuo e amortizações avulsas — espelhando o que Pagamentos mostra.
+  const [filtroFin, setFiltroFin] = useState<{ inicio: string; fim: string; status: string; fornecedor: string; origem: 'todas' | 'pedido' | 'mutuo' | 'amortizacao' | 'avulsa' }>({
+    inicio: '', fim: '', status: '', fornecedor: '', origem: 'todas',
   })
+
+  // Lista unificada de "parcelas financeiras" (pedido + mútuo + amortização avulsa)
+  type ParcelaFinanceira = {
+    id: string
+    origem: 'pedido' | 'mutuo' | 'amortizacao' | 'avulsa'
+    origem_label: string
+    fornecedor_nome: string | null
+    item: string
+    numero_parcela: number
+    valor: number
+    valor_pago: number
+    data_vencimento: string
+    status: string
+  }
+  const parcelasUnificadas: ParcelaFinanceira[] = useMemo(() => {
+    const lista: ParcelaFinanceira[] = []
+    // (1) Parcelas de pedido / despesa indireta (useParcelas)
+    for (const p of parcelas) {
+      const origem: ParcelaFinanceira['origem'] = p.pedido_id ? 'pedido' : (p.despesa_indireta_id ? 'avulsa' : 'avulsa')
+      lista.push({
+        id: p.id,
+        origem,
+        origem_label: p.pedido_id ? 'Pedido' : 'Avulsa',
+        fornecedor_nome: p.fornecedor_nome ?? null,
+        item: p.pedido_item ?? p.descricao ?? 'Avulsa',
+        numero_parcela: p.numero_parcela,
+        valor: Number(p.valor) || 0,
+        valor_pago: Number(p.valor_pago) || 0,
+        data_vencimento: p.data_vencimento,
+        status: p.status,
+      })
+    }
+    // (2) Parcelas de mútuo (mutuos[].parcelas) — exclui adiantamentos a receber (vão em Recebimentos)
+    for (const m of mutuos) {
+      const cat = String((m as any).categoria ?? '').toLowerCase()
+      if (cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')) continue
+      const forn = (m as any).fornecedor?.nome ?? (m as any).instituicao ?? m.nome
+      for (const mp of (m.parcelas ?? [])) {
+        lista.push({
+          id: mp.id,
+          origem: 'mutuo',
+          origem_label: 'Mútuo',
+          fornecedor_nome: forn ?? null,
+          item: `${m.nome} (${m.tipo})`,
+          numero_parcela: mp.numero_parcela,
+          valor: Number(mp.valor) || 0,
+          valor_pago: Number(mp.valor_pago) || 0,
+          data_vencimento: mp.data_vencimento,
+          status: mp.status,
+        })
+      }
+    }
+    // (3) Amortizações avulsas (já estão pagas via conciliação bancária)
+    for (const a of amortizacoesAvulsas) {
+      const mutuo = mutuos.find(m => m.id === a.mutuo_id)
+      const forn = (mutuo as any)?.fornecedor?.nome ?? (mutuo as any)?.instituicao ?? a.mutuo_nome
+      lista.push({
+        id: a.id,
+        origem: 'amortizacao',
+        origem_label: 'Amortização',
+        fornecedor_nome: forn ?? a.mutuo_nome ?? null,
+        item: `Amortização avulsa — ${a.mutuo_nome}`,
+        numero_parcela: 0,
+        valor: a.valor,
+        valor_pago: a.valor,
+        data_vencimento: a.data,
+        status: 'paga',
+      })
+    }
+    return lista
+  }, [parcelas, mutuos, amortizacoesAvulsas])
+
   const fornecedoresParcelas = useMemo(() => {
     const set = new Set<string>()
-    for (const p of parcelas) if (p.fornecedor_nome) set.add(p.fornecedor_nome)
+    for (const p of parcelasUnificadas) if (p.fornecedor_nome) set.add(p.fornecedor_nome)
     return Array.from(set).sort()
-  }, [parcelas])
+  }, [parcelasUnificadas])
   const parcelasFiltradas = useMemo(() => {
-    return parcelas.filter(p => {
+    return parcelasUnificadas.filter(p => {
       if (filtroFin.inicio && p.data_vencimento < filtroFin.inicio) return false
       if (filtroFin.fim && p.data_vencimento > filtroFin.fim) return false
       if (filtroFin.status && p.status !== filtroFin.status) return false
       if (filtroFin.fornecedor && (p.fornecedor_nome ?? '') !== filtroFin.fornecedor) return false
+      if (filtroFin.origem !== 'todas' && p.origem !== filtroFin.origem) return false
       return true
     })
-  }, [parcelas, filtroFin])
+  }, [parcelasUnificadas, filtroFin])
   const totalFinanceiro = useMemo(() => {
     return parcelasFiltradas.reduce((acc, p) => {
       acc.valor += p.valor
       acc.pago += p.valor_pago ?? 0
       return acc
     }, { valor: 0, pago: 0 })
+  }, [parcelasFiltradas])
+  // Quebra por origem (sempre sobre o conjunto filtrado, pra dar transparência das somas)
+  const totaisPorOrigem = useMemo(() => {
+    const acc = { pedido: { v: 0, p: 0, c: 0 }, mutuo: { v: 0, p: 0, c: 0 }, amortizacao: { v: 0, p: 0, c: 0 }, avulsa: { v: 0, p: 0, c: 0 } }
+    for (const p of parcelasFiltradas) {
+      const k = p.origem
+      acc[k].v += p.valor
+      acc[k].p += p.valor_pago
+      acc[k].c += 1
+    }
+    return acc
   }, [parcelasFiltradas])
 
   // Agrupa itens por etapa pra subtotais no relatório de Orçamento (F4.2)
@@ -103,11 +191,11 @@ export default function RelatoriosPage() {
       }
       filename = 'relatorio_orcamento.csv'
     } else if (activeReport === 'financeiro') {
-      csv = 'Fornecedor;Item;Parcela;Valor;Vencimento;Previsto;Pago em;Status;Valor Pago\n'
+      csv = 'Origem;Fornecedor;Item;Parcela;Valor;Vencimento;Status;Valor Pago\n'
       parcelasFiltradas.forEach((p) => {
-        csv += `${p.fornecedor_nome ?? ''};${p.pedido_item ?? p.descricao ?? 'Avulsa'};${p.numero_parcela};${p.valor};${p.data_vencimento};${p.data_prevista_pagamento ?? ''};${p.data_pagamento_real ?? ''};${p.status};${p.valor_pago}\n`
+        csv += `${p.origem_label};${p.fornecedor_nome ?? ''};${(p.item ?? '').replace(/;/g, ',')};${p.numero_parcela};${p.valor};${p.data_vencimento};${p.status};${p.valor_pago}\n`
       })
-      csv += `;;TOTAL;${totalFinanceiro.valor};;;;;${totalFinanceiro.pago}\n`
+      csv += `;;;TOTAL;${totalFinanceiro.valor};;;${totalFinanceiro.pago}\n`
       filename = 'relatorio_financeiro.csv'
     } else if (activeReport === 'medicoes') {
       csv = 'Nº;Planejado;Liberado;Prevista;Status;%Meta;%Real\n'
@@ -277,8 +365,8 @@ export default function RelatoriosPage() {
 
         {activeReport === 'financeiro' && (
           <>
-            {/* F4.1: filtros */}
-            <div className="mb-3 grid grid-cols-2 md:grid-cols-5 gap-2 rounded-lg border bg-card p-3">
+            {/* F4.1 + R2: filtros (inclui filtro por Origem) */}
+            <div className="mb-3 grid grid-cols-2 md:grid-cols-6 gap-2 rounded-lg border bg-card p-3">
               <div>
                 <label className="text-[10px] uppercase text-muted-foreground">Venc. de</label>
                 <input type="date" value={filtroFin.inicio} onChange={e => setFiltroFin({ ...filtroFin, inicio: e.target.value })} className="w-full rounded border bg-background px-2 py-1 text-xs" />
@@ -288,12 +376,23 @@ export default function RelatoriosPage() {
                 <input type="date" value={filtroFin.fim} onChange={e => setFiltroFin({ ...filtroFin, fim: e.target.value })} className="w-full rounded border bg-background px-2 py-1 text-xs" />
               </div>
               <div>
+                <label className="text-[10px] uppercase text-muted-foreground">Origem</label>
+                <select value={filtroFin.origem} onChange={e => setFiltroFin({ ...filtroFin, origem: e.target.value as typeof filtroFin.origem })} className="w-full rounded border bg-background px-2 py-1 text-xs">
+                  <option value="todas">Todas</option>
+                  <option value="pedido">Pedidos</option>
+                  <option value="mutuo">Mútuos</option>
+                  <option value="amortizacao">Amortizações</option>
+                  <option value="avulsa">Avulsas</option>
+                </select>
+              </div>
+              <div>
                 <label className="text-[10px] uppercase text-muted-foreground">Status</label>
                 <select value={filtroFin.status} onChange={e => setFiltroFin({ ...filtroFin, status: e.target.value })} className="w-full rounded border bg-background px-2 py-1 text-xs">
                   <option value="">Todos</option>
                   <option value="futura">Futura</option>
                   <option value="a_vencer">A vencer</option>
                   <option value="vencida">Vencida</option>
+                  <option value="pendente">Pendente</option>
                   <option value="parcialmente_paga">Parc. paga</option>
                   <option value="paga">Paga</option>
                 </select>
@@ -306,14 +405,14 @@ export default function RelatoriosPage() {
                 </select>
               </div>
               <div className="flex items-end">
-                <button onClick={() => setFiltroFin({ inicio: '', fim: '', status: '', fornecedor: '' })} className="w-full rounded border px-2 py-1 text-[11px] hover:bg-muted">Limpar filtros</button>
+                <button onClick={() => setFiltroFin({ inicio: '', fim: '', status: '', fornecedor: '', origem: 'todas' })} className="w-full rounded border px-2 py-1 text-[11px] hover:bg-muted">Limpar</button>
               </div>
             </div>
             {/* Cards de totais filtrados */}
             <div className="mb-3 grid grid-cols-3 gap-3">
               <div className="rounded-xl border bg-card p-3">
                 <p className="text-[10px] uppercase text-muted-foreground">Parcelas no filtro</p>
-                <p className="mt-0.5 text-base font-bold">{parcelasFiltradas.length} / {parcelas.length}</p>
+                <p className="mt-0.5 text-base font-bold">{parcelasFiltradas.length} / {parcelasUnificadas.length}</p>
               </div>
               <div className="rounded-xl border bg-card p-3">
                 <p className="text-[10px] uppercase text-muted-foreground">Valor total</p>
@@ -324,10 +423,34 @@ export default function RelatoriosPage() {
                 <p className="mt-0.5 text-base font-bold text-emerald-600">{formatCurrency(totalFinanceiro.pago)}</p>
               </div>
             </div>
+            {/* Quebra por origem (transparência das somas) */}
+            <div className="mb-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+              <div className="rounded-md border bg-card p-2">
+                <div className="text-muted-foreground uppercase text-[9px]">Pedidos</div>
+                <div className="font-bold">{totaisPorOrigem.pedido.c} · {formatCurrency(totaisPorOrigem.pedido.v)}</div>
+                <div className="text-emerald-600">Pago {formatCurrency(totaisPorOrigem.pedido.p)}</div>
+              </div>
+              <div className="rounded-md border bg-card p-2">
+                <div className="text-muted-foreground uppercase text-[9px]">Mútuos</div>
+                <div className="font-bold">{totaisPorOrigem.mutuo.c} · {formatCurrency(totaisPorOrigem.mutuo.v)}</div>
+                <div className="text-emerald-600">Pago {formatCurrency(totaisPorOrigem.mutuo.p)}</div>
+              </div>
+              <div className="rounded-md border bg-card p-2">
+                <div className="text-muted-foreground uppercase text-[9px]">Amortizações</div>
+                <div className="font-bold">{totaisPorOrigem.amortizacao.c} · {formatCurrency(totaisPorOrigem.amortizacao.v)}</div>
+                <div className="text-emerald-600">Pago {formatCurrency(totaisPorOrigem.amortizacao.p)}</div>
+              </div>
+              <div className="rounded-md border bg-card p-2">
+                <div className="text-muted-foreground uppercase text-[9px]">Avulsas</div>
+                <div className="font-bold">{totaisPorOrigem.avulsa.c} · {formatCurrency(totaisPorOrigem.avulsa.v)}</div>
+                <div className="text-emerald-600">Pago {formatCurrency(totaisPorOrigem.avulsa.p)}</div>
+              </div>
+            </div>
             <div className="overflow-x-auto rounded-xl border">
               <table className="tbl-bf w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Origem</th>
                     <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Fornecedor</th>
                     <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Item</th>
                     <th className="px-3 py-2 text-center text-xs font-medium text-muted-foreground">#</th>
@@ -339,13 +462,21 @@ export default function RelatoriosPage() {
                 </thead>
                 <tbody className="divide-y">
                   {parcelasFiltradas.length === 0 && (
-                    <tr><td colSpan={7} className="px-3 py-6 text-center text-xs text-muted-foreground">Nenhuma parcela neste filtro.</td></tr>
+                    <tr><td colSpan={8} className="px-3 py-6 text-center text-xs text-muted-foreground">Nenhuma parcela neste filtro.</td></tr>
                   )}
                   {parcelasFiltradas.map((p) => (
-                    <tr key={p.id} className="hover:bg-muted/30">
+                    <tr key={`${p.origem}-${p.id}`} className="hover:bg-muted/30">
+                      <td className="px-3 py-2">
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                          p.origem === 'pedido' ? 'bg-blue-500/15 text-blue-700' :
+                          p.origem === 'mutuo' ? 'bg-purple-500/15 text-purple-700' :
+                          p.origem === 'amortizacao' ? 'bg-amber-500/15 text-amber-700' :
+                          'bg-muted text-muted-foreground'
+                        }`}>{p.origem_label}</span>
+                      </td>
                       <td className="px-3 py-2 text-xs">{p.fornecedor_nome ?? '—'}</td>
-                      <td className="px-3 py-2">{p.pedido_item ?? p.descricao ?? 'Avulsa'}</td>
-                      <td className="px-3 py-2 text-center text-xs">{p.numero_parcela}</td>
+                      <td className="px-3 py-2">{p.item}</td>
+                      <td className="px-3 py-2 text-center text-xs">{p.numero_parcela || '—'}</td>
                       <td className="px-3 py-2 text-right">{formatCurrency(p.valor)}</td>
                       <td className="px-3 py-2 text-center text-xs">{formatDate(p.data_vencimento)}</td>
                       <td className="px-3 py-2 text-center text-xs capitalize">{p.status.replace('_', ' ')}</td>
@@ -354,7 +485,7 @@ export default function RelatoriosPage() {
                   ))}
                   {parcelasFiltradas.length > 0 && (
                     <tr className="bg-primary/10 font-bold">
-                      <td colSpan={3} className="px-3 py-2 text-right">TOTAL</td>
+                      <td colSpan={4} className="px-3 py-2 text-right">TOTAL</td>
                       <td className="px-3 py-2 text-right">{formatCurrency(totalFinanceiro.valor)}</td>
                       <td colSpan={2}></td>
                       <td className="px-3 py-2 text-right text-emerald-700">{formatCurrency(totalFinanceiro.pago)}</td>
