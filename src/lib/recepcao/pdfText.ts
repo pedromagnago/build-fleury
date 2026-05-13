@@ -30,8 +30,16 @@ export async function pdfFileToText(file: File): Promise<PdfTextResult> {
   pdfjs.GlobalWorkerOptions.workerSrc = workerMod.default
 
   const buffer = await file.arrayBuffer()
-  // Uint8Array é mais compatível com o pdfjs em alguns ambientes que ArrayBuffer puro
-  const pdf = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise
+  // disableStream + useWorkerFetch:false são workaround conhecido pro erro
+  // "value of readableStream is not a function" que ocorre em pdfjs-dist v5+
+  // bundleado por Vite (a stream interna do pdfjs entra em conflito com o
+  // polyfill de stream do bundle).
+  const pdf = await pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+    disableStream: true,
+    useWorkerFetch: false,
+    isEvalSupported: false,
+  }).promise
 
   const partesPagina: string[] = []
   let paginasComErro = 0

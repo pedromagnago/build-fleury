@@ -110,6 +110,9 @@ async function callOpenAI(messages: any[]): Promise<{ json: any; usage: any }> {
       messages,
       response_format: { type: 'json_object' },
       temperature: 0,
+      // max_tokens generoso pra cobrir NF de até ~80 itens. Sem isso, resposta
+      // pode vir truncada e quebrar o JSON.parse com erro genérico.
+      max_tokens: 8000,
     }),
   })
   if (!resp.ok) {
@@ -117,9 +120,19 @@ async function callOpenAI(messages: any[]): Promise<{ json: any; usage: any }> {
     throw new Error(`OpenAI ${resp.status}: ${text}`)
   }
   const data = await resp.json()
-  return {
-    json: JSON.parse(data.choices[0].message.content),
-    usage: data.usage,
+  const content = data.choices?.[0]?.message?.content
+  if (typeof content !== 'string') {
+    throw new Error(`OpenAI retornou conteúdo inesperado: ${JSON.stringify(data).slice(0, 500)}`)
+  }
+  const finishReason = data.choices?.[0]?.finish_reason
+  if (finishReason && finishReason !== 'stop') {
+    // length, content_filter, tool_calls — qualquer um diferente de 'stop' indica resposta incompleta
+    console.warn(`[recepcao-extrair] finish_reason=${finishReason} — resposta possivelmente incompleta`)
+  }
+  try {
+    return { json: JSON.parse(content), usage: data.usage }
+  } catch (parseErr) {
+    throw new Error(`Falha ao parsear JSON da OpenAI (finish_reason=${finishReason ?? 'unknown'}): ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. Trecho do retorno: ${content.slice(0, 300)}`)
   }
 }
 
@@ -184,8 +197,10 @@ serve(async (req) => {
       { headers: { ...CORS, 'Content-Type': 'application/json' } }
     )
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[recepcao-extrair] erro:', msg, err instanceof Error ? err.stack : '')
     return new Response(
-      JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+      JSON.stringify({ error: msg }),
       { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }
     )
   }
