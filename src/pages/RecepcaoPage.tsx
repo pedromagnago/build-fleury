@@ -313,9 +313,24 @@ export default function RecepcaoPage() {
 
   // Após extrair: dispara busca de sugestões para cada linha em paralelo
   const iniciarRevisao = async (e: Omit<Extracao, 'itens'> & { itens: any[] }) => {
+    // Sobrescreve o nome do fornecedor com o cadastrado no banco quando o CNPJ
+    // bate. Resolve casos onde o parser pegou texto errado (natureza da operação,
+    // protocolo, etc.) mas o CNPJ extraído da chave de acesso está correto.
+    const cnpjLimpo = e.fornecedor.cnpj?.replace(/\D/g, '') ?? ''
+    const fornCadastrado = cnpjLimpo
+      ? (fornecedores as any[]).find(f => (f.cnpj ?? '').replace(/\D/g, '') === cnpjLimpo)
+      : null
+    const fornecedorAjustado = fornCadastrado
+      ? { ...e.fornecedor, nome: fornCadastrado.nome }
+      : e.fornecedor
+    const extracaoAjustada = { ...e, fornecedor: fornecedorAjustado }
+
     const linhas: LinhaExtraida[] = e.itens.map((i: any) => ({ ...i, carregandoSugestoes: true }))
-    setExtracao({ ...e, itens: linhas } as Extracao)
+    setExtracao({ ...extracaoAjustada, itens: linhas } as Extracao)
     setDiferencaAceita(false)
+    if (fornCadastrado) {
+      toast.info(`Fornecedor reconhecido pelo CNPJ: ${fornCadastrado.nome}`)
+    }
     if (!currentCompany) return
     // Garante que itens novos/alterados estejam indexados antes de buscar matches
     // (no-op se já está tudo indexado; custa ~R$0,001 por item novo)

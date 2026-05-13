@@ -115,18 +115,81 @@ function parseDanfeItens(texto: string): { itens: DanfeItem[]; notas: string[] }
   return { itens, notas }
 }
 
+/** Formata CNPJ de 14 dígitos pra "XX.XXX.XXX/XXXX-XX". */
+function formatarCNPJ(d: string): string {
+  if (d.length !== 14) return d
+  return `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12,14)}`
+}
+
+/** Extrai a CHAVE DE ACESSO de 44 dígitos da DANFE.
+ * Suporta os formatos típicos:
+ *   - "4226 0332 0119 2300 0135 5500 1000 0305 4411 9448 5952" (11 grupos de 4)
+ *   - "42260332..." (44 dígitos seguidos)
+ *   - "4226.0332.0119..." (com pontos)
+ * O CNPJ do emitente fica nas posições 7..20 (zero-based 6..20).
+ */
+function extrairChaveAcesso(texto: string): string | null {
+  // Procura primeiro o padrão de 11 grupos de 4 dígitos com separadores
+  const m1 = texto.match(/(\d{4}[\s.\-]?){10}\d{4}/)
+  if (m1) {
+    const digitos = m1[0].replace(/[^\d]/g, '')
+    if (digitos.length === 44) return digitos
+  }
+  // Fallback: 44 dígitos seguidos sem separadores
+  const m2 = texto.match(/\b(\d{44})\b/)
+  if (m2) return m2[1]!
+  return null
+}
+
+/** Sufixos que identificam razão social brasileira. Usado pra preferir
+ * candidatos com sufixo válido em vez de qualquer linha em CAIXA ALTA. */
+const RE_RAZAO_SUFIXO = /^(.{3,80}?)\s+(LTDA|S\.?\/?A|EIRELI|ME|EPP|MEI|S\.?A\.?)\b/i
+
 function parseFornecedor(texto: string): { nome: string | null; cnpj: string | null; ie: string | null } {
-  const cnpjs = Array.from(texto.matchAll(/(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/g)).map(m => m[1]!)
-  const cnpj = cnpjs[0] ?? null
+  // 1) CNPJ via CHAVE DE ACESSO (fonte mais confiável — emitente está nos chars 6..20).
+  let cnpj: string | null = null
+  const chave = extrairChaveAcesso(texto)
+  if (chave) {
+    cnpj = formatarCNPJ(chave.slice(6, 20))
+  }
+  // 2) Fallback: primeiro CNPJ literal do texto
+  if (!cnpj) {
+    const m = texto.match(/(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/)
+    if (m) cnpj = m[1]!
+  }
+
+  // 3) Razão social: olha o BLOCO ANTES de "DESTINATÁRIO" (área do emitente)
+  // e procura linha com sufixo de razão social (LTDA/SA/EIRELI/ME/EPP).
+  // É muito mais confiável que pegar "primeira linha em CAIXA ALTA".
   const idxDestinatario = texto.search(/DESTINAT[ÁA]RIO/i)
-  const blocoCabecalho = idxDestinatario > 0 ? texto.slice(0, idxDestinatario) : texto.slice(0, 3000)
-  const candidatos = blocoCabecalho.split(/\n/).map(l => l.trim())
-    .filter(l => l.length >= 6 && l === l.toUpperCase())
-    .filter(l => /[A-Z]{3,}/.test(l))
-    .filter(l => !/DANFE|NF-?E|CNPJ|CHAVE|NATUREZA|INSCRIÇÃO|CONTROLE|S[ÉE]RIE|FOLHA|EMITENTE|DESTINAT[ÁA]RIO|FATURA|C[ÁA]LCULO|TRANSPORTADOR|PRODUTO|UF|CFOP|NCM/i.test(l))
-    .filter(l => !/^\d/.test(l))
-    .filter(l => !/CEP:|R\s|RUA\s|AV\.|AVENIDA/i.test(l))
-  return { nome: candidatos[0] ?? null, cnpj, ie: null }
+  const blocoEmitente = idxDestinatario > 0 ? texto.slice(0, idxDestinatario) : texto.slice(0, 3000)
+  const linhasEmitente = blocoEmitente.split(/\n/).map(l => l.trim()).filter(l => l.length > 0)
+
+  let nome: string | null = null
+  // Estratégia A: razão social com sufixo formal
+  for (const linha of linhasEmitente) {
+    // Pula linhas obviamente ruins (rótulos, números, endereços)
+    if (/^N[ºo°]\s|^DATA|^CEP|^CNPJ|NATUREZA\s+DA\s+OPERA|^PROTOCOLO|^CHAVE/i.test(linha)) continue
+    if (/^\d/.test(linha)) continue
+    const m = linha.match(RE_RAZAO_SUFIXO)
+    if (m) {
+      nome = `${m[1]} ${m[2]}`.replace(/\s+/g, ' ').trim().toUpperCase()
+      break
+    }
+  }
+
+  // Estratégia B (fallback): primeira linha em CAIXA ALTA "decente"
+  if (!nome) {
+    const candidatos = linhasEmitente
+      .filter(l => l.length >= 6 && l === l.toUpperCase())
+      .filter(l => /[A-Z]{3,}/.test(l))
+      .filter(l => !/DANFE|NF-?E|CNPJ|CHAVE|NATUREZA|INSCRI[ÇC][ÃA]O|CONTROLE|S[ÉE]RIE|FOLHA|EMITENTE|DESTINAT[ÁA]RIO|FATURA|C[ÁA]LCULO|TRANSPORTADOR|PRODUTO|UF|CFOP|NCM|VENDA\s+PARA|ENTREGA\s+FUTURA|REMETENTE|RETIRADA|PROTOCOLO|RAZ[ÃA]O\s+SOCIAL|NOME\/RAZ/i.test(l))
+      .filter(l => !/^\d/.test(l))
+      .filter(l => !/CEP:|R\s|RUA\s|AV\.|AVENIDA|QUADRA|SETOR/i.test(l))
+    nome = candidatos[0] ?? null
+  }
+
+  return { nome, cnpj, ie: null }
 }
 
 function parseDocumento(texto: string) {
