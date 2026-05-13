@@ -1,6 +1,6 @@
 // Recepção de Documentos — wizard de entrada de NF/PDF/imagem/texto
 // Fluxo: Upload → Extração (XML deterministico OU OpenAI) → Revisão linha-a-linha → Comitar
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useProject } from '@/contexts/ProjectContext'
@@ -170,6 +170,10 @@ export default function RecepcaoPage() {
   const [diferencaAceita, setDiferencaAceita] = useState(false)
   // F2.1: filtro de visão da revisão (foco no que precisa atenção)
   const [filtroVisao, setFiltroVisao] = useState<'todas' | 'pendentes' | 'sem_match' | 'confirmadas'>('todas')
+  // Condição de pagamento que o operador define no header da revisão.
+  // Preenchida automaticamente do fornecedor cadastrado quando o CNPJ bate;
+  // editável a qualquer momento. Vai pro pedido no aplicar().
+  const [condPagamento, setCondPagamento] = useState<string>('')
 
   const handleIndexar = async () => {
     if (!currentCompany) return
@@ -328,6 +332,9 @@ export default function RecepcaoPage() {
     const linhas: LinhaExtraida[] = e.itens.map((i: any) => ({ ...i, carregandoSugestoes: true }))
     setExtracao({ ...extracaoAjustada, itens: linhas } as Extracao)
     setDiferencaAceita(false)
+    // Pré-preenche cond. pagamento com a default do fornecedor (se cadastrado),
+    // ou da extração (raro NFs trazerem essa info, mas se a IA extraiu, respeita).
+    setCondPagamento(fornCadastrado?.cond_pagamento ?? '')
     if (fornCadastrado) {
       toast.info(`Fornecedor reconhecido pelo CNPJ: ${fornCadastrado.nome}`)
     }
@@ -405,6 +412,30 @@ export default function RecepcaoPage() {
   const linhasAConfirmar = extracao?.itens.filter(l => l.precisaConfirmar && !l.confirmado).length ?? 0
   const linhasAutoOk = extracao?.itens.filter(l => l.confirmado && l.acao && l.acao !== 'ignorar' && (l.acao === 'criar_pedido' || l.acao === 'substituir_pedido')).length ?? 0
   const linhasCriarItem = extracao?.itens.filter(l => l.acao === 'criar_item').length ?? 0
+  // Pedidos planejados que vão ser cancelados ao aplicar — IDs únicos pra mostrar lista.
+  const previsoesACancelar = useMemo(() => {
+    if (!extracao) return [] as { pedidoId: string; numero: number | null; itemDescricao: string; valor: number; linhasNF: number[] }[]
+    const map = new Map<string, { pedidoId: string; numero: number | null; itemDescricao: string; valor: number; linhasNF: number[] }>()
+    extracao.itens.forEach((l, idx) => {
+      if (l.acao !== 'substituir_pedido' || !l.pedido_substituido_id) return
+      const ped = pedidos.find(p => p.id === l.pedido_substituido_id)
+      if (!ped) return
+      const itemInfo = itens.find(i => i.id === ped.item_compra_id)
+      const entry = map.get(ped.id)
+      if (entry) {
+        entry.linhasNF.push(idx + 1)
+      } else {
+        map.set(ped.id, {
+          pedidoId: ped.id,
+          numero: ped.numero_pedido,
+          itemDescricao: itemInfo?.descricao ?? ped.item_descricao ?? '—',
+          valor: Number(ped.valor_total_real ?? 0),
+          linhasNF: [idx + 1],
+        })
+      }
+    })
+    return Array.from(map.values())
+  }, [extracao, pedidos, itens])
   // F2.1: lista visível preserva o índice original pra handlers continuarem funcionando
   const linhasVisiveis = (extracao?.itens ?? [])
     .map((l, idx) => ({ l, idx }))
@@ -533,7 +564,7 @@ export default function RecepcaoPage() {
           qtd_lote: primeira.quantidade ?? 1,
           valor_unitario_real: primeira.valor_unitario ?? 0,
           valor_total_real: 0,                       // recalculado pelo trigger
-          cond_pagamento: null,                      // PR 2.3 deixa editável
+          cond_pagamento: condPagamento.trim() || null,
           data_entrega_prevista: extracao.documento.data_emissao ?? null,
           data_entrega_real: extracao.documento.data_emissao ?? null,
           status: 'planejado' as const,              // trigger move pra 'entregue' ao inserir itens
@@ -604,6 +635,7 @@ export default function RecepcaoPage() {
       setExtracao(null)
       setTextoColado('')
       setDiferencaAceita(false)
+      setCondPagamento('')
     } catch (err) {
       // Extrai mensagem útil de qualquer formato de erro (Error nativo, PostgrestError, etc.)
       const e: any = err
@@ -943,6 +975,46 @@ export default function RecepcaoPage() {
                 </div>
               </div>
             </div>
+            {/* Campos editáveis aplicados no insert do pedido */}
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <div>
+                <label className="text-[10px] uppercase text-muted-foreground">Cond. pagamento</label>
+                <input
+                  type="text"
+                  value={condPagamento}
+                  onChange={e => setCondPagamento(e.target.value)}
+                  placeholder="30/60 · à vista · vencimento na NF"
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-xs"
+                  title="Será aplicada ao pedido criado. Vazio = sem condição definida (pode editar depois em Compras)."
+                />
+              </div>
+            </div>
+            {/* Visibilidade das substituições: lista exata dos pedidos planejados que serão cancelados */}
+            {previsoesACancelar.length > 0 && (
+              <details className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 text-[11px]">
+                <summary className="cursor-pointer px-2 py-1.5 flex items-center gap-1.5 text-amber-800 hover:bg-amber-500/10">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  <strong>{previsoesACancelar.length}</strong> previsão(ões) será(ão) <strong>cancelada(s)</strong> ao aplicar.
+                  <span className="text-muted-foreground ml-1">(clique pra ver)</span>
+                </summary>
+                <div className="border-t border-amber-500/30 divide-y divide-amber-500/20 max-h-48 overflow-y-auto">
+                  {previsoesACancelar.map(p => (
+                    <div key={p.pedidoId} className="px-2 py-1.5 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <span className="font-mono text-[10px] text-muted-foreground">#{p.numero ?? '?'}</span>{' '}
+                        <span>{p.itemDescricao}</span>
+                        <span className="text-[10px] text-muted-foreground ml-1">· linha(s) {p.linhasNF.join(', ')} da NF</span>
+                      </div>
+                      <span className="font-mono whitespace-nowrap">{formatCurrency(p.valor)}</span>
+                    </div>
+                  ))}
+                  <div className="px-2 py-1.5 bg-amber-500/10 font-bold flex items-center justify-between">
+                    <span>Total a cancelar</span>
+                    <span className="font-mono">{formatCurrency(previsoesACancelar.reduce((s, p) => s + p.valor, 0))}</span>
+                  </div>
+                </div>
+              </details>
+            )}
             {extracao.modelo && (
               <p className="mt-2 text-[10px] text-muted-foreground">Extraído por {extracao.modelo} · custo R$ {((extracao.custo_cents ?? 0) / 100).toFixed(4)}</p>
             )}
@@ -1223,7 +1295,7 @@ export default function RecepcaoPage() {
                 Aceite a diferença NF×linhas antes de aplicar.
               </span>
             )}
-            <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false) }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
+            <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false); setCondPagamento('') }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
             <button
               onClick={aplicar}
               disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia}

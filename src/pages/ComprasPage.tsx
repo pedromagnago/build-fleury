@@ -7,7 +7,8 @@ import { MatrizCompras } from '@/components/compras/MatrizCompras'
 import { usePedidosConformidade } from '@/hooks/usePedidos'
 import {
   useItensCompra, useFornecedores, useCreateItemCompra, useUpdateItemCompra, useDeleteItemCompra,
-  useCreateFornecedor, usePedidos, useCreatePedidoLote, useUpdatePedido, useDeletePedido,
+  useCreateFornecedor, useUpdateFornecedor, useDeleteFornecedor,
+  usePedidos, useCreatePedidoLote, useUpdatePedido, useDeletePedido,
   type ItemCompra, type Pedido, type Fornecedor,
 } from '@/hooks/useCompras'
 import { useParcelas } from '@/hooks/useFinanceiro'
@@ -640,22 +641,42 @@ function PedidosTab({ search }: { search: string }) {
       status: p.status,
       observacoes: p.observacoes ?? '',
     })
-    // Detecta se valor_total_real salvo difere do que seria calculado por
-    // casas × qtd_por_casa × valor_unit. Se sim, marca como override para
-    // a UI respeitar o valor salvo (verdade contábil).
-    const item = itens.find(i => i.id === p.item_compra_id)
-    const calcAuto = (p.casas_lote ?? 0) * (item?.qtd_por_casa ?? 0) * (p.valor_unitario_real ?? 0)
-    const valorSalvo = Number(p.valor_total_real ?? 0)
-    const temOverride = valorSalvo > 0 && Math.abs(calcAuto - valorSalvo) > 0.5
-    setLoteItems([{
-      id: crypto.randomUUID(),
-      item_compra_id: p.item_compra_id,
-      casas_lote: p.casas_lote?.toString() ?? '',
-      valor_unitario_real: p.valor_unitario_real ? toBRLInput(p.valor_unitario_real) : '',
-      valor_total_real_override: temOverride ? valorSalvo : null,
-    }])
-    // Set etapa filter to item's etapa
-    if (item) setEtapaFilter(item.etapa_id)
+    // Pós-migration split_pedidos_header_e_itens: pedido pode ter N linhas em
+    // pedido_itens. Se vieram via JOIN do usePedidos (p.itens populado), monta
+    // o loteItems com todas as linhas. Senão, cai pro legacy (1 linha via
+    // p.item_compra_id) — caso comum em pedidos antigos sem o JOIN.
+    const itensDoPedido = (p.itens && p.itens.length > 0) ? p.itens : null
+    if (itensDoPedido) {
+      setLoteItems(itensDoPedido.map(pi => {
+        const it = itens.find(i => i.id === pi.item_compra_id)
+        const calcAuto = (pi.casas_lote ?? 0) * (it?.qtd_por_casa ?? 0) * (pi.valor_unitario_real ?? 0)
+        const valorSalvo = Number(pi.valor_total_real ?? 0)
+        const temOverride = valorSalvo > 0 && Math.abs(calcAuto - valorSalvo) > 0.5
+        return {
+          id: pi.id,
+          item_compra_id: pi.item_compra_id,
+          casas_lote: pi.casas_lote != null ? pi.casas_lote.toString() : '',
+          valor_unitario_real: pi.valor_unitario_real ? toBRLInput(pi.valor_unitario_real) : '',
+          valor_total_real_override: temOverride ? valorSalvo : null,
+        }
+      }))
+      // Filtra pela etapa do PRIMEIRO item (UI legada usa etapaFilter como contexto único)
+      const primeiroItem = itens.find(i => i.id === itensDoPedido[0]!.item_compra_id)
+      if (primeiroItem) setEtapaFilter(primeiroItem.etapa_id)
+    } else {
+      const item = itens.find(i => i.id === p.item_compra_id)
+      const calcAuto = (p.casas_lote ?? 0) * (item?.qtd_por_casa ?? 0) * (p.valor_unitario_real ?? 0)
+      const valorSalvo = Number(p.valor_total_real ?? 0)
+      const temOverride = valorSalvo > 0 && Math.abs(calcAuto - valorSalvo) > 0.5
+      setLoteItems([{
+        id: crypto.randomUUID(),
+        item_compra_id: p.item_compra_id,
+        casas_lote: p.casas_lote?.toString() ?? '',
+        valor_unitario_real: p.valor_unitario_real ? toBRLInput(p.valor_unitario_real) : '',
+        valor_total_real_override: temOverride ? valorSalvo : null,
+      }])
+      if (item) setEtapaFilter(item.etapa_id)
+    }
 
     // Fetch existing parcelas for this pedido
     const { data: existingParcelas } = await supabase.from('parcelas').select('*').eq('pedido_id', p.id).order('numero_parcela', { ascending: true })
@@ -1645,21 +1666,54 @@ function PedidosTab({ search }: { search: string }) {
 function FornecedoresTab({ search }: { search: string }) {
   const { data: fornecedores = [], isLoading } = useFornecedores()
   const createFornecedor = useCreateFornecedor()
+  const updateFornecedor = useUpdateFornecedor()
+  const deleteFornecedor = useDeleteFornecedor()
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState<{ nome: string; cnpj: string; contato: string; cond_pagamento_padrao: string; tipo: 'fornecedor' | 'cliente' | 'ambos' }>({ nome: '', cnpj: '', contato: '', cond_pagamento_padrao: '', tipo: 'fornecedor' })
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const emptyForm = { nome: '', cnpj: '', contato: '', cond_pagamento_padrao: '', tipo: 'fornecedor' as 'fornecedor' | 'cliente' | 'ambos' }
+  const [form, setForm] = useState(emptyForm)
   const [tipoFiltro, setTipoFiltro] = useState<'todos' | 'fornecedor' | 'cliente' | 'ambos'>('todos')
 
   const selection = useSelection()
 
+  const startEdit = (f: Fornecedor) => {
+    setEditingId(f.id)
+    setForm({
+      nome: f.nome ?? '',
+      cnpj: f.cnpj ?? '',
+      contato: f.contato ?? '',
+      cond_pagamento_padrao: f.cond_pagamento_padrao ?? '',
+      tipo: (f.tipo ?? 'fornecedor') as 'fornecedor' | 'cliente' | 'ambos',
+    })
+    setShowForm(true)
+  }
+
+  const closeForm = () => {
+    setShowForm(false)
+    setEditingId(null)
+    setForm(emptyForm)
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    await createFornecedor.mutateAsync({
-      nome: form.nome, cnpj: form.cnpj || null,
-      contato: form.contato || null, cond_pagamento_padrao: form.cond_pagamento_padrao || null,
+    const payload = {
+      nome: form.nome,
+      cnpj: form.cnpj || null,
+      contato: form.contato || null,
+      cond_pagamento_padrao: form.cond_pagamento_padrao || null,
       tipo: form.tipo,
-    } as any)
-    setShowForm(false)
-    setForm({ nome: '', cnpj: '', contato: '', cond_pagamento_padrao: '', tipo: 'fornecedor' })
+    }
+    if (editingId) {
+      await updateFornecedor.mutateAsync({ id: editingId, ...payload } as any)
+    } else {
+      await createFornecedor.mutateAsync(payload as any)
+    }
+    closeForm()
+  }
+
+  const handleDelete = async (f: Fornecedor) => {
+    if (!confirm(`Excluir "${f.nome}"? Pedidos/itens que referenciam este parceiro terão o vínculo removido.`)) return
+    await deleteFornecedor.mutateAsync(f.id)
   }
 
   const filtered = fornecedores.filter((f) => {
@@ -1687,13 +1741,17 @@ function FornecedoresTab({ search }: { search: string }) {
             </button>
           ))}
         </div>
-        <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
+        <button
+          onClick={() => { if (showForm) { closeForm() } else { setEditingId(null); setForm(emptyForm); setShowForm(true) } }}
+          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
           <Plus className="h-4 w-4" /> Novo Parceiro
         </button>
       </div>
 
       {showForm && (
         <div className="mb-4 rounded-xl border bg-card p-5">
+          <div className="mb-3 text-sm font-semibold">{editingId ? 'Editar Parceiro' : 'Novo Parceiro'}</div>
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="grid gap-3 md:grid-cols-2">
               <div><label className={LABEL}>Nome *</label><input type="text" value={form.nome} onChange={(e) => setForm((p) => ({ ...p, nome: e.target.value }))} required className={INPUT} /></div>
@@ -1710,8 +1768,8 @@ function FornecedoresTab({ search }: { search: string }) {
               <div className="md:col-span-2"><label className={LABEL}>Cond. Pagamento</label><input type="text" value={form.cond_pagamento_padrao} onChange={(e) => setForm((p) => ({ ...p, cond_pagamento_padrao: e.target.value }))} placeholder="30/60/90" className={INPUT} /></div>
             </div>
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setShowForm(false)} className="rounded-lg border px-4 py-2 text-sm hover:bg-accent">Cancelar</button>
-              <button type="submit" className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"><Check className="h-4 w-4" />Criar</button>
+              <button type="button" onClick={closeForm} className="rounded-lg border px-4 py-2 text-sm hover:bg-accent">Cancelar</button>
+              <button type="submit" className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"><Check className="h-4 w-4" />{editingId ? 'Salvar' : 'Criar'}</button>
             </div>
           </form>
         </div>
@@ -1733,13 +1791,15 @@ function FornecedoresTab({ search }: { search: string }) {
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">CNPJ</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Contato</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Condição</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-24">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {filtered.map((f) => {
                 const tb = tipoBadge(f.tipo ?? 'fornecedor')
+                const isEditing = editingId === f.id
                 return (
-                <tr key={f.id} className="group hover:bg-muted/20">
+                <tr key={f.id} className={`group hover:bg-muted/20 ${isEditing ? 'bg-primary/5' : ''}`}>
                   <td className="px-3 py-2.5 text-center">
                     <input type="checkbox" checked={selection.isSelected(f.id)}
                       onChange={() => selection.toggle(f.id)}
@@ -1752,6 +1812,26 @@ function FornecedoresTab({ search }: { search: string }) {
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{f.cnpj ?? '—'}</td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{f.contato ?? '—'}</td>
                   <td className="px-3 py-2.5 text-xs font-mono text-muted-foreground">{f.cond_pagamento_padrao ?? '—'}</td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex justify-end gap-1">
+                      <button
+                        type="button"
+                        onClick={() => startEdit(f)}
+                        title="Editar"
+                        className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(f)}
+                        title="Excluir"
+                        className="rounded p-1 text-muted-foreground hover:bg-red-500/10 hover:text-red-600"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
                 )
               })}
