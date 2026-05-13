@@ -41,9 +41,12 @@ export interface ItemCompra {
 
 // Status válidos no banco (ver CHECK constraint pedidos_status_check).
 // 'planejado' é o default da importação; demais refletem o ciclo do pedido.
+// 'parcialmente_entregue' foi adicionado pela migration split_pedidos_header_e_itens:
+// pedido com itens recebidos parcialmente (SUM(qtd_recebida) > 0 mas < SUM(qtd)).
 export type PedidoStatus =
   | 'planejado'
   | 'pedido_enviado'
+  | 'parcialmente_entregue'
   | 'entregue'
   | 'parcialmente_pago'
   | 'pago'
@@ -54,19 +57,49 @@ export type PedidoStatus =
 export const STATUS_PEDIDO_ATIVO: readonly PedidoStatus[] = [
   'planejado',
   'pedido_enviado',
+  'parcialmente_entregue',
   'entregue',
   'parcialmente_pago',
   'pago',
 ] as const
 
+// Linha de um pedido (nova tabela pedido_itens criada pela migration
+// split_pedidos_header_e_itens). Um pedido tem N itens; permite 1 NF = 1 pedido.
+export interface PedidoItem {
+  id: string
+  pedido_id: string
+  item_compra_id: string
+  qtd: number
+  valor_unitario_real: number
+  valor_total_real: number
+  /** Quanto desse item já foi efetivamente recebido (vai aumentando conforme NFs aplicadas).
+   * Triggers no DB derivam o status do pedido a partir de SUM(qtd_recebida) vs SUM(qtd). */
+  qtd_recebida: number
+  casas_lote: number | null
+  ordem: number
+  observacoes: string | null
+  created_at?: string
+  updated_at?: string
+  // Joined (opcional)
+  item_descricao?: string
+  item_codigo?: string
+  etapa_id?: string
+  etapa_nome?: string
+}
+
 export interface Pedido {
   id: string
   company_id: string
+  /** @deprecated Use `itens[0].item_compra_id`. Mantido por compat até a Fase 4 da migration. */
   item_compra_id: string
   numero_pedido: number | null
+  /** @deprecated Use `itens[0].casas_lote`. */
   casas_lote: number | null
+  /** @deprecated Use `itens[0].qtd`. */
   qtd_lote: number | null
+  /** @deprecated Use `itens[0].valor_unitario_real`. */
   valor_unitario_real: number | null
+  /** Soma dos valores dos itens (mantida em sincronia por trigger fn_sync_pedido_valor_total). */
   valor_total_real: number | null
   fornecedor_id: string | null
   cond_pagamento: string | null
@@ -74,11 +107,15 @@ export interface Pedido {
   data_entrega_real: string | null
   status: PedidoStatus
   observacoes: string | null
+  /** FK pra recepcao_docs: NF que originou este pedido. NULL se manual. */
+  nf_origem_id: string | null
   created_at: string
   // Joined
   item_descricao?: string
   item_codigo?: string
   fornecedor_nome?: string
+  /** Linhas do pedido (populadas pelo usePedidos via JOIN). */
+  itens?: PedidoItem[]
 }
 
 // ---------------------------------------------------------------------------
@@ -281,18 +318,79 @@ export function usePedidos() {
   return useQuery({
     queryKey: ['pedidos', companyId],
     queryFn: async () => {
+      // Pós-migration split_pedidos_header_e_itens: pedidos ganhou nf_origem_id,
+      // e pedido_itens passou a guardar as linhas. Trazemos as linhas via JOIN
+      // pra que o consumidor tenha acesso a SUM(qtd_recebida) e demais.
+      // O join com itens_compra/fornecedores no header continua pra retrocompat
+      // dos campos legacy (item_descricao/codigo) usados em UI antiga.
       const { data, error } = await supabase
         .from('pedidos')
-        .select('*, itens_compra!inner(descricao, codigo), fornecedores(nome)')
+        .select(`
+          *,
+          itens_compra!inner(descricao, codigo),
+          fornecedores(nome),
+          pedido_itens(
+            id, pedido_id, item_compra_id, qtd, valor_unitario_real, valor_total_real,
+            qtd_recebida, casas_lote, ordem, observacoes,
+            itens_compra(descricao, codigo, etapa_id, etapas(nome))
+          )
+        `)
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
       if (error) throw error
-      return (data ?? []).map((p: Record<string, unknown>) => ({
-        ...p,
-        item_descricao: (p.itens_compra as Record<string, string> | null)?.descricao,
-        item_codigo: (p.itens_compra as Record<string, string> | null)?.codigo,
-        fornecedor_nome: (p.fornecedores as Record<string, string> | null)?.nome,
-      })) as Pedido[]
+      return (data ?? []).map((p: Record<string, unknown>) => {
+        const itensRaw = (p.pedido_itens as Array<Record<string, any>> | null) ?? []
+        const itens: PedidoItem[] = itensRaw
+          .sort((a, b) => (a.ordem ?? 0) - (b.ordem ?? 0))
+          .map(pi => ({
+            id: pi.id,
+            pedido_id: pi.pedido_id,
+            item_compra_id: pi.item_compra_id,
+            qtd: Number(pi.qtd),
+            valor_unitario_real: Number(pi.valor_unitario_real),
+            valor_total_real: Number(pi.valor_total_real),
+            qtd_recebida: Number(pi.qtd_recebida),
+            casas_lote: pi.casas_lote != null ? Number(pi.casas_lote) : null,
+            ordem: pi.ordem,
+            observacoes: pi.observacoes ?? null,
+            item_descricao: pi.itens_compra?.descricao,
+            item_codigo: pi.itens_compra?.codigo,
+            etapa_id: pi.itens_compra?.etapa_id,
+            etapa_nome: pi.itens_compra?.etapas?.nome,
+          }))
+        return {
+          ...p,
+          item_descricao: (p.itens_compra as Record<string, string> | null)?.descricao,
+          item_codigo: (p.itens_compra as Record<string, string> | null)?.codigo,
+          fornecedor_nome: (p.fornecedores as Record<string, string> | null)?.nome,
+          itens,
+        }
+      }) as Pedido[]
+    },
+    enabled: !!companyId,
+  })
+}
+
+// Lista plana de pedido_itens da company — útil pra somas, agrupamentos, drill-down
+// no relatório de orçamento (que pensa em "itens consumidos", não em "pedidos").
+export function usePedidoItens() {
+  const { currentCompany } = useProject()
+  const companyId = currentCompany?.id ?? ''
+
+  return useQuery({
+    queryKey: ['pedido_itens', companyId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('pedido_itens')
+        .select(`
+          id, pedido_id, item_compra_id, qtd, valor_unitario_real, valor_total_real,
+          qtd_recebida, casas_lote, ordem, observacoes, created_at,
+          pedidos!inner(company_id, status, nf_origem_id, fornecedor_id, numero_pedido, fornecedores(nome)),
+          itens_compra(descricao, codigo, etapa_id, etapas(nome))
+        `)
+        .eq('pedidos.company_id', companyId)
+      if (error) throw error
+      return (data ?? []) as any[]
     },
     enabled: !!companyId,
   })

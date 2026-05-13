@@ -527,18 +527,18 @@ export function useDashboardKPIs() {
 
       const [itensRes, parcelasRes, etapasRes, pedidosRes] = await Promise.all([
         supabase.from('itens_compra').select('id, valor_total_orcado, valor_consumido').eq('company_id', companyId).is('deleted_at', null),
-        supabase.from('parcelas').select('valor, data_vencimento, data_prevista_pagamento, data_pagamento_real, status, valor_pago, pedidos!inner(deleted_at, status, itens_compra(deleted_at))').eq('company_id', companyId).is('deleted_at', null),
+        // pedidos.deleted_at não existe (filtro era no-op). Removido. Cancelados saem via status.
+        supabase.from('parcelas').select('valor, data_vencimento, data_prevista_pagamento, data_pagamento_real, status, valor_pago, pedidos!inner(status, itens_compra(deleted_at))').eq('company_id', companyId).is('deleted_at', null),
         supabase.from('etapas').select('status').eq('company_id', companyId),
-        // F3.2: filtra pedidos soft-deletados e cancelados para não inflar "consumido"
-        supabase.from('pedidos').select('item_compra_id, valor_total_real, status').eq('company_id', companyId).is('deleted_at', null),
+        // Filtra pedidos cancelados via status (não há soft-delete em pedidos).
+        supabase.from('pedidos').select('item_compra_id, valor_total_real, status').eq('company_id', companyId),
       ])
 
       const itens = (itensRes.data ?? []) as Array<{ id: string; valor_total_orcado: number; valor_consumido: number }>
       const rawParcelas = (parcelasRes.data ?? []) as Array<any>
-      // Exclui parcelas de pedidos cancelados/soft-deletados ou de itens soft-deletados
+      // Exclui parcelas cujo item_compra está soft-deletado OU cujo pedido está cancelado
       const parcelas = rawParcelas
         .filter(p => !p.pedidos?.itens_compra?.deleted_at)
-        .filter(p => !p.pedidos?.deleted_at)
         .filter(p => p.pedidos?.status !== 'cancelado')
         .map(p => ({
           valor: p.valor, data_vencimento: p.data_vencimento, data_prevista_pagamento: p.data_prevista_pagamento, data_pagamento_real: p.data_pagamento_real, status: p.status, valor_pago: p.valor_pago
@@ -646,7 +646,8 @@ export interface OrcamentoRealizadoSnapshot {
   divergencias: number  // quantidade de itens com valor_consumido_db ≠ comprometido
 }
 
-const STATUS_RECEBIDO = new Set(['entregue', 'parcialmente_pago', 'pago'])
+// (Antes existia STATUS_RECEBIDO aqui; com a migration split_pedidos_header_e_itens
+// o "recebido" passou a ser derivado de pedido_itens.qtd_recebida, não do status.)
 
 // ============================================================================
 // F4.3: Reconciliação NF → Pedido → Parcela → Pagamento
@@ -817,19 +818,32 @@ export function useOrcamentoRealizado() {
     queryKey: ['orcamento-realizado', companyId],
     queryFn: async (): Promise<OrcamentoRealizadoSnapshot> => {
       if (!companyId) throw new Error('No company')
-      const [itensRes, pedidosRes, parcelasRes] = await Promise.all([
+      // Pós-migration split_pedidos_header_e_itens: soma vem de pedido_itens
+      // (fonte granular). Cada pedido legacy tem 1 pedido_item (backfill), e
+      // pedidos novos podem ter N — o cálculo continua correto em ambos.
+      //
+      // Notas:
+      // - `pedidos.deleted_at` não existe (filtro legacy era no-op silencioso).
+      //   Removido. Cancelamento é via status='cancelado'.
+      // - `recebido` = SUM(qtd_recebida × valor_unitario_real) — reflete o
+      //   consumo real por item, não mais derivado do status do pedido.
+      //   Antes era binário (entregue+ contava 100%, senão 0); agora é proporcional.
+      const [itensRes, pedidoItensRes, parcelasRes] = await Promise.all([
         supabase.from('itens_compra')
           .select('id, valor_total_orcado, valor_consumido')
           .eq('company_id', companyId).is('deleted_at', null),
-        supabase.from('pedidos')
-          .select('id, item_compra_id, valor_total_real, status')
-          .eq('company_id', companyId).is('deleted_at', null),
+        supabase.from('pedido_itens')
+          .select(`
+            item_compra_id, qtd, valor_unitario_real, valor_total_real, qtd_recebida,
+            pedidos!inner(company_id, status)
+          `)
+          .eq('pedidos.company_id', companyId),
         supabase.from('parcelas')
-          .select('valor_pago, status, pedidos!inner(item_compra_id, deleted_at, status)')
+          .select('valor_pago, status, pedidos!inner(company_id, item_compra_id, status)')
           .eq('company_id', companyId).is('deleted_at', null),
       ])
       const itens = (itensRes.data ?? []) as Array<{ id: string; valor_total_orcado: number; valor_consumido: number }>
-      const pedidos = (pedidosRes.data ?? []) as Array<{ id: string; item_compra_id: string; valor_total_real: number | null; status: string }>
+      const pedidoItens = (pedidoItensRes.data ?? []) as Array<any>
       const parcelas = (parcelasRes.data ?? []) as Array<any>
 
       const porItem = new Map<string, ItemOrcamentoRealizado>()
@@ -846,19 +860,24 @@ export function useOrcamentoRealizado() {
           divergente: false,
         })
       }
-      // Soma pedidos não cancelados em comprometido; pedidos "entregues+" em recebido
-      for (const p of pedidos) {
-        if (p.status === 'cancelado') continue
-        const linha = porItem.get(p.item_compra_id)
-        if (!linha) continue   // pedido apontando pra item inválido (filtrado por deleted_at)
-        const v = p.valor_total_real ?? 0
-        linha.comprometido += v
-        if (STATUS_RECEBIDO.has(p.status)) linha.recebido += v
+      // Soma pedido_itens em pedidos não cancelados:
+      //   comprometido = valor_total_real do item
+      //   recebido = qtd_recebida × valor_unitario_real (proporcional ao consumo real)
+      for (const pi of pedidoItens) {
+        const ped = pi.pedidos
+        if (!ped || ped.status === 'cancelado') continue
+        const linha = porItem.get(pi.item_compra_id)
+        if (!linha) continue
+        linha.comprometido += Number(pi.valor_total_real ?? 0)
+        const qtdRec = Number(pi.qtd_recebida ?? 0)
+        const vu = Number(pi.valor_unitario_real ?? 0)
+        linha.recebido += qtdRec * vu
       }
-      // Pago: somente parcelas de pedidos vivos e não cancelados, com status paga
+      // Pago: parcelas pagas de pedidos não cancelados, agrupadas pelo item legacy do pedido
+      // (na Fase 4 isso vira proporcional por item — mas hoje cada pedido tem 1 item dominante).
       for (const par of parcelas) {
         const ped = par.pedidos
-        if (!ped || ped.deleted_at || ped.status === 'cancelado') continue
+        if (!ped || ped.status === 'cancelado') continue
         if (par.status !== 'paga') continue
         const linha = porItem.get(ped.item_compra_id)
         if (!linha) continue
