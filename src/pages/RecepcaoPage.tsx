@@ -496,6 +496,8 @@ export default function RecepcaoPage() {
       if (docErr) throw docErr
 
       // 3) Para cada linha "criar_pedido" / "substituir_pedido" → cria pedido novo (com item_compra_id resolvido)
+      // Status 'entregue' é o estado correto pra NF aplicada: mercadoria recebida.
+      // 'confirmado' foi removido pela migration 20260425130000 e não é mais aceito.
       const pedidosParaCriar = extracao.itens
         .filter(l => l.acao && l.acao !== 'ignorar' && l.acao !== 'criar_item' && l.item_compra_id)
         .map(l => ({
@@ -507,7 +509,7 @@ export default function RecepcaoPage() {
           valor_total_real: l.valor_total ?? null,
           cond_pagamento: null,
           data_entrega_prevista: extracao.documento.data_emissao ?? null,
-          status: 'confirmado' as const,
+          status: 'entregue' as const,
           observacoes: `Recebido via NF ${extracao.documento.numero ?? ''} — ${l.descricao}`,
         }))
 
@@ -551,7 +553,14 @@ export default function RecepcaoPage() {
       setTextoColado('')
       setDiferencaAceita(false)
     } catch (err) {
-      toast.error('Erro ao aplicar: ' + (err instanceof Error ? err.message : String(err)))
+      // Extrai mensagem útil de qualquer formato de erro (Error nativo, PostgrestError, etc.)
+      const e: any = err
+      let msg: string
+      if (e instanceof Error) msg = e.message
+      else if (e && typeof e === 'object') msg = e.message ?? e.details ?? e.hint ?? e.error_description ?? JSON.stringify(e).slice(0, 300)
+      else msg = String(e)
+      console.error('[recepcao] erro ao aplicar:', err)
+      toast.error('Erro ao aplicar: ' + msg)
     } finally {
       setAplicando(false)
     }
