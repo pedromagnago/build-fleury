@@ -16,6 +16,7 @@ import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
 // Nota: pdfFileToText e parseDanfe foram movidos pra edge function recepcao-pdf-parse
 // (server-side), pra evitar o bug "value of readableStream" do pdfjs v5 no Vite.
 import { ItemPickerCombobox } from '@/components/recepcao/ItemPickerCombobox'
+import { gerarParcelas } from '@/lib/parcelas'
 import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle } from 'lucide-react'
 import { useEtapas } from '@/hooks/useEtapas'
 
@@ -381,7 +382,13 @@ export default function RecepcaoPage() {
           const zona = zonaDeScore(top?.score_combined)
           if (top && (zona === 'alta' || zona === 'media')) {
             novas[idx]!.item_compra_id = top.item_id
-            const pedidoExistente = pedidos.find(p => p.item_compra_id === top.item_id && p.status === 'planejado')
+            // Match SÓ POR ITEM (não filtra fornecedor): qualquer pedido com saldo
+            // pra consumir conta. Status com saldo = planejado, pedido_enviado ou
+            // parcialmente_entregue.
+            const pedidoExistente = pedidos.find(p =>
+              p.item_compra_id === top.item_id
+              && ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status)
+            )
             novas[idx]!.acao = pedidoExistente ? 'substituir_pedido' : 'criar_pedido'
             if (pedidoExistente) novas[idx]!.pedido_substituido_id = pedidoExistente.id
             // Zona alta → auto-confirmado; zona média → exige confirmação explícita
@@ -458,7 +465,11 @@ export default function RecepcaoPage() {
   // Handler unificado: operador escolheu um item do orçamento pra esta linha da NF.
   // Substitui as 2 lógicas duplicadas dos antigos <select> de sugestões.
   const escolherItemParaLinha = (idx: number, novoItemId: string | null) => {
-    const pedidoExistente = novoItemId ? pedidos.find(p => p.item_compra_id === novoItemId && p.status === 'planejado') : undefined
+    // Match SÓ POR ITEM (sem fornecedor) — mesma regra do auto-match.
+    const pedidoExistente = novoItemId
+      ? pedidos.find(p => p.item_compra_id === novoItemId
+                          && ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status))
+      : undefined
     setExtracao(prev => prev ? {
       ...prev,
       itens: prev.itens.map((l, i) => i === idx ? {
@@ -540,68 +551,167 @@ export default function RecepcaoPage() {
       }).select('id').single()
       if (docErr) throw docErr
 
-      // 3) Pós-migration split_pedidos_header_e_itens: 1 NF → 1 pedido com N
-      // pedido_itens (não mais N pedidos). Linhas com qtd_recebida = qtd já
-      // marcam o pedido como 'entregue' via trigger; conciliação fica 1↔1
-      // (1 movimento bancário ↔ 1 parcela ↔ 1 pedido).
-      const linhasParaPedido = extracao.itens.filter(
+      // 3) NOVA LÓGICA DE CONSUMO (PR 3):
+      //
+      // - Ação 'substituir_pedido' = CONSUMIR: busca TODOS os pedido_itens
+      //   planejados desse item_compra_id (match SÓ POR ITEM, ignorando
+      //   fornecedor), distribui a qtd da NF em FIFO (mais antigo primeiro)
+      //   incrementando qtd_recebida em cada um. Triggers SQL atualizam o
+      //   status do pedido. Se sobrar qtd da NF além do que cabe nos planejados,
+      //   a sobra entra como pedido_item no pedido novo consolidado da NF.
+      //
+      // - Ação 'criar_pedido' = CRIAR NOVO: vai direto como pedido_item do
+      //   pedido novo (criado APENAS se houver pelo menos uma linha desta ação
+      //   ou sobra de consumo).
+      //
+      // - Parcelas existentes nos pedidos planejados consumidos ficam intactas
+      //   (já foram geradas com cond_pagamento original). O pedido NOVO, se
+      //   criado, gera parcelas via gerarParcelas() no passo 5.
+
+      // Linhas elegíveis pra processamento (não 'ignorar', não 'criar_item' puro)
+      const linhasElegiveis = extracao.itens.filter(
         l => l.acao && l.acao !== 'ignorar' && l.item_compra_id
       )
 
+      // 3a) CONSUMO: distribui qtd entre pedido_itens planejados de cada item
+      // Carrega TODOS os pedido_itens planejados envolvidos numa só query
+      const itemIdsAConsumir = Array.from(new Set(
+        linhasElegiveis.filter(l => l.acao === 'substituir_pedido').map(l => l.item_compra_id!)
+      ))
+      const sobraParaPedidoNovo: Array<{ item_compra_id: string; qtd: number; vu: number; vt: number; descricao: string }> = []
+      const pedidoItensConsumidos: Array<{ pedidoId: string; pedidoItemId: string }> = []
+
+      if (itemIdsAConsumir.length > 0) {
+        const { data: itensPlanRaw } = await supabase
+          .from('pedido_itens')
+          .select('id, pedido_id, item_compra_id, qtd, qtd_recebida, pedidos!inner(id, status, nf_origem_id, created_at, company_id)')
+          .in('item_compra_id', itemIdsAConsumir)
+          .eq('pedidos.company_id', currentCompany.id)
+          .in('pedidos.status', ['planejado', 'pedido_enviado', 'parcialmente_entregue'])
+        const itensPlanejadosPorItem = new Map<string, Array<any>>()
+        for (const pi of (itensPlanRaw ?? []) as any[]) {
+          const arr = itensPlanejadosPorItem.get(pi.item_compra_id) ?? []
+          arr.push(pi)
+          itensPlanejadosPorItem.set(pi.item_compra_id, arr)
+        }
+        // FIFO: ordena cada lista por created_at do pedido pai
+        for (const arr of itensPlanejadosPorItem.values()) {
+          arr.sort((a, b) => String(a.pedidos.created_at ?? '').localeCompare(String(b.pedidos.created_at ?? '')))
+        }
+
+        // Distribui qtd das linhas 'substituir_pedido' entre os planejados
+        for (const l of linhasElegiveis.filter(l => l.acao === 'substituir_pedido')) {
+          let restante = Number(l.quantidade ?? 0)
+          const vu = Number(l.valor_unitario ?? 0)
+          const candidatos = itensPlanejadosPorItem.get(l.item_compra_id!) ?? []
+          for (const pi of candidatos) {
+            if (restante <= 0.001) break
+            const disponivel = Math.max(Number(pi.qtd ?? 0) - Number(pi.qtd_recebida ?? 0), 0)
+            if (disponivel <= 0.001) continue
+            const consumir = Math.min(restante, disponivel)
+            const novaQtdRec = Number(pi.qtd_recebida ?? 0) + consumir
+            const { error: upPiErr } = await supabase
+              .from('pedido_itens')
+              .update({ qtd_recebida: novaQtdRec })
+              .eq('id', pi.id)
+            if (upPiErr) throw upPiErr
+            // Vincula a NF ao pedido pai se ainda não tem origem
+            if (!pi.pedidos.nf_origem_id) {
+              await supabase.from('pedidos').update({
+                nf_origem_id: docRow!.id,
+                data_entrega_real: extracao.documento.data_emissao ?? null,
+              }).eq('id', pi.pedido_id)
+            }
+            pedidoItensConsumidos.push({ pedidoId: pi.pedido_id, pedidoItemId: pi.id })
+            restante -= consumir
+          }
+          // Sobra: vai pro pedido novo
+          if (restante > 0.001) {
+            sobraParaPedidoNovo.push({
+              item_compra_id: l.item_compra_id!,
+              qtd: restante,
+              vu,
+              vt: restante * vu,
+              descricao: l.descricao,
+            })
+          }
+        }
+      }
+
+      // 3b) CRIAR: linhas com acao='criar_pedido' vão pro pedido novo
+      const itensParaPedidoNovo = [
+        ...linhasElegiveis.filter(l => l.acao === 'criar_pedido').map(l => ({
+          item_compra_id: l.item_compra_id!,
+          qtd: Number(l.quantidade ?? 1),
+          vu: Number(l.valor_unitario ?? 0),
+          vt: Number(l.valor_total ?? ((l.quantidade ?? 1) * (l.valor_unitario ?? 0))),
+          descricao: l.descricao,
+        })),
+        ...sobraParaPedidoNovo,
+      ]
+
+      // 3c) Cria o PEDIDO NOVO consolidado (se houver algo pra ele)
       let novoPedidoId: string | null = null
-      let totalItensCriados = 0
-      if (linhasParaPedido.length > 0) {
-        const primeira = linhasParaPedido[0]!
-        // 3a) Cabeçalho do pedido — preenche também campos legacy (item_compra_id,
-        // qtd_lote, valor_unitario_real) com info da PRIMEIRA linha pra compat
-        // de queries antigas. Trigger fn_sync_pedido_valor_total recalcula o
-        // valor_total_real automaticamente quando os itens forem inseridos.
+      let totalItensCriadosNovoPedido = 0
+      if (itensParaPedidoNovo.length > 0) {
+        const primeira = itensParaPedidoNovo[0]!
         const { data: novoPedido, error: pedErr } = await supabase.from('pedidos').insert({
           company_id: currentCompany.id,
           fornecedor_id: fornId,
-          item_compra_id: primeira.item_compra_id!,  // legacy: 1º item do pedido
+          item_compra_id: primeira.item_compra_id,
           casas_lote: null,
-          qtd_lote: primeira.quantidade ?? 1,
-          valor_unitario_real: primeira.valor_unitario ?? 0,
-          valor_total_real: 0,                       // recalculado pelo trigger
+          qtd_lote: primeira.qtd,
+          valor_unitario_real: primeira.vu,
+          valor_total_real: 0,
           cond_pagamento: condPagamento.trim() || null,
           data_entrega_prevista: extracao.documento.data_emissao ?? null,
           data_entrega_real: extracao.documento.data_emissao ?? null,
-          status: 'planejado' as const,              // trigger move pra 'entregue' ao inserir itens
+          status: 'planejado' as const,
           observacoes: `NF ${extracao.documento.numero ?? ''} · ${extracao.fornecedor.nome ?? 'fornecedor sem nome'}`,
           nf_origem_id: docRow!.id,
         }).select('id').single()
         if (pedErr) throw pedErr
         novoPedidoId = novoPedido!.id
 
-        // 3b) Linhas (pedido_itens) — qtd_recebida = qtd marca como totalmente recebido
-        const itensPayload = linhasParaPedido.map((l, idx) => ({
+        const itensPayload = itensParaPedidoNovo.map((l, idx) => ({
           pedido_id: novoPedidoId!,
-          item_compra_id: l.item_compra_id!,
-          qtd: l.quantidade ?? 1,
-          valor_unitario_real: l.valor_unitario ?? 0,
-          valor_total_real: l.valor_total ?? ((l.quantidade ?? 1) * (l.valor_unitario ?? 0)),
-          qtd_recebida: l.quantidade ?? 1,           // NF aplicada = recebimento integral
+          item_compra_id: l.item_compra_id,
+          qtd: l.qtd,
+          valor_unitario_real: l.vu,
+          valor_total_real: l.vt,
+          qtd_recebida: l.qtd,
           ordem: idx + 1,
         }))
         const { error: itensErr } = await supabase.from('pedido_itens').insert(itensPayload)
         if (itensErr) throw itensErr
-        totalItensCriados = itensPayload.length
+        totalItensCriadosNovoPedido = itensPayload.length
+
+        // Gera parcelas pro pedido novo se houver cond_pagamento
+        if (condPagamento.trim()) {
+          const totalNovoPedido = itensParaPedidoNovo.reduce((s, l) => s + l.vt, 0)
+          const dataBase = extracao.documento.data_emissao
+            ? new Date(extracao.documento.data_emissao)
+            : new Date()
+          try {
+            const parcelas = gerarParcelas({
+              pedidoId: novoPedidoId!,
+              companyId: currentCompany.id,
+              valorTotal: totalNovoPedido,
+              condPagamento: condPagamento.trim(),
+              dataEntrega: dataBase,
+            })
+            if (parcelas.length > 0) {
+              const { error: parcErr } = await supabase.from('parcelas').insert(parcelas)
+              if (parcErr) console.warn('Falha ao criar parcelas do pedido novo:', parcErr)
+            }
+          } catch (err) {
+            console.warn('gerarParcelas falhou:', err)
+          }
+        }
       }
 
-      // 4) Substituir previsões: cancela o pedido planejado antigo. O pedido
-      // novo já contempla as linhas via pedido_itens; o cancelamento aqui só
-      // evita dupla contagem no orçamento.
-      const substituicoes = extracao.itens.filter(l => l.acao === 'substituir_pedido' && l.pedido_substituido_id)
-      const pedidosCanceladosIds = new Set<string>()
-      for (const sub of substituicoes) {
-        if (pedidosCanceladosIds.has(sub.pedido_substituido_id!)) continue
-        pedidosCanceladosIds.add(sub.pedido_substituido_id!)
-        await supabase.from('pedidos').update({
-          status: 'cancelado',
-          observacoes: `Substituído por NF ${extracao.documento.numero ?? ''}`,
-        }).eq('id', sub.pedido_substituido_id!)
-      }
+      // Compat com toast final: total que entrou em algum pedido (consumido + novo)
+      const totalLinhasProcessadas = pedidoItensConsumidos.length + totalItensCriadosNovoPedido
 
       // 5) Auditoria em recepcao_matches — todos os matches apontam pro mesmo
       // pedido novo (pois agora é 1 pedido por NF).
@@ -625,13 +735,15 @@ export default function RecepcaoPage() {
         await supabase.from('recepcao_matches').insert(linhasMatch)
       }
 
-      const totalSubstituidos = pedidosCanceladosIds.size
-      const totalIgnoradosOuItem = extracao.itens.length - totalItensCriados
-      toast.success(
-        `NF aplicada: 1 pedido com ${totalItensCriados} ite${totalItensCriados === 1 ? 'm' : 'ns'}`
-        + (totalSubstituidos > 0 ? `, ${totalSubstituidos} previsão(ões) cancelada(s)` : '')
-        + (totalIgnoradosOuItem > 0 ? `, ${totalIgnoradosOuItem} linha(s) ignorada(s)` : '')
-      )
+      // Toast resumido: quantos pedidos planejados foram CONSUMIDOS (não cancelados),
+      // quantos itens entraram em pedido novo, e quantas linhas foram ignoradas.
+      const pedidosConsumidosUnicos = new Set(pedidoItensConsumidos.map(c => c.pedidoId)).size
+      const totalIgnoradosOuItem = extracao.itens.length - totalLinhasProcessadas
+      const partes: string[] = []
+      if (pedidosConsumidosUnicos > 0) partes.push(`${pedidosConsumidosUnicos} previsão(ões) consumida(s)`)
+      if (novoPedidoId) partes.push(`1 pedido novo com ${totalItensCriadosNovoPedido} ite${totalItensCriadosNovoPedido === 1 ? 'm' : 'ns'}`)
+      if (totalIgnoradosOuItem > 0) partes.push(`${totalIgnoradosOuItem} linha(s) ignorada(s)`)
+      toast.success(`NF aplicada · ${partes.join(' · ') || 'nada a aplicar'}`)
       setExtracao(null)
       setTextoColado('')
       setDiferencaAceita(false)
@@ -989,15 +1101,19 @@ export default function RecepcaoPage() {
                 />
               </div>
             </div>
-            {/* Visibilidade das substituições: lista exata dos pedidos planejados que serão cancelados */}
+            {/* Preview do CONSUMO de previsões: lista os pedidos planejados que serão
+                consumidos. Note que a distribuição real é FIFO automática entre todos
+                os pedidos planejados do mesmo item — esta lista é apenas o MATCH explícito
+                da UI (linha N da NF aponta pra pedido X). Pedidos extras com saldo ainda
+                podem ser consumidos automaticamente durante o aplicar(). */}
             {previsoesACancelar.length > 0 && (
-              <details className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 text-[11px]">
-                <summary className="cursor-pointer px-2 py-1.5 flex items-center gap-1.5 text-amber-800 hover:bg-amber-500/10">
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  <strong>{previsoesACancelar.length}</strong> previsão(ões) será(ão) <strong>cancelada(s)</strong> ao aplicar.
-                  <span className="text-muted-foreground ml-1">(clique pra ver)</span>
+              <details className="mt-2 rounded-md border border-blue-500/40 bg-blue-500/5 text-[11px]">
+                <summary className="cursor-pointer px-2 py-1.5 flex items-center gap-1.5 text-blue-800 hover:bg-blue-500/10">
+                  <Check className="h-3.5 w-3.5" />
+                  <strong>{previsoesACancelar.length}</strong> previsão(ões) com match explícito serão <strong>consumidas</strong> ao aplicar.
+                  <span className="text-muted-foreground ml-1">(distribuição FIFO automática entre planejados do mesmo item)</span>
                 </summary>
-                <div className="border-t border-amber-500/30 divide-y divide-amber-500/20 max-h-48 overflow-y-auto">
+                <div className="border-t border-blue-500/30 divide-y divide-blue-500/20 max-h-48 overflow-y-auto">
                   {previsoesACancelar.map(p => (
                     <div key={p.pedidoId} className="px-2 py-1.5 flex items-center justify-between gap-2">
                       <div className="min-w-0">
@@ -1008,8 +1124,8 @@ export default function RecepcaoPage() {
                       <span className="font-mono whitespace-nowrap">{formatCurrency(p.valor)}</span>
                     </div>
                   ))}
-                  <div className="px-2 py-1.5 bg-amber-500/10 font-bold flex items-center justify-between">
-                    <span>Total a cancelar</span>
+                  <div className="px-2 py-1.5 bg-blue-500/10 font-bold flex items-center justify-between">
+                    <span>Total dos planejados em match explícito</span>
                     <span className="font-mono">{formatCurrency(previsoesACancelar.reduce((s, p) => s + p.valor, 0))}</span>
                   </div>
                 </div>
@@ -1183,7 +1299,7 @@ export default function RecepcaoPage() {
                                       <Check className="h-2.5 w-2.5" /> ok
                                     </span>
                                   )}
-                                  {pedidoSel && <span className="rounded bg-blue-500/15 text-blue-700 px-1">→ #{pedidoSel.numero_pedido} (subst.)</span>}
+                                  {pedidoSel && <span className="rounded bg-blue-500/15 text-blue-700 px-1" title="Consume previsão FIFO entre os pedidos planejados deste item (não só este)">→ consome previsão</span>}
                                 </div>
                                 {(() => {
                                   const avisos = calcularAvisos(linha, itemSelecionado)
@@ -1259,8 +1375,8 @@ export default function RecepcaoPage() {
                           className="w-full rounded border bg-background px-1.5 py-1 text-[11px]"
                         >
                           <option value="">— escolher —</option>
-                          <option value="criar_pedido">Criar pedido firme</option>
-                          <option value="substituir_pedido" disabled={!pedidoSel}>Substituir previsão</option>
+                          <option value="criar_pedido">Criar pedido novo</option>
+                          <option value="substituir_pedido" disabled={!pedidoSel}>Consumir previsão (FIFO entre planejados)</option>
                           <option value="criar_item">Criar item novo (manual)</option>
                           <option value="ignorar">Ignorar</option>
                         </select>
