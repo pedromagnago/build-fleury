@@ -1,19 +1,20 @@
 /**
- * Build Fleury — Página de Conciliação Financeira (v2 — Operator-First)
+ * Build Fleury — Página de Conciliação Financeira (v3 — Table-First)
  *
- * - Painel de saúde financeira no topo (está em dia? falhas pendentes?)
- * - Atalhos rápidos para ações do dia-a-dia
- * - Batch confirm de matches de alta confiança
- * - Upload simplificado com auto-conciliação
+ * Hierarquia invertida: a tabela de extrato é o conteúdo principal e fica acima
+ * da dobra. Header compacto (KPIs em chips + ações), alertas inline,
+ * e seções secundárias (Extratos importados, Composição do saldo, Contas
+ * bancárias) ficam agrupadas em accordions no rodapé — abertas só quando o
+ * usuário clica.
  */
 import { useState, useMemo, useCallback } from 'react'
 import { toast } from 'sonner'
 import {
-  Upload, CheckCircle2, AlertTriangle,
-  ArrowRight, RefreshCw,
-  ShieldCheck, ShieldAlert, Clock, Zap, CheckCheck,
+  Upload, CheckCircle2, AlertTriangle, RefreshCw,
+  ShieldAlert, Clock, Zap, CheckCheck,
   TrendingUp, TrendingDown, Banknote, CalendarCheck,
-  FileWarning, Activity, Scale, ListOrdered,
+  FileWarning, Activity, Scale, FileText,
+  CreditCard, ChevronDown, ChevronRight,
 } from 'lucide-react'
 import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { useMovimentacoes } from '@/hooks/useOperacional'
@@ -27,9 +28,6 @@ import { ExtratosManager } from '@/components/conciliacao/ExtratosManager'
 import { SaldoComposicao } from '@/components/conciliacao/SaldoComposicao'
 import { ExtratoContaView } from '@/components/conciliacao/ExtratoContaView'
 import { ContasTab } from '@/pages/PagamentosPage'
-import { CreditCard } from 'lucide-react'
-
-type TabKey = 'extrato' | 'saldo' | 'contas'
 
 // ─── Formatters ──────────────────────────────────────────────
 
@@ -52,7 +50,7 @@ function fmtDate(d: string): string {
 function daysAgo(d: string): number {
   if (!d) return 999
   const now = new Date()
-  const target = new Date(d + 'T12:00:00') // noon to avoid timezone edge cases
+  const target = new Date(d + 'T12:00:00')
   return Math.max(0, Math.floor((now.getTime() - target.getTime()) / 86400000))
 }
 
@@ -65,12 +63,10 @@ function relativeDate(d: string): string {
   return `${Math.floor(days / 30)} mês(es) atrás`
 }
 
-// MATCH_LABELS moved to separate file or no longer used
-
 // ─── Health Score ─────────────────────────────────────────────
 
 interface HealthData {
-  score: number                   // 0-100
+  score: number
   status: 'ok' | 'attention' | 'critical'
   lastImportDate: string | null
   daysSinceImport: number
@@ -99,27 +95,24 @@ function useHealthData(): HealthData {
     const valorPendente = movs.filter((m: any) => !m.conciliado).reduce((s, m: any) => s + Number(m.valor), 0)
     const valorConciliado = movs.filter((m: any) => m.conciliado).reduce((s, m: any) => s + Number(m.valor), 0)
 
-    // Última importação — usar data da transação mais recente, não created_at
     const dataDates = movs.map((m: any) => m.data).filter(Boolean).sort().reverse()
     const lastImportDate = dataDates[0] ?? null
     const daysSinceImport = lastImportDate ? daysAgo(lastImportDate) : 999
 
-    // Parcelas vencidas sem conciliação
     const today = new Date().toISOString().split('T')[0]!
     const parcelasVencidasSemMatch = parcelas.filter(
       (p: any) => p.status !== 'paga' && p.data_vencimento < today && !p.data_pagamento_real
     ).length
 
-    // Score
     let score = 100
-    if (totalMovs === 0) score = 50 // sem dados
+    if (totalMovs === 0) score = 50
     else {
       const concRate = totalMovs > 0 ? conciliadas / totalMovs : 0
-      score = Math.round(concRate * 70) // até 70 pontos de conciliação
-      if (daysSinceImport <= 3) score += 20 // importação recente
+      score = Math.round(concRate * 70)
+      if (daysSinceImport <= 3) score += 20
       else if (daysSinceImport <= 7) score += 10
-      if (pendentes === 0) score += 10 // tudo limpo
-      else if (sugeridas > 0) score += 5 // tem sugestões para resolver
+      if (pendentes === 0) score += 10
+      else if (sugeridas > 0) score += 5
     }
     score = Math.max(0, Math.min(100, score))
 
@@ -133,136 +126,183 @@ function useHealthData(): HealthData {
   }, [movs, concs, parcelas])
 }
 
-// ─── Health Panel ────────────────────────────────────────────
+// ─── KPI Chip ────────────────────────────────────────────────
 
-function HealthPanel({ health, onQuickConciliar, onUpload, isProcessing }: {
+function KpiChip({ icon: Icon, label, value, sub, variant = 'muted' }: {
+  icon: typeof CheckCircle2
+  label: string
+  value: string | number
+  sub?: string
+  variant?: 'muted' | 'emerald' | 'amber' | 'blue' | 'red'
+}) {
+  const variantCls = {
+    muted: 'text-muted-foreground',
+    emerald: 'text-emerald-600',
+    amber: 'text-amber-600',
+    blue: 'text-blue-600',
+    red: 'text-red-500',
+  }[variant]
+  return (
+    <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-2.5 py-1.5">
+      <Icon className={`h-3.5 w-3.5 ${variantCls}`} />
+      <div className="leading-tight">
+        <p className="text-[9px] font-medium uppercase text-muted-foreground">{label}</p>
+        <p className="text-xs font-bold tabular-nums">
+          {value}
+          {sub && <span className="ml-1 text-[10px] font-normal text-muted-foreground">{sub}</span>}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ─── Compact Header ──────────────────────────────────────────
+
+function CompactHeader({ health, onUpload, onQuickConciliar, isProcessing }: {
   health: HealthData
-  onQuickConciliar: () => void
   onUpload: () => void
+  onQuickConciliar: () => void
   isProcessing: boolean
 }) {
-  const ringColor = health.status === 'ok' ? '#22c55e' : health.status === 'attention' ? '#f59e0b' : '#ef4444'
-  const ringBg = health.status === 'ok' ? '#22c55e20' : health.status === 'attention' ? '#f59e0b20' : '#ef444420'
+  const statusColor = health.status === 'ok' ? 'text-emerald-600' : health.status === 'attention' ? 'text-amber-500' : 'text-red-500'
+  const statusDot = health.status === 'ok' ? 'bg-emerald-500' : health.status === 'attention' ? 'bg-amber-500' : 'bg-red-500'
   const statusLabel = health.status === 'ok' ? 'Em Dia' : health.status === 'attention' ? 'Atenção' : 'Crítico'
-  const StatusIcon = health.status === 'ok' ? ShieldCheck : health.status === 'attention' ? Clock : ShieldAlert
-  const circumference = 2 * Math.PI * 42
-  const offset = circumference - (health.score / 100) * circumference
+  const pct = health.totalMovs > 0 ? Math.round((health.conciliadas / health.totalMovs) * 100) : 0
 
   return (
-    <div className="rounded-2xl border bg-gradient-to-br from-card via-card to-muted/20 p-5">
-      <div className="flex items-start gap-6">
-        {/* Score Ring */}
-        <div className="relative flex-shrink-0">
-          <svg width="100" height="100" className="-rotate-90">
-            <circle cx="50" cy="50" r="42" fill="none" stroke={ringBg} strokeWidth="6" />
-            <circle cx="50" cy="50" r="42" fill="none" stroke={ringColor} strokeWidth="6"
-              strokeDasharray={circumference} strokeDashoffset={offset}
-              strokeLinecap="round" className="transition-all duration-1000" />
-          </svg>
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <span className="text-2xl font-black tabular-nums" style={{ color: ringColor }}>{health.score}</span>
-            <span className="text-[9px] font-bold uppercase text-muted-foreground">Score</span>
+    <div className="rounded-xl border bg-card p-3">
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Title + status badge */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div>
+            <h1 className="text-base font-bold leading-tight">Conciliação Bancária</h1>
+            <p className="text-[10px] text-muted-foreground leading-tight">Concilie extratos com parcelas e medições</p>
           </div>
+          <div className={`flex items-center gap-1.5 rounded-full border bg-muted/40 px-2 py-1 text-[10px] font-bold ${statusColor}`}
+            title={`Score ${health.score}/100`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${statusDot}`} />
+            {statusLabel}
+            <span className="opacity-60">·</span>
+            <span className="tabular-nums">{health.score}</span>
+          </div>
+          {health.lastImportDate && (
+            <span className="hidden md:inline rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              Último extrato: {relativeDate(health.lastImportDate)}
+            </span>
+          )}
         </div>
 
-        {/* Status + KPIs */}
-        <div className="flex-1 min-w-0">
-          <div className="mb-3 flex items-center gap-2">
-            <StatusIcon className="h-5 w-5" style={{ color: ringColor }} />
-            <h2 className="text-lg font-bold">{statusLabel}</h2>
-            {health.lastImportDate && (
-              <span className="ml-auto rounded-full bg-muted px-2.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                Último extrato: {relativeDate(health.lastImportDate)}
-              </span>
-            )}
-          </div>
-
-          {/* Mini KPIs */}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <MiniKPI icon={CheckCircle2} label="Conciliadas" value={health.conciliadas} total={health.totalMovs} color="text-emerald-500" />
-            <MiniKPI icon={Clock} label="Pendentes" value={health.pendentes} sub={fmtCompact(health.valorPendente)} color="text-amber-500" />
-            <MiniKPI icon={FileWarning} label="Sugestões" value={health.sugeridas} color="text-blue-500" />
-            <MiniKPI icon={AlertTriangle} label="Vencidas s/ match" value={health.parcelasVencidasSemMatch} color="text-red-500" />
-          </div>
+        {/* KPIs as compact chips */}
+        <div className="flex flex-wrap items-center gap-1.5 md:ml-auto">
+          <KpiChip icon={CheckCircle2} label="Conciliadas" value={`${health.conciliadas}/${health.totalMovs}`} sub={`${pct}%`} variant="emerald" />
+          <KpiChip icon={Clock} label="Pendentes" value={health.pendentes} sub={health.pendentes > 0 ? fmtCompact(health.valorPendente) : undefined} variant={health.pendentes > 0 ? 'amber' : 'muted'} />
+          <KpiChip icon={FileWarning} label="Sugestões" value={health.sugeridas} variant={health.sugeridas > 0 ? 'blue' : 'muted'} />
+          <KpiChip icon={AlertTriangle} label="Vencidas" value={health.parcelasVencidasSemMatch} variant={health.parcelasVencidasSemMatch > 0 ? 'red' : 'muted'} />
         </div>
 
-        {/* Quick Actions */}
-        <div className="flex flex-col gap-2 flex-shrink-0">
+        {/* Actions */}
+        <div className="flex items-center gap-1.5">
           <button onClick={onUpload}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:opacity-90 transition-opacity">
-            <Upload className="h-3.5 w-3.5" />Importar Extrato
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground hover:opacity-90 transition-opacity">
+            <Upload className="h-3.5 w-3.5" />Importar
           </button>
           {health.pendentes > 0 && (
             <button onClick={onQuickConciliar} disabled={isProcessing}
-              className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors">
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors">
               {isProcessing ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
-              Conciliar Agora
-            </button>
-          )}
-          {health.sugeridas > 0 && (
-            <button className="flex items-center gap-2 rounded-lg border px-4 py-2 text-xs font-medium hover:bg-muted transition-colors"
-              onClick={() => document.getElementById('suggestions-section')?.scrollIntoView({ behavior: 'smooth' })}>
-              <ArrowRight className="h-3.5 w-3.5" />Ver {health.sugeridas} Sugestões
+              Conciliar
             </button>
           )}
         </div>
       </div>
 
-      {/* Alert Banners */}
-      {health.daysSinceImport > 7 && health.totalMovs > 0 && (
-        <div className="mt-3 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
-          <Clock className="h-3.5 w-3.5 flex-shrink-0" />
-          <span>Faz <strong>{health.daysSinceImport} dias</strong> desde o último extrato importado. Importe para manter a conciliação em dia.</span>
-        </div>
-      )}
-      {health.parcelasVencidasSemMatch > 5 && (
-        <div className="mt-2 flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-500">
-          <ShieldAlert className="h-3.5 w-3.5 flex-shrink-0" />
-          <span><strong>{health.parcelasVencidasSemMatch} parcelas</strong> vencidas sem pagamento identificado. Verifique os extratos.</span>
-        </div>
-      )}
-      {health.totalMovs === 0 && (
-        <div className="mt-3 flex items-center gap-2 rounded-lg bg-blue-500/10 px-3 py-2 text-xs text-blue-600">
-          <Activity className="h-3.5 w-3.5 flex-shrink-0" />
-          <span>Nenhum extrato importado ainda. Comece importando um arquivo OFX ou JSON acima.</span>
+      {/* Slim progress bar */}
+      {health.totalMovs > 0 && (
+        <div className="mt-2.5 flex items-center gap-2">
+          <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-700 ease-out"
+              style={{
+                width: `${pct}%`,
+                background: pct >= 90 ? '#22c55e' : pct >= 70 ? '#f59e0b' : '#ef4444',
+              }} />
+          </div>
+          <span className="text-[10px] font-bold tabular-nums text-muted-foreground">{pct}% conciliado</span>
         </div>
       )}
     </div>
   )
 }
 
-function MiniKPI({ icon: Icon, label, value, total, sub, color }: {
-  icon: typeof CheckCircle2; label: string; value: number; total?: number; sub?: string; color: string
+// ─── Smart Alerts (inline) ───────────────────────────────────
+
+function SmartAlerts({ health, onUpload }: { health: HealthData; onUpload: () => void }) {
+  const alerts: Array<{ icon: typeof Clock; cls: string; msg: React.ReactNode; onClick?: () => void }> = []
+
+  if (health.totalMovs === 0) {
+    alerts.push({
+      icon: Activity, cls: 'bg-blue-500/10 text-blue-600 hover:bg-blue-500/15',
+      msg: <>Nenhum extrato importado ainda. <strong>Importe um arquivo OFX ou JSON</strong> para começar.</>,
+      onClick: onUpload,
+    })
+  } else if (health.daysSinceImport > 7) {
+    alerts.push({
+      icon: Clock, cls: 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/15',
+      msg: <>Faz <strong>{health.daysSinceImport} dias</strong> desde o último extrato. Importe para manter em dia.</>,
+      onClick: onUpload,
+    })
+  }
+
+  if (health.parcelasVencidasSemMatch > 5) {
+    alerts.push({
+      icon: ShieldAlert, cls: 'bg-red-500/10 text-red-600',
+      msg: <><strong>{health.parcelasVencidasSemMatch} parcelas</strong> vencidas sem pagamento identificado. Verifique os extratos.</>,
+    })
+  }
+
+  if (alerts.length === 0) return null
+
+  return (
+    <div className="space-y-1.5">
+      {alerts.map((a, i) => {
+        const Comp = a.onClick ? 'button' : 'div'
+        return (
+          <Comp key={i} onClick={a.onClick as any}
+            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors ${a.cls} ${a.onClick ? 'cursor-pointer text-left' : ''}`}>
+            <a.icon className="h-3.5 w-3.5 flex-shrink-0" />
+            <span className="flex-1">{a.msg}</span>
+          </Comp>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─── Collapsible Section ─────────────────────────────────────
+
+function CollapsibleSection({
+  title, icon: Icon, badge, defaultOpen = false, children,
+}: {
+  title: string
+  icon: typeof CheckCircle2
+  badge?: string
+  defaultOpen?: boolean
+  children: React.ReactNode
 }) {
+  const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="rounded-lg bg-muted/50 px-3 py-2">
-      <div className="flex items-center gap-1.5">
-        <Icon className={`h-3 w-3 ${color}`} />
-        <span className="text-[10px] font-medium text-muted-foreground">{label}</span>
-      </div>
-      <p className="mt-0.5 text-lg font-bold tabular-nums">
-        {value}
-        {total != null && <span className="text-xs font-normal text-muted-foreground">/{total}</span>}
-      </p>
-      {sub && <p className="text-[10px] text-muted-foreground">{sub}</p>}
-    </div>
-  )
-}
-
-// ─── Conciliation Progress Bar ───────────────────────────────
-
-function ConcProgressBar({ conciliadas, total }: { conciliadas: number; total: number }) {
-  const pct = total > 0 ? Math.round((conciliadas / total) * 100) : 0
-  return (
-    <div className="flex items-center gap-3">
-      <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-700 ease-out"
-          style={{
-            width: `${pct}%`,
-            background: pct >= 90 ? '#22c55e' : pct >= 70 ? '#f59e0b' : '#ef4444',
-          }} />
-      </div>
-      <span className="text-xs font-bold tabular-nums text-muted-foreground">{pct}%</span>
+    <div className="rounded-xl border bg-card overflow-hidden">
+      <button onClick={() => setOpen(o => !o)}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-muted/30 transition-colors">
+        {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+        <Icon className="h-4 w-4 text-primary" />
+        <span className="text-sm font-bold">{title}</span>
+        {badge && (
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {badge}
+          </span>
+        )}
+      </button>
+      {open && <div className="border-t bg-muted/10">{children}</div>}
     </div>
   )
 }
@@ -287,10 +327,6 @@ function DropZone({ onFile }: { onFile: (f: File) => void }) {
     </label>
   )
 }
-
-// ─── Match Row ───────────────────────────────────────────────
-
-// Removed MatchRow
 
 // ─── Batch Actions Bar ───────────────────────────────────────
 
@@ -333,11 +369,9 @@ export default function ConciliacaoPage() {
   const [step, setStep] = useState<'upload' | 'preview' | 'conciliacao'>('upload')
   const [showUploadPanel, setShowUploadPanel] = useState(false)
   const [batchProcessing, setBatchProcessing] = useState(false)
-  const [activeTab, setActiveTab] = useState<TabKey>('extrato')
 
   const isProcessing = importExtrato.isPending || runConciliacao.isPending || confirmConc.isPending || batchProcessing
 
-  // Auto-select first account
   const effectiveContaId = contaId || contas[0]?.id || ''
 
   const handleFile = useCallback(async (file: File) => {
@@ -358,9 +392,7 @@ export default function ConciliacaoPage() {
 
   const doImportAndReconcile = async () => {
     if (!parseResult || !effectiveContaId) return
-    // Step 1: Import
     await importExtrato.mutateAsync({ parseResult, contaId: effectiveContaId })
-    // Step 2: Auto-reconcile immediately after import
     const result = await runConciliacao.mutateAsync({})
     setReconcResult(result)
     setStep('conciliacao')
@@ -375,7 +407,6 @@ export default function ConciliacaoPage() {
     setShowUploadPanel(false)
   }
 
-  // Batch confirm high-confidence matches
   const doBatchConfirm = async () => {
     if (!reconcResult) return
     setBatchProcessing(true)
@@ -398,54 +429,24 @@ export default function ConciliacaoPage() {
     if (!reconcResult) return 0
     return reconcResult.matches.filter(m => m.confidence >= 90 && m.matchType !== 'none').length
   }, [reconcResult])
-  return (
-    <div className="mx-auto max-w-7xl space-y-5 p-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">Conciliação Bancária</h1>
-          <p className="text-xs text-muted-foreground">Importe extratos e concilie com parcelas e medições</p>
-        </div>
-        {health.totalMovs > 0 && (
-          <ConcProgressBar conciliadas={health.conciliadas} total={health.totalMovs} />
-        )}
-      </div>
 
-      {/* Health Panel — always visible */}
-      <HealthPanel
+  const onToggleUpload = useCallback(() => setShowUploadPanel(v => !v), [])
+
+  return (
+    <div className="mx-auto max-w-7xl space-y-4 p-6">
+      {/* 1. Compact header (saldos + KPIs + ações) */}
+      <CompactHeader
         health={health}
+        onUpload={onToggleUpload}
         onQuickConciliar={doQuickConciliar}
-        onUpload={() => setShowUploadPanel(v => !v)}
         isProcessing={isProcessing}
       />
 
-      {/* Tabs */}
-      <div className="flex items-center gap-1 border-b overflow-x-auto">
-        {[
-          { key: 'extrato' as TabKey, label: 'Extrato da Conta', icon: ListOrdered },
-          { key: 'saldo' as TabKey, label: 'Composição do Saldo', icon: Scale },
-          { key: 'contas' as TabKey, label: 'Contas Bancárias', icon: CreditCard },
-        ].map(t => (
-          <button key={t.key} onClick={() => setActiveTab(t.key)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-colors ${
-              activeTab === t.key
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/40'
-            }`}>
-            <t.icon className="h-3.5 w-3.5" />
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* 2. Smart alerts (only when relevant) */}
+      <SmartAlerts health={health} onUpload={onToggleUpload} />
 
-      {/* Tab: Saldo */}
-      {activeTab === 'saldo' && <SaldoComposicao />}
-
-      {/* Tab: Contas Bancárias (CRUD) */}
-      {activeTab === 'contas' && <ContasTab search="" />}
-
-      {/* Upload Panel — visible across tabs when toggled */}
-      {(showUploadPanel || step === 'upload' && health.totalMovs === 0) && (
+      {/* 3. Upload panel — só quando o usuário pede */}
+      {(showUploadPanel || (step === 'upload' && health.totalMovs === 0)) && (
         <div className="rounded-xl border bg-card p-5 space-y-4">
           <div className="flex items-center gap-4">
             <div className="flex-1">
@@ -465,10 +466,7 @@ export default function ConciliacaoPage() {
         </div>
       )}
 
-      {/* Extratos Manager — always visible when there are movements */}
-      {movimentacoes.length > 0 && step !== 'preview' && (
-        <ExtratosManager movimentacoes={movimentacoes} onRefresh={doQuickConciliar} />
-      )}
+      {/* 4. Preview do extrato parseado (antes do import) */}
       {parseResult && step === 'preview' && (
         <div className="rounded-xl border bg-card">
           <div className="flex items-center justify-between border-b p-4">
@@ -485,7 +483,6 @@ export default function ConciliacaoPage() {
               className="rounded-lg border px-3 py-1.5 text-xs hover:bg-muted">Descartar</button>
           </div>
 
-          {/* Summary cards for the statement */}
           <div className="grid grid-cols-4 gap-3 p-4 border-b">
             <div className="rounded-lg bg-emerald-500/5 p-3 text-center">
               <TrendingUp className="mx-auto h-4 w-4 text-emerald-500 mb-1" />
@@ -543,14 +540,48 @@ export default function ConciliacaoPage() {
         </div>
       )}
 
-      {/* Tab: Extrato (default) — painel lateral contextual integrado */}
-      {activeTab === 'extrato' && step !== 'preview' && (
+      {/* 5. MAIN: tabela de extrato (acima da dobra) */}
+      {step !== 'preview' && (
         <>
           <BatchBar highConfCount={highConfCount} onBatchConfirm={doBatchConfirm} disabled={isProcessing} />
           <ExtratoContaView />
         </>
       )}
 
+      {/* 6. Seções secundárias (accordions, fechadas por padrão) */}
+      {step !== 'preview' && (
+        <div className="space-y-2 pt-2">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground px-1">
+            Outras visões
+          </p>
+
+          {movimentacoes.length > 0 && (
+            <CollapsibleSection
+              title="Extratos Importados"
+              icon={FileText}
+              badge={`${movimentacoes.length} movimentações`}
+            >
+              <ExtratosManager movimentacoes={movimentacoes} onRefresh={doQuickConciliar} />
+            </CollapsibleSection>
+          )}
+
+          <CollapsibleSection title="Composição do Saldo" icon={Scale}>
+            <div className="p-4">
+              <SaldoComposicao />
+            </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection
+            title="Contas Bancárias"
+            icon={CreditCard}
+            badge={`${contas.length} conta(s)`}
+          >
+            <div className="p-4">
+              <ContasTab search="" />
+            </div>
+          </CollapsibleSection>
+        </div>
+      )}
     </div>
   )
 }
