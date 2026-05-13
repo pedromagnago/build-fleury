@@ -622,8 +622,17 @@ function PedidosTab({ search }: { search: string }) {
   const [pedidoViewMode, setPedidoViewMode] = useState<'pedido' | 'etapa'>('pedido')
   const [expandedCascade, setExpandedCascade] = useState<Record<string, boolean>>({})
   const [expandedParcelas, setExpandedParcelas] = useState<Set<string>>(new Set())
+  // PR 3.4: pedidos colapsados por padrão. Set guarda os EXPANDIDOS (vazio = todos colapsados).
+  const [expandedPedidos, setExpandedPedidos] = useState<Set<string>>(new Set())
   const toggleCascade = (k: string) => setExpandedCascade(p => ({ ...p, [k]: !p[k] }))
   const toggleParcelas = (k: string) => setExpandedParcelas(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
+  const togglePedido = (k: string) => setExpandedPedidos(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
+  const expandirTodosPedidos = () => setExpandedPedidos(new Set(grouped.map(g => g.name)))
+  const colapsarTodosPedidos = () => setExpandedPedidos(new Set())
+  // PR 3.4: filtros da aba Pedidos
+  const [filtroStatus, setFiltroStatus] = useState<string>('')
+  const [filtroFornecedor, setFiltroFornecedor] = useState<string>('')
+  const [filtroOrigem, setFiltroOrigem] = useState<'todos' | 'nf' | 'manual'>('todos')
 
   const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'], observacoes: '' }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
@@ -1172,12 +1181,23 @@ function PedidosTab({ search }: { search: string }) {
 
   const filtered = pedidos.filter((p) => {
     const s = search.toLowerCase()
-    return (
-      (p.item_descricao ?? '').toLowerCase().includes(s) ||
-      (p.item_codigo ?? '').toLowerCase().includes(s) ||
-      (p.fornecedor_nome ?? '').toLowerCase().includes(s) ||
-      (p.numero_pedido?.toString() ?? '').includes(s)
-    )
+    if (s) {
+      const matchTxt =
+        (p.item_descricao ?? '').toLowerCase().includes(s) ||
+        (p.item_codigo ?? '').toLowerCase().includes(s) ||
+        (p.fornecedor_nome ?? '').toLowerCase().includes(s) ||
+        (p.numero_pedido?.toString() ?? '').includes(s) ||
+        (p.itens ?? []).some(pi =>
+          (pi.item_descricao ?? '').toLowerCase().includes(s) ||
+          (pi.item_codigo ?? '').toLowerCase().includes(s)
+        )
+      if (!matchTxt) return false
+    }
+    if (filtroStatus && p.status !== filtroStatus) return false
+    if (filtroFornecedor && p.fornecedor_id !== filtroFornecedor) return false
+    if (filtroOrigem === 'nf' && !p.nf_origem_id) return false
+    if (filtroOrigem === 'manual' && p.nf_origem_id) return false
+    return true
   })
 
   const grouped = useMemo(() => {
@@ -1190,8 +1210,15 @@ function PedidosTab({ search }: { search: string }) {
     })
     
     return Array.from(map.entries()).map(([name, items]) => {
-      return { 
-         name, 
+      // Agrega quantidade e recebido somando todos os pedido_itens dos pedidos do grupo
+      const allItens = items.flatMap(p => p.itens ?? [])
+      const totalQtd = allItens.reduce((s, pi) => s + Number(pi.qtd ?? 0), 0)
+      const totalRecebida = allItens.reduce((s, pi) => s + Number(pi.qtd_recebida ?? 0), 0)
+      const pctRecebido = totalQtd > 0 ? (totalRecebida / totalQtd) * 100 : 0
+      const totalItensDistintos = allItens.length || items.length
+      const temNF = items.some(p => !!p.nf_origem_id)
+      return {
+         name,
          items,
          numero: items[0]?.numero_pedido ?? 0,
          created_at: items[0]?.created_at ?? '',
@@ -1199,7 +1226,12 @@ function PedidosTab({ search }: { search: string }) {
          cond_pagamento: items[0]?.cond_pagamento,
          data_entrega: items[0]?.data_entrega_prevista,
          status: items[0]?.status ?? 'planejado',
-         total: items.reduce((sum, i) => sum + (i.valor_total_real ?? 0), 0)
+         total: items.reduce((sum, i) => sum + (i.valor_total_real ?? 0), 0),
+         totalQtd,
+         totalRecebida,
+         pctRecebido,
+         totalItensDistintos,
+         temNF,
       }
     }).sort((a, b) => {
       if (a.numero !== b.numero) return b.numero - a.numero
@@ -1242,12 +1274,57 @@ function PedidosTab({ search }: { search: string }) {
       eg.itemMap.get(item.id)!.pedidos.push(p)
     })
 
+    // Helper: agrega qtd, qtd_recebida e valor a partir de pedido.itens[] (ou fallback legacy)
+    const agregaPedido = (p: Pedido) => {
+      if (p.itens && p.itens.length > 0) {
+        return p.itens.reduce(
+          (acc, pi) => ({
+            qtd: acc.qtd + Number(pi.qtd ?? 0),
+            recebida: acc.recebida + Number(pi.qtd_recebida ?? 0),
+            valor: acc.valor + Number(pi.valor_total_real ?? 0),
+          }),
+          { qtd: 0, recebida: 0, valor: 0 }
+        )
+      }
+      return {
+        qtd: Number(p.qtd_lote ?? 0),
+        recebida: p.status === 'entregue' || p.status === 'pago' || p.status === 'parcialmente_pago' ? Number(p.qtd_lote ?? 0) : 0,
+        valor: Number(p.valor_total_real ?? 0),
+      }
+    }
+
     return Array.from(etapaMap.values())
-      .map(eg => ({
-        ...eg.etapa,
-        items: Array.from(eg.itemMap.values()).sort((a, b) => (a.item.codigo ?? '').localeCompare(b.item.codigo ?? '')),
-        total: Array.from(eg.itemMap.values()).reduce((s, ig) => s + ig.pedidos.reduce((si, p) => si + (p.valor_total_real ?? 0), 0), 0),
-      }))
+      .map(eg => {
+        const items = Array.from(eg.itemMap.values())
+          .map(ig => {
+            const agg = ig.pedidos.reduce(
+              (acc, p) => {
+                const a = agregaPedido(p)
+                return { qtd: acc.qtd + a.qtd, recebida: acc.recebida + a.recebida, valor: acc.valor + a.valor }
+              },
+              { qtd: 0, recebida: 0, valor: 0 }
+            )
+            return {
+              ...ig,
+              totalQtd: agg.qtd,
+              totalRecebida: agg.recebida,
+              totalValor: agg.valor,
+              pctRecebido: agg.qtd > 0 ? (agg.recebida / agg.qtd) * 100 : 0,
+            }
+          })
+          .sort((a, b) => (a.item.codigo ?? '').localeCompare(b.item.codigo ?? ''))
+        const totQtd = items.reduce((s, ig) => s + ig.totalQtd, 0)
+        const totRec = items.reduce((s, ig) => s + ig.totalRecebida, 0)
+        const totVal = items.reduce((s, ig) => s + ig.totalValor, 0)
+        return {
+          ...eg.etapa,
+          items,
+          total: totVal,
+          totalQtd: totQtd,
+          totalRecebida: totRec,
+          pctRecebido: totQtd > 0 ? (totRec / totQtd) * 100 : 0,
+        }
+      })
       .sort((a, b) => (a.codigo ?? '').localeCompare(b.codigo ?? ''))
   }, [filtered, itens, etapas])
 
@@ -1278,7 +1355,7 @@ function PedidosTab({ search }: { search: string }) {
         })())} accent="amber" />
       </div>
 
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center rounded-lg border bg-muted/30 p-0.5 gap-0.5">
           <button
             onClick={() => setPedidoViewMode('pedido')}
@@ -1297,6 +1374,37 @@ function PedidosTab({ search }: { search: string }) {
           <Plus className="h-4 w-4" /> Novo Pedido
         </button>
       </div>
+
+      {/* Filtros — só pra view Por Pedido (cascata tem seus próprios) */}
+      {pedidoViewMode === 'pedido' && (
+        <div className="mb-3 flex items-center gap-2 flex-wrap text-xs">
+          <select value={filtroStatus} onChange={e => setFiltroStatus(e.target.value)} className="rounded border bg-background px-2 py-1">
+            <option value="">Status: todos</option>
+            <option value="planejado">Planejado</option>
+            <option value="pedido_enviado">Enviado</option>
+            <option value="parcialmente_entregue">Parc. entregue</option>
+            <option value="entregue">Entregue</option>
+            <option value="parcialmente_pago">Parc. pago</option>
+            <option value="pago">Pago</option>
+            <option value="cancelado">Cancelado</option>
+          </select>
+          <select value={filtroFornecedor} onChange={e => setFiltroFornecedor(e.target.value)} className="rounded border bg-background px-2 py-1 max-w-[200px]">
+            <option value="">Fornecedor: todos</option>
+            {fornecedores.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
+          </select>
+          <select value={filtroOrigem} onChange={e => setFiltroOrigem(e.target.value as any)} className="rounded border bg-background px-2 py-1">
+            <option value="todos">Origem: todos</option>
+            <option value="nf">Via NF</option>
+            <option value="manual">Manual</option>
+          </select>
+          {(filtroStatus || filtroFornecedor || filtroOrigem !== 'todos') && (
+            <button onClick={() => { setFiltroStatus(''); setFiltroFornecedor(''); setFiltroOrigem('todos') }} className="rounded border px-2 py-1 text-[11px] hover:bg-muted">Limpar filtros</button>
+          )}
+          <span className="text-[10px] text-muted-foreground ml-auto">{filtered.length} pedido(s)</span>
+          <button onClick={expandirTodosPedidos} className="rounded border px-2 py-1 text-[11px] hover:bg-muted" title="Expandir todos os pedidos visíveis"><ChevronDown className="inline h-3 w-3" /> Expandir todos</button>
+          <button onClick={colapsarTodosPedidos} className="rounded border px-2 py-1 text-[11px] hover:bg-muted" title="Colapsar todos os pedidos"><ChevronRight className="inline h-3 w-3" /> Colapsar todos</button>
+        </div>
+      )}
 
       {/* Enhanced form with etapa-based item picker */}
       {showForm && (
@@ -1650,18 +1758,44 @@ function PedidosTab({ search }: { search: string }) {
               </tr>
             </thead>
             <tbody>
-              {grouped.map(group => (
+              {grouped.map(group => {
+                const isExpanded = expandedPedidos.has(group.name)
+                return (
                 <React.Fragment key={group.name}>
                   {/* Header Row */}
-                  <tr className="bg-muted/30 font-semibold border-t">
+                  <tr className={`bg-muted/30 font-semibold border-t ${isExpanded ? '' : 'hover:bg-muted/40 cursor-pointer'}`}
+                      onClick={() => !isExpanded && togglePedido(group.name)}>
                     <td className="px-3 py-2 text-center border-b">
+                      <button
+                        onClick={e => { e.stopPropagation(); togglePedido(group.name) }}
+                        className="rounded p-0.5 hover:bg-accent text-muted-foreground"
+                        title={isExpanded ? 'Colapsar itens' : 'Expandir itens'}
+                      >
+                        {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                      </button>
                     </td>
                     <td className="px-3 py-2 border-b" colSpan={2}>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                          <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-1 text-xs font-bold text-primary">
                            {group.name}
                          </span>
                          <span className="text-[10px] text-muted-foreground">{group.fornecedor ?? '—'}</span>
+                         {/* Chip resumo dos itens — visível principalmente quando colapsado */}
+                         <span className="text-[9px] rounded bg-muted text-muted-foreground px-1.5 py-0.5">
+                           {group.totalItensDistintos} {group.totalItensDistintos === 1 ? 'item' : 'itens'}
+                         </span>
+                         {group.totalQtd > 0 && (
+                           <span className={`text-[9px] rounded px-1.5 py-0.5 font-mono ${
+                             group.pctRecebido >= 99.9 ? 'bg-emerald-500/15 text-emerald-700' :
+                             group.pctRecebido > 0 ? 'bg-amber-500/15 text-amber-700' :
+                             'bg-muted text-muted-foreground'
+                           }`} title={`${formatNumber(group.totalRecebida, 2, 2)} de ${formatNumber(group.totalQtd, 2, 2)} un recebido`}>
+                             {Math.round(group.pctRecebido)}% receb.
+                           </span>
+                         )}
+                         {group.temNF && (
+                           <span className="text-[9px] rounded bg-blue-500/15 text-blue-700 px-1.5 py-0.5" title="Pedido criado/consumido via NF">via NF</span>
+                         )}
                       </div>
                     </td>
                     <td className="px-3 py-2 border-b" colSpan={3}>
@@ -1736,8 +1870,9 @@ function PedidosTab({ search }: { search: string }) {
                       Pedidos legacy ainda sem pedido_itens carregados caem no
                       array vazio e renderizam 1 linha com dados do header.
                       Ações (editar/duplicar/excluir) ficam na PRIMEIRA linha de
-                      cada pedido — são escopo de pedido, não de item. */}
-                  {group.items.flatMap(p => {
+                      cada pedido — são escopo de pedido, não de item.
+                      Só renderiza quando expandido (PR 3.4a). */}
+                  {isExpanded && group.items.flatMap(p => {
                     const itensDoPedido = (p.itens && p.itens.length > 0)
                       ? p.itens
                       : [{
@@ -1803,15 +1938,20 @@ function PedidosTab({ search }: { search: string }) {
                     })
                   })}
                 </React.Fragment>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>
       ) : (
-        /* #18: Cascade View — Etapa → Item → Pedidos */
+        /* #18: Cascade View — Etapa → Item → Pedidos.
+              Headers de etapa e item agora carregam qtd / recebida / % e cor de status. */
         <div className="space-y-2">
           {cascadeGrouped.map(etapaG => {
             const etapaKey = `et-${etapaG.id}`
+            const etapaCor = etapaG.pctRecebido >= 99.9 ? 'bg-emerald-500/15 text-emerald-700'
+              : etapaG.pctRecebido > 0 ? 'bg-amber-500/15 text-amber-700'
+              : 'bg-muted text-muted-foreground'
             return (
               <div key={etapaG.id} className="rounded-xl border bg-card">
                 <button
@@ -1821,15 +1961,24 @@ function PedidosTab({ search }: { search: string }) {
                   {expandedCascade[etapaKey] ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
                   <span className="text-[10px] font-mono text-muted-foreground shrink-0">{etapaG.codigo}</span>
                   <span className="text-sm font-semibold truncate flex-1">{etapaG.nome}</span>
-                  <span className="text-[10px] text-muted-foreground shrink-0">({etapaG.items.length} itens)</span>
-                  <span className="text-sm font-bold text-primary shrink-0">{formatCurrency(etapaG.total)}</span>
+                  <span className="text-[10px] text-muted-foreground shrink-0">{etapaG.items.length} {etapaG.items.length === 1 ? 'item' : 'itens'}</span>
+                  {etapaG.totalQtd > 0 && (
+                    <span className={`text-[10px] rounded px-1.5 py-0.5 font-mono shrink-0 ${etapaCor}`}
+                      title={`${formatNumber(etapaG.totalRecebida, 2, 2)} de ${formatNumber(etapaG.totalQtd, 2, 2)} un recebido`}>
+                      {Math.round(etapaG.pctRecebido)}% receb.
+                    </span>
+                  )}
+                  <span className="text-sm font-bold text-primary shrink-0 w-24 text-right">{formatCurrency(etapaG.total)}</span>
                 </button>
 
                 {expandedCascade[etapaKey] && (
                   <div className="border-t divide-y divide-border/40">
-                    {etapaG.items.map(({ item, pedidos: itemPedidos }) => {
+                    {etapaG.items.map(ig => {
+                      const { item, pedidos: itemPedidos } = ig
                       const itemKey = `it-${item.id}`
-                      const itemTotal = itemPedidos.reduce((s, p) => s + (p.valor_total_real ?? 0), 0)
+                      const itemCor = ig.pctRecebido >= 99.9 ? 'bg-emerald-500/15 text-emerald-700'
+                        : ig.pctRecebido > 0 ? 'bg-amber-500/15 text-amber-700'
+                        : 'bg-muted text-muted-foreground'
                       return (
                         <div key={item.id}>
                           <button
@@ -1840,7 +1989,13 @@ function PedidosTab({ search }: { search: string }) {
                             <span className="text-[10px] font-mono text-muted-foreground shrink-0">{item.codigo}</span>
                             <span className="text-xs font-medium truncate flex-1">{item.descricao}</span>
                             <span className="text-[10px] text-muted-foreground shrink-0">{itemPedidos.length} ped.</span>
-                            <span className="text-xs font-semibold text-amber-600 shrink-0">{formatCurrency(itemTotal)}</span>
+                            {ig.totalQtd > 0 && (
+                              <span className={`text-[9px] rounded px-1.5 py-0.5 font-mono shrink-0 ${itemCor}`}
+                                title={`${formatNumber(ig.totalRecebida, 2, 2)} / ${formatNumber(ig.totalQtd, 2, 2)} un`}>
+                                {Math.round(ig.pctRecebido)}%
+                              </span>
+                            )}
+                            <span className="text-xs font-semibold text-amber-600 shrink-0 w-24 text-right">{formatCurrency(ig.totalValor)}</span>
                           </button>
 
                           {expandedCascade[itemKey] && (
