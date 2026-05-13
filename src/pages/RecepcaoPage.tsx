@@ -13,6 +13,8 @@ import { parseNfeXml } from '@/lib/recepcao/xmlNfeParser'
 import { extrairDoc, searchItensCompra, fileToBase64, carregarAliasesFornecedor, aplicarBoostHistorico, resolverFornecedorLocal, type ItemMatchSugerido, type AliasMap } from '@/lib/recepcao/api'
 import { indexarEmbeddingsPendentes, embedQuery } from '@/lib/recepcao/indexador'
 import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
+import { pdfFileToText } from '@/lib/recepcao/pdfText'
+import { ItemPickerCombobox } from '@/components/recepcao/ItemPickerCombobox'
 import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle } from 'lucide-react'
 import { useEtapas } from '@/hooks/useEtapas'
 
@@ -211,36 +213,60 @@ export default function RecepcaoPage() {
           custo_cents: r._meta?.custo_cents,
         })
       } else if (ext === 'pdf') {
-        // PDF: render cada pagina como imagem e processa em paralelo
-        toast.info('Convertendo PDF em imagens…')
-        const paginas = await pdfFileToImages(file)
-        if (paginas.length === 0) {
-          toast.error('PDF sem páginas')
-          return
+        // PDF: tenta primeiro extrair TEXTO NATIVO (gerado por sistema). Se o PDF
+        // foi escaneado (sem texto), cai pro fluxo de rasterizar e mandar pra Vision.
+        // Texto nativo é dramaticamente mais preciso e mais barato pra tabelas de NF.
+        toast.info('Lendo PDF…')
+        let textoPdf: Awaited<ReturnType<typeof pdfFileToText>>
+        try {
+          textoPdf = await pdfFileToText(file)
+        } catch (err) {
+          console.warn('Falha ao ler texto nativo do PDF, indo pra Vision:', err)
+          textoPdf = { texto: '', paginas: 0, total_chars: 0, tem_texto_nativo: false }
         }
-        toast.info(`Extraindo ${paginas.length} página(s) com IA…`)
-        // Chama IA em paralelo (1 chamada por página). Para 1 página, eh equivalente.
-        const resultados = await Promise.all(paginas.map(p => extrairDoc({
-          kind: 'imagem',
-          content: p.base64,
-          prompt_extra: paginas.length > 1 ? `Esta eh a pagina ${p.pagina} de ${paginas.length} de uma NF.` : undefined,
-        })))
-        // Consolida: usa fornecedor/documento da primeira pagina, junta TODOS os itens
-        const r0 = resultados[0]!
-        const itensConsolidados = resultados.flatMap((r, idx) =>
-          (r.itens ?? []).map((it, j) => ({ ...it, ordem: idx * 1000 + (it.ordem ?? j + 1) }))
-        )
-        // Soma custo
-        const custoTotalCents = resultados.reduce((s, r) => s + (r._meta?.custo_cents ?? 0), 0)
-        await iniciarRevisao({
-          fornecedor: r0.fornecedor,
-          documento: r0.documento,
-          itens: itensConsolidados,
-          observacoes: r0.observacoes,
-          origem: 'imagem',
-          modelo: r0._meta?.modelo,
-          custo_cents: custoTotalCents,
-        })
+        if (textoPdf.tem_texto_nativo) {
+          toast.info(`PDF com texto nativo (${textoPdf.total_chars.toLocaleString('pt-BR')} chars) — extraindo direto, sem Vision.`)
+          const r = await extrairDoc({ kind: 'texto', content: textoPdf.texto })
+          await iniciarRevisao({
+            fornecedor: r.fornecedor,
+            documento: r.documento,
+            itens: r.itens,
+            observacoes: r.observacoes,
+            origem: 'texto',
+            modelo: r._meta?.modelo,
+            custo_cents: r._meta?.custo_cents,
+          })
+        } else {
+          // PDF escaneado (foto digitalizada) — sem texto extraível. Rasteriza e usa Vision.
+          toast.info('PDF sem texto nativo (escaneado) — convertendo em imagens pra IA Vision…')
+          const paginas = await pdfFileToImages(file)
+          if (paginas.length === 0) {
+            toast.error('PDF sem páginas')
+            return
+          }
+          toast.info(`Extraindo ${paginas.length} página(s) com IA Vision…`)
+          // Chama IA em paralelo (1 chamada por página). Para 1 página, eh equivalente.
+          const resultados = await Promise.all(paginas.map(p => extrairDoc({
+            kind: 'imagem',
+            content: p.base64,
+            prompt_extra: paginas.length > 1 ? `Esta eh a pagina ${p.pagina} de ${paginas.length} de uma NF.` : undefined,
+          })))
+          // Consolida: usa fornecedor/documento da primeira pagina, junta TODOS os itens
+          const r0 = resultados[0]!
+          const itensConsolidados = resultados.flatMap((r, idx) =>
+            (r.itens ?? []).map((it, j) => ({ ...it, ordem: idx * 1000 + (it.ordem ?? j + 1) }))
+          )
+          const custoTotalCents = resultados.reduce((s, r) => s + (r._meta?.custo_cents ?? 0), 0)
+          await iniciarRevisao({
+            fornecedor: r0.fornecedor,
+            documento: r0.documento,
+            itens: itensConsolidados,
+            observacoes: r0.observacoes,
+            origem: 'imagem',
+            modelo: r0._meta?.modelo,
+            custo_cents: custoTotalCents,
+          })
+        }
       } else {
         toast.error(`Formato nao suportado (${ext}). Use XML, PDF, JPG, PNG ou WEBP.`)
       }
@@ -367,6 +393,23 @@ export default function RecepcaoPage() {
     setExtracao(prev => prev ? {
       ...prev,
       itens: prev.itens.map(l => (l.precisaConfirmar && !l.confirmado) ? { ...l, confirmado: true, precisaConfirmar: false } : l)
+    } : prev)
+  }
+
+  // Handler unificado: operador escolheu um item do orçamento pra esta linha da NF.
+  // Substitui as 2 lógicas duplicadas dos antigos <select> de sugestões.
+  const escolherItemParaLinha = (idx: number, novoItemId: string | null) => {
+    const pedidoExistente = novoItemId ? pedidos.find(p => p.item_compra_id === novoItemId && p.status === 'planejado') : undefined
+    setExtracao(prev => prev ? {
+      ...prev,
+      itens: prev.itens.map((l, i) => i === idx ? {
+        ...l,
+        item_compra_id: novoItemId,
+        pedido_substituido_id: pedidoExistente?.id ?? null,
+        acao: pedidoExistente ? 'substituir_pedido' : (l.acao === 'substituir_pedido' ? 'criar_pedido' : (l.acao ?? 'criar_pedido')),
+        confirmado: true,
+        precisaConfirmar: false,
+      } : l)
     } : prev)
   }
 
@@ -967,118 +1010,76 @@ export default function RecepcaoPage() {
                           <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
                             <Loader2 className="h-3 w-3 animate-spin" /> buscando…
                           </span>
-                        ) : itemSelecionado ? (
-                          <div>
-                            <div className="font-medium text-[11px]">{itemSelecionado.descricao}</div>
-                            <div className="flex items-center gap-1 text-[9px] text-muted-foreground flex-wrap">
-                              <span>{itemSelecionado.codigo}</span>
-                              {sugTop && (
-                                <span
-                                  className={`inline-flex items-center gap-0.5 rounded px-1 ${zona === 'alta' ? 'bg-emerald-500/15 text-emerald-700' : zona === 'media' ? 'bg-amber-500/15 text-amber-700' : 'bg-muted text-muted-foreground'}`}
-                                  title={zona === 'alta' ? 'Alta confiança — auto-vinculado' : zona === 'media' ? 'Média confiança — requer confirmação' : 'Baixa confiança'}
-                                >
-                                  {zona === 'alta' && <ShieldCheck className="h-2.5 w-2.5" />}
-                                  {zona === 'media' && <HelpCircle className="h-2.5 w-2.5" />}
-                                  {Math.round(sugTop.score_combined * 100)}%
-                                </span>
-                              )}
-                              {sugTop?.match_historico && (
-                                <span className="inline-flex items-center gap-0.5 rounded bg-blue-500/15 text-blue-700 px-1" title={sugTop.score_original != null ? `Item recorrente deste fornecedor (histórico). Score base: ${Math.round(sugTop.score_original * 100)}%` : 'Item recorrente deste fornecedor (histórico)'}>
-                                  <Database className="h-2.5 w-2.5" /> histórico
-                                </span>
-                              )}
-                              {linha.confirmado && !precisaConf && (
-                                <span className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 text-emerald-700 px-1" title="Confirmado">
-                                  <Check className="h-2.5 w-2.5" /> ok
-                                </span>
-                              )}
-                              {pedidoSel && <span className="rounded bg-blue-500/15 text-blue-700 px-1">→ #{pedidoSel.numero_pedido} (subst.)</span>}
-                            </div>
-                            {(() => {
-                              const avisos = calcularAvisos(linha, itemSelecionado)
-                              if (avisos.length === 0) return null
-                              return (
-                                <div className="mt-1 flex gap-1 flex-wrap">
-                                  {avisos.map((a, i) => (
-                                    <span
-                                      key={i}
-                                      className={`inline-flex items-center gap-0.5 rounded px-1 text-[9px] ${a.severidade === 'red' ? 'bg-red-500/15 text-red-700' : 'bg-amber-500/15 text-amber-700'}`}
-                                      title={a.detalhe ?? ''}
-                                    >
-                                      <AlertTriangle className="h-2.5 w-2.5" /> {a.texto}
-                                    </span>
-                                  ))}
-                                </div>
-                              )
-                            })()}
-                            {precisaConf && (
-                              <button
-                                onClick={() => {
-                                  setExtracao(prev => prev ? {
-                                    ...prev,
-                                    itens: prev.itens.map((l, i) => i === idx ? { ...l, confirmado: true, precisaConfirmar: false } : l)
-                                  } : prev)
-                                }}
-                                className="mt-1 inline-flex items-center gap-1 rounded bg-amber-500 hover:bg-amber-600 text-white px-1.5 py-0.5 text-[10px] font-bold"
-                                title="Confirmar este match"
-                              >
-                                <Check className="h-2.5 w-2.5" /> Confirmar match
-                              </button>
-                            )}
-                            <select
-                              value={linha.item_compra_id ?? ''}
-                              onChange={e => {
-                                const novoItemId = e.target.value || null
-                                const pedidoExistente = novoItemId ? pedidos.find(p => p.item_compra_id === novoItemId && p.status === 'planejado') : undefined
-                                setExtracao(prev => prev ? {
-                                  ...prev,
-                                  itens: prev.itens.map((l, i) => i === idx ? {
-                                    ...l,
-                                    item_compra_id: novoItemId,
-                                    pedido_substituido_id: pedidoExistente?.id ?? null,
-                                    acao: pedidoExistente ? 'substituir_pedido' : (l.acao === 'substituir_pedido' ? 'criar_pedido' : l.acao),
-                                    confirmado: true,
-                                    precisaConfirmar: false,
-                                  } : l)
-                                } : prev)
-                              }}
-                              className="mt-1 w-full rounded border bg-background px-1 py-0.5 text-[10px]"
-                            >
-                              {linha.sugestoesItens?.map(s => (
-                                <option key={s.item_id} value={s.item_id}>{s.descricao} ({Math.round(s.score_combined * 100)}%)</option>
-                              ))}
-                            </select>
-                          </div>
-                        ) : linha.sugestoesItens && linha.sugestoesItens.length > 0 ? (
-                          <select
-                            value={''}
-                            onChange={e => {
-                              const novoItemId = e.target.value
-                              const pedidoExistente = novoItemId ? pedidos.find(p => p.item_compra_id === novoItemId && p.status === 'planejado') : undefined
-                              setExtracao(prev => prev ? {
-                                ...prev,
-                                itens: prev.itens.map((l, i) => i === idx ? {
-                                  ...l,
-                                  item_compra_id: novoItemId,
-                                  pedido_substituido_id: pedidoExistente?.id ?? null,
-                                  acao: pedidoExistente ? 'substituir_pedido' : 'criar_pedido',
-                                  confirmado: true,
-                                  precisaConfirmar: false,
-                                } : l)
-                              } : prev)
-                            }}
-                            className="w-full rounded border bg-background px-1 py-0.5 text-[10px]"
-                          >
-                            <option value="">— escolher —</option>
-                            {linha.sugestoesItens.map(s => (
-                              <option key={s.item_id} value={s.item_id}>{s.descricao} ({Math.round(s.score_combined * 100)}%)</option>
-                            ))}
-                          </select>
                         ) : (
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[10px] text-muted-foreground italic">Sem match no orcamento</span>
-                            <button
-                              onClick={() => {
+                          <div className="space-y-1">
+                            {/* Resumo do item selecionado (quando há) — badges de score, histórico e avisos */}
+                            {itemSelecionado && (
+                              <>
+                                <div className="flex items-center gap-1 text-[9px] text-muted-foreground flex-wrap">
+                                  {sugTop && (
+                                    <span
+                                      className={`inline-flex items-center gap-0.5 rounded px-1 ${zona === 'alta' ? 'bg-emerald-500/15 text-emerald-700' : zona === 'media' ? 'bg-amber-500/15 text-amber-700' : 'bg-muted text-muted-foreground'}`}
+                                      title={zona === 'alta' ? 'Alta confiança — auto-vinculado' : zona === 'media' ? 'Média confiança — requer confirmação' : 'Baixa confiança'}
+                                    >
+                                      {zona === 'alta' && <ShieldCheck className="h-2.5 w-2.5" />}
+                                      {zona === 'media' && <HelpCircle className="h-2.5 w-2.5" />}
+                                      {Math.round(sugTop.score_combined * 100)}%
+                                    </span>
+                                  )}
+                                  {sugTop?.match_historico && (
+                                    <span className="inline-flex items-center gap-0.5 rounded bg-blue-500/15 text-blue-700 px-1" title={sugTop.score_original != null ? `Item recorrente deste fornecedor (histórico). Score base: ${Math.round(sugTop.score_original * 100)}%` : 'Item recorrente deste fornecedor (histórico)'}>
+                                      <Database className="h-2.5 w-2.5" /> histórico
+                                    </span>
+                                  )}
+                                  {linha.confirmado && !precisaConf && (
+                                    <span className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 text-emerald-700 px-1" title="Confirmado">
+                                      <Check className="h-2.5 w-2.5" /> ok
+                                    </span>
+                                  )}
+                                  {pedidoSel && <span className="rounded bg-blue-500/15 text-blue-700 px-1">→ #{pedidoSel.numero_pedido} (subst.)</span>}
+                                </div>
+                                {(() => {
+                                  const avisos = calcularAvisos(linha, itemSelecionado)
+                                  if (avisos.length === 0) return null
+                                  return (
+                                    <div className="flex gap-1 flex-wrap">
+                                      {avisos.map((a, i) => (
+                                        <span
+                                          key={i}
+                                          className={`inline-flex items-center gap-0.5 rounded px-1 text-[9px] ${a.severidade === 'red' ? 'bg-red-500/15 text-red-700' : 'bg-amber-500/15 text-amber-700'}`}
+                                          title={a.detalhe ?? ''}
+                                        >
+                                          <AlertTriangle className="h-2.5 w-2.5" /> {a.texto}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )
+                                })()}
+                                {precisaConf && (
+                                  <button
+                                    onClick={() => {
+                                      setExtracao(prev => prev ? {
+                                        ...prev,
+                                        itens: prev.itens.map((l, i) => i === idx ? { ...l, confirmado: true, precisaConfirmar: false } : l)
+                                      } : prev)
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded bg-amber-500 hover:bg-amber-600 text-white px-1.5 py-0.5 text-[10px] font-bold"
+                                    title="Confirmar este match"
+                                  >
+                                    <Check className="h-2.5 w-2.5" /> Confirmar match
+                                  </button>
+                                )}
+                              </>
+                            )}
+                            {/* Combobox de busca: substitui os antigos <select> limitados a 10 sugestões.
+                                Mostra TODOS os itens do orçamento com busca livre + scroll. */}
+                            <ItemPickerCombobox
+                              value={linha.item_compra_id ?? null}
+                              onChange={(itemId) => escolherItemParaLinha(idx, itemId)}
+                              sugestoes={linha.sugestoesItens ?? []}
+                              todosItens={itens as any}
+                              placeholderQuery={linha.descricao}
+                              onCriarItem={() => {
                                 setCriandoItemIdx(idx)
                                 const valor = linha.valor_unitario ?? linha.valor_total ?? 0
                                 setNovoItemForm({
@@ -1091,10 +1092,10 @@ export default function RecepcaoPage() {
                                   qtd_total: linha.quantidade != null ? String(linha.quantidade) : '',
                                 })
                               }}
-                              className="text-[9px] inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-blue-700 hover:bg-blue-500/10 self-start"
-                            >
-                              <Plus className="h-3 w-3" /> Criar item rapido
-                            </button>
+                            />
+                            {!itemSelecionado && (!linha.sugestoesItens || linha.sugestoesItens.length === 0) && (
+                              <span className="text-[10px] text-muted-foreground italic">Sem match automático — busque ou crie</span>
+                            )}
                           </div>
                         )}
                       </td>
