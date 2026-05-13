@@ -3,11 +3,15 @@
 // o texto direto é dramaticamente mais preciso e barato do que rasterizar e
 // mandar pra IA Vision. NF-e impressa em PDF normalmente tem texto nativo.
 //
-// Estratégia: usa pdfjs (mesmo lib do pdfToImages) e roda getTextContent() em
-// cada página, agrupando itens por posição Y (linha) e ordenando por X (coluna)
-// pra preservar a estrutura tabular o mais possível.
+// Estratégia: usa pdfjs e roda getTextContent() em cada página. Para preservar
+// a estrutura de linhas, usa o flag `hasEOL` que cada TextItem do pdfjs já
+// expõe — bem mais robusto que tentar agrupar por coordenada Y, e não depende
+// de o `transform` ser array (foi onde a versão anterior quebrava com
+// "value of readableStream is not a function").
+//
+// Páginas que falham são puladas (try/catch local) — uma página problemática
+// não derruba a extração das outras.
 
-const Y_TOLERANCE = 2.0   // px — itens com diferença de Y abaixo disso são "mesma linha"
 const MIN_USEFUL_CHARS = 200  // abaixo disso, consideramos que o PDF é provavelmente escaneado
 
 export interface PdfTextResult {
@@ -16,60 +20,55 @@ export interface PdfTextResult {
   total_chars: number
   /** true se o PDF parece ter texto nativo extraível (>= MIN_USEFUL_CHARS). false sugere PDF escaneado. */
   tem_texto_nativo: boolean
+  /** páginas que falharam ao extrair texto (não devem ser tantas; se for igual ao total, é PDF escaneado) */
+  paginas_com_erro: number
 }
 
 export async function pdfFileToText(file: File): Promise<PdfTextResult> {
-  const pdfjs = await import('pdfjs-dist')
+  const pdfjs: any = await import('pdfjs-dist')
   const workerMod: any = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
   pdfjs.GlobalWorkerOptions.workerSrc = workerMod.default
 
   const buffer = await file.arrayBuffer()
-  const pdf = await pdfjs.getDocument({ data: buffer }).promise
+  // Uint8Array é mais compatível com o pdfjs em alguns ambientes que ArrayBuffer puro
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise
 
-  const partes: string[] = []
+  const partesPagina: string[] = []
+  let paginasComErro = 0
+
   for (let n = 1; n <= pdf.numPages; n++) {
-    const page = await pdf.getPage(n)
-    const content = await page.getTextContent()
-    // items: { str, transform: [a,b,c,d,e,f] } — e=x, f=y (em pdf coord; y cresce pra cima)
-    type Item = { str: string; x: number; y: number }
-    const items: Item[] = (content.items as any[])
-      .filter(it => typeof it.str === 'string' && it.str.length > 0)
-      .map(it => ({
-        str: it.str as string,
-        x: Number(it.transform?.[4] ?? 0),
-        y: Number(it.transform?.[5] ?? 0),
-      }))
-    // Agrupa por linha (Y próximo) e ordena por X dentro da linha
-    items.sort((a, b) => b.y - a.y || a.x - b.x)  // y desc (topo da página primeiro), x asc
-    const linhas: string[] = []
-    let linhaAtual: Item[] = []
-    let yRef: number | null = null
-    for (const it of items) {
-      if (yRef === null || Math.abs(it.y - yRef) <= Y_TOLERANCE) {
-        linhaAtual.push(it)
-        if (yRef === null) yRef = it.y
-      } else {
-        // Fecha a linha anterior — ordena por X e junta com separador visível (\t)
-        linhaAtual.sort((a, b) => a.x - b.x)
-        linhas.push(linhaAtual.map(i => i.str).join('\t'))
-        linhaAtual = [it]
-        yRef = it.y
+    try {
+      const page = await pdf.getPage(n)
+      const content = await page.getTextContent()
+      const items = (content.items ?? []) as any[]
+      let textoPagina = ''
+      for (const it of items) {
+        if (typeof it?.str !== 'string') continue   // pula TextMarkedContent / marcadores
+        textoPagina += it.str
+        // hasEOL é true quando o pdfjs detecta fim de linha; usar isso é muito mais
+        // confiável que coordenadas Y (que variam por fonte/embedding).
+        if (it.hasEOL) textoPagina += '\n'
+        else textoPagina += ' '
       }
-    }
-    if (linhaAtual.length > 0) {
-      linhaAtual.sort((a, b) => a.x - b.x)
-      linhas.push(linhaAtual.map(i => i.str).join('\t'))
-    }
-    if (linhas.length > 0) {
-      partes.push(`--- Página ${n} ---\n${linhas.join('\n')}`)
+      // Normaliza espaços múltiplos sem mexer em quebras de linha
+      textoPagina = textoPagina.replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n').trim()
+      if (textoPagina.length > 0) {
+        partesPagina.push(`--- Página ${n} ---\n${textoPagina}`)
+      }
+    } catch (err) {
+      // Página problemática não bloqueia o resto — só registra
+      paginasComErro++
+      console.warn(`[pdfText] falha ao extrair texto da página ${n}:`, err)
     }
   }
-  const texto = partes.join('\n\n')
+
+  const texto = partesPagina.join('\n\n')
   const totalChars = texto.length
   return {
     texto,
     paginas: pdf.numPages,
     total_chars: totalChars,
     tem_texto_nativo: totalChars >= MIN_USEFUL_CHARS,
+    paginas_com_erro: paginasComErro,
   }
 }

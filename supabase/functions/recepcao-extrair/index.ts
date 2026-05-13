@@ -86,7 +86,17 @@ EXEMPLO DE EMBALAGEM
 Linha: "010 | 9876543210 | PARAFUSO 4x40 CX C/100 | 73181500 | CX | 3,000 | 45,00 | 135,00"
 Leitura: quantidade=3 (caixas), unidade="CX", valor_unitario=45, valor_total=135. NÃO use quantidade=300.
 
-LISTE TODOS os itens da nota, na ordem física do documento. Não invente itens. Não pule itens.`
+COMPLETUDE — REGRA CRÍTICA
+LISTE TODOS os itens da nota, na ordem física do documento. NUNCA invente itens. NUNCA pule itens.
+ANTES de finalizar o JSON, faça esta dupla checagem mental:
+  1. Conte quantas LINHAS DE ITEM existem visíveis na tabela do documento (ignore cabeçalhos, totais, observações).
+  2. Conte quantos elementos você incluiu no array "itens".
+  3. Se forem diferentes, REFAÇA a varredura — você pulou ou duplicou algo. Itens descritivos longos podem ocupar 2-3 linhas físicas (descrição contínua, FCI, observação) — isso é UM item, não vários. Ao contrário, NUNCA agrupe 2 itens distintos em um só.
+Se mesmo após refazer não conseguir conciliar, devolva os itens que conseguiu identificar com certeza e registre em "observacoes": "atenção: documento parece ter N itens mas extraí M — operador deve revisar".
+
+FIDELIDADE — NÃO INVENTE
+- Descrição: copie LITERALMENTE o que está no documento. Não substitua palavras. Não complete abreviações ("ENGATE" continua "ENGATE", não vira "ANEL VEDACAO"). Não troque marcas. Se o nome está em CAIXA ALTA, mantenha em CAIXA ALTA.
+- Quantidade, valor unitário, valor total: leia o que está escrito. Se um valor parece improvável (R$ 36864 numa torneira), provavelmente você confundiu coluna — refaça a leitura ANTES de devolver.`
 
 async function callOpenAI(messages: any[]): Promise<{ json: any; usage: any }> {
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {

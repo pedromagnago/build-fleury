@@ -222,7 +222,7 @@ export default function RecepcaoPage() {
           textoPdf = await pdfFileToText(file)
         } catch (err) {
           console.warn('Falha ao ler texto nativo do PDF, indo pra Vision:', err)
-          textoPdf = { texto: '', paginas: 0, total_chars: 0, tem_texto_nativo: false }
+          textoPdf = { texto: '', paginas: 0, total_chars: 0, tem_texto_nativo: false, paginas_com_erro: 0 }
         }
         if (textoPdf.tem_texto_nativo) {
           toast.info(`PDF com texto nativo (${textoPdf.total_chars.toLocaleString('pt-BR')} chars) — extraindo direto, sem Vision.`)
