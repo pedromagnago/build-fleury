@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useProject } from '@/contexts/ProjectContext'
-import { useFornecedores, usePedidos, useCreatePedidoLote } from '@/hooks/useCompras'
+import { useFornecedores, usePedidos } from '@/hooks/useCompras'
 import { useItensCompra } from '@/hooks/useCompras'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
@@ -156,7 +156,6 @@ export default function RecepcaoPage() {
   const { data: fornecedores = [] } = useFornecedores()
   const { data: pedidos = [] } = usePedidos()
   const { data: etapas = [] } = useEtapas()
-  const createPedidoLote = useCreatePedidoLote()
 
   const [extracao, setExtracao] = useState<Extracao | null>(null)
   const [extraindo, setExtraindo] = useState(false)
@@ -495,36 +494,71 @@ export default function RecepcaoPage() {
       }).select('id').single()
       if (docErr) throw docErr
 
-      // 3) Para cada linha "criar_pedido" / "substituir_pedido" → cria pedido novo (com item_compra_id resolvido)
-      // Status 'entregue' é o estado correto pra NF aplicada: mercadoria recebida.
-      // 'confirmado' foi removido pela migration 20260425130000 e não é mais aceito.
-      const pedidosParaCriar = extracao.itens
-        .filter(l => l.acao && l.acao !== 'ignorar' && l.acao !== 'criar_item' && l.item_compra_id)
-        .map(l => ({
-          item_compra_id: l.item_compra_id!,
+      // 3) Pós-migration split_pedidos_header_e_itens: 1 NF → 1 pedido com N
+      // pedido_itens (não mais N pedidos). Linhas com qtd_recebida = qtd já
+      // marcam o pedido como 'entregue' via trigger; conciliação fica 1↔1
+      // (1 movimento bancário ↔ 1 parcela ↔ 1 pedido).
+      const linhasParaPedido = extracao.itens.filter(
+        l => l.acao && l.acao !== 'ignorar' && l.item_compra_id
+      )
+
+      let novoPedidoId: string | null = null
+      let totalItensCriados = 0
+      if (linhasParaPedido.length > 0) {
+        const primeira = linhasParaPedido[0]!
+        // 3a) Cabeçalho do pedido — preenche também campos legacy (item_compra_id,
+        // qtd_lote, valor_unitario_real) com info da PRIMEIRA linha pra compat
+        // de queries antigas. Trigger fn_sync_pedido_valor_total recalcula o
+        // valor_total_real automaticamente quando os itens forem inseridos.
+        const { data: novoPedido, error: pedErr } = await supabase.from('pedidos').insert({
+          company_id: currentCompany.id,
           fornecedor_id: fornId,
+          item_compra_id: primeira.item_compra_id!,  // legacy: 1º item do pedido
           casas_lote: null,
-          qtd_lote: l.quantidade ?? null,
-          valor_unitario_real: l.valor_unitario ?? null,
-          valor_total_real: l.valor_total ?? null,
-          cond_pagamento: null,
+          qtd_lote: primeira.quantidade ?? 1,
+          valor_unitario_real: primeira.valor_unitario ?? 0,
+          valor_total_real: 0,                       // recalculado pelo trigger
+          cond_pagamento: null,                      // PR 2.3 deixa editável
           data_entrega_prevista: extracao.documento.data_emissao ?? null,
-          status: 'entregue' as const,
-          observacoes: `Recebido via NF ${extracao.documento.numero ?? ''} — ${l.descricao}`,
+          data_entrega_real: extracao.documento.data_emissao ?? null,
+          status: 'planejado' as const,              // trigger move pra 'entregue' ao inserir itens
+          observacoes: `NF ${extracao.documento.numero ?? ''} · ${extracao.fornecedor.nome ?? 'fornecedor sem nome'}`,
+          nf_origem_id: docRow!.id,
+        }).select('id').single()
+        if (pedErr) throw pedErr
+        novoPedidoId = novoPedido!.id
+
+        // 3b) Linhas (pedido_itens) — qtd_recebida = qtd marca como totalmente recebido
+        const itensPayload = linhasParaPedido.map((l, idx) => ({
+          pedido_id: novoPedidoId!,
+          item_compra_id: l.item_compra_id!,
+          qtd: l.quantidade ?? 1,
+          valor_unitario_real: l.valor_unitario ?? 0,
+          valor_total_real: l.valor_total ?? ((l.quantidade ?? 1) * (l.valor_unitario ?? 0)),
+          qtd_recebida: l.quantidade ?? 1,           // NF aplicada = recebimento integral
+          ordem: idx + 1,
         }))
-
-      let pedidosCriados: any[] = []
-      if (pedidosParaCriar.length > 0) {
-        pedidosCriados = await createPedidoLote.mutateAsync(pedidosParaCriar as any)
+        const { error: itensErr } = await supabase.from('pedido_itens').insert(itensPayload)
+        if (itensErr) throw itensErr
+        totalItensCriados = itensPayload.length
       }
 
-      // 4) Substituir previsões (cancelar pedido antigo)
+      // 4) Substituir previsões: cancela o pedido planejado antigo. O pedido
+      // novo já contempla as linhas via pedido_itens; o cancelamento aqui só
+      // evita dupla contagem no orçamento.
       const substituicoes = extracao.itens.filter(l => l.acao === 'substituir_pedido' && l.pedido_substituido_id)
+      const pedidosCanceladosIds = new Set<string>()
       for (const sub of substituicoes) {
-        await supabase.from('pedidos').update({ status: 'cancelado', observacoes: `Substituido por NF ${extracao.documento.numero ?? ''}` }).eq('id', sub.pedido_substituido_id!)
+        if (pedidosCanceladosIds.has(sub.pedido_substituido_id!)) continue
+        pedidosCanceladosIds.add(sub.pedido_substituido_id!)
+        await supabase.from('pedidos').update({
+          status: 'cancelado',
+          observacoes: `Substituído por NF ${extracao.documento.numero ?? ''}`,
+        }).eq('id', sub.pedido_substituido_id!)
       }
 
-      // 5) Linhas para criar item novo (Fase 2 implementacao completa) — por enquanto só registra na tabela
+      // 5) Auditoria em recepcao_matches — todos os matches apontam pro mesmo
+      // pedido novo (pois agora é 1 pedido por NF).
       const linhasMatch = extracao.itens.map((l, idx) => ({
         doc_id: docRow!.id,
         ordem: l.ordem ?? idx,
@@ -538,17 +572,20 @@ export default function RecepcaoPage() {
         acao: l.acao ?? 'ignorar',
         item_compra_id: l.item_compra_id ?? null,
         pedido_substituido_id: l.pedido_substituido_id ?? null,
-        pedido_criado_id: pedidosCriados.find(pc => pc.item_compra_id === l.item_compra_id)?.id ?? null,
+        pedido_criado_id: novoPedidoId,
         observacao: l.observacao ?? null,
       }))
       if (linhasMatch.length > 0) {
         await supabase.from('recepcao_matches').insert(linhasMatch)
       }
 
-      const totalSubstituidos = substituicoes.length
-      const totalCriados = pedidosCriados.length
-      const totalIgnoradosOuItem = extracao.itens.length - totalSubstituidos - totalCriados
-      toast.success(`Documento aplicado: ${totalCriados} pedido(s) criado(s), ${totalSubstituidos} previsão(ões) substituída(s)${totalIgnoradosOuItem > 0 ? `, ${totalIgnoradosOuItem} pendente(s)` : ''}`)
+      const totalSubstituidos = pedidosCanceladosIds.size
+      const totalIgnoradosOuItem = extracao.itens.length - totalItensCriados
+      toast.success(
+        `NF aplicada: 1 pedido com ${totalItensCriados} ite${totalItensCriados === 1 ? 'm' : 'ns'}`
+        + (totalSubstituidos > 0 ? `, ${totalSubstituidos} previsão(ões) cancelada(s)` : '')
+        + (totalIgnoradosOuItem > 0 ? `, ${totalIgnoradosOuItem} linha(s) ignorada(s)` : '')
+      )
       setExtracao(null)
       setTextoColado('')
       setDiferencaAceita(false)
