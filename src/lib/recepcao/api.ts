@@ -35,6 +35,34 @@ export async function extrairDoc(input: {
   return data as ExtracaoResult
 }
 
+/** Extrai PDF no servidor (Deno + unpdf) — bypass do bug pdfjs/Vite no client.
+ * Retorna estrutura DANFE pronta se for nota fiscal, ou texto cru pra fallback IA. */
+export interface PdfParseResult {
+  kind: 'danfe' | 'texto' | 'erro'
+  // quando kind='danfe'
+  danfe?: {
+    fornecedor: { nome: string | null; cnpj: string | null; ie: string | null }
+    documento: { numero: string | null; serie: string | null; data_emissao: string | null; data_vencimento: string | null; valor_total: number | null; tipo: 'NFE' }
+    itens: Array<{ ordem: number; codigo: string; descricao: string; ncm: string | null; unidade: string | null; quantidade: number | null; valor_unitario: number | null; valor_total: number | null }>
+    observacoes: string | null
+    notas_parser: string[]
+    qualidade: number
+  }
+  // quando kind='texto'
+  texto?: string
+  // quando kind='erro'
+  erro?: string
+  paginas?: number
+  paginas_com_erro?: number
+  total_chars?: number
+  custo_cents?: number
+}
+export async function parsearPdf(pdfBase64: string): Promise<PdfParseResult> {
+  const { data, error } = await supabase.functions.invoke('recepcao-pdf-parse', { body: { pdf_base64: pdfBase64 } })
+  if (error) throw error
+  return data as PdfParseResult
+}
+
 export async function embedTexts(texts: string[]): Promise<{ embeddings: number[][]; modelo: string; custo_cents: number }> {
   const { data, error } = await supabase.functions.invoke('recepcao-embed', { body: { texts } })
   if (error) throw error

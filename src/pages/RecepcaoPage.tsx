@@ -10,11 +10,11 @@ import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
 import { parseNfeXml } from '@/lib/recepcao/xmlNfeParser'
-import { extrairDoc, searchItensCompra, fileToBase64, carregarAliasesFornecedor, aplicarBoostHistorico, resolverFornecedorLocal, type ItemMatchSugerido, type AliasMap } from '@/lib/recepcao/api'
+import { extrairDoc, searchItensCompra, fileToBase64, carregarAliasesFornecedor, aplicarBoostHistorico, resolverFornecedorLocal, parsearPdf, type ItemMatchSugerido, type AliasMap } from '@/lib/recepcao/api'
 import { indexarEmbeddingsPendentes, embedQuery } from '@/lib/recepcao/indexador'
 import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
-import { pdfFileToText } from '@/lib/recepcao/pdfText'
-import { parseDanfe } from '@/lib/recepcao/danfeParser'
+// Nota: pdfFileToText e parseDanfe foram movidos pra edge function recepcao-pdf-parse
+// (server-side), pra evitar o bug "value of readableStream" do pdfjs v5 no Vite.
 import { ItemPickerCombobox } from '@/components/recepcao/ItemPickerCombobox'
 import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle } from 'lucide-react'
 import { useEtapas } from '@/hooks/useEtapas'
@@ -214,69 +214,58 @@ export default function RecepcaoPage() {
           custo_cents: r._meta?.custo_cents,
         })
       } else if (ext === 'pdf') {
-        // PDF: tenta primeiro extrair TEXTO NATIVO (gerado por sistema). Se o PDF
-        // foi escaneado (sem texto), cai pro fluxo de rasterizar e mandar pra Vision.
-        // Texto nativo é dramaticamente mais preciso e mais barato pra tabelas de NF.
-        toast.info('Lendo PDF…')
-        let textoPdf: Awaited<ReturnType<typeof pdfFileToText>>
+        // PDF: extração 100% server-side (Deno + unpdf). O client antes tentava
+        // pdfjs-dist no browser e batia em bug recorrente "value of readableStream"
+        // do Vite + pdfjs v5. Server-side elimina toda a camada de bundling.
+        toast.info('Enviando PDF pro servidor…')
+        const b64 = await fileToBase64(file)
+        let resp: Awaited<ReturnType<typeof parsearPdf>>
         try {
-          textoPdf = await pdfFileToText(file)
+          resp = await parsearPdf(b64)
         } catch (err) {
-          console.warn('Falha ao ler texto nativo do PDF, indo pra Vision:', err)
-          textoPdf = { texto: '', paginas: 0, total_chars: 0, tem_texto_nativo: false, paginas_com_erro: 0 }
+          console.warn('Falha ao chamar recepcao-pdf-parse, indo pra Vision:', err)
+          resp = { kind: 'erro', erro: err instanceof Error ? err.message : String(err) }
         }
-        if (textoPdf.tem_texto_nativo) {
-          // Caminho ouro: PDF com texto nativo + DANFE-padrão → parser determinístico (sem IA)
-          const danfe = parseDanfe(textoPdf.texto)
-          // Threshold permissivo: se o parser conseguiu extrair ao menos 1 item
-          // (não é DANFE inválida) E pelo menos 50% dos itens tem qtd×vu=vt OK,
-          // prefere o parser. Mesmo com qualidade parcial, o parser é mais fiel
-          // que IA (que inventa descrições).
-          if (danfe && danfe.itens.length >= 1 && danfe.qualidade >= 0.5) {
-            toast.success(`DANFE parseada: ${danfe.itens.length} itens, ${Math.round(danfe.qualidade * 100)}% de validação. Sem IA, custo zero.`)
-            await iniciarRevisao({
-              fornecedor: danfe.fornecedor,
-              documento: danfe.documento,
-              itens: danfe.itens,
-              observacoes: danfe.observacoes,
-              origem: 'texto',
-              modelo: 'parser_danfe',
-              custo_cents: 0,
-            })
-          } else {
-            // PDF tem texto mas não casou DANFE-padrão — manda pra IA com o texto extraído
-            if (danfe) {
-              toast.info(`Parser DANFE incompleto (${danfe.itens.length} itens, ${Math.round(danfe.qualidade * 100)}% qualidade) — fallback pra IA.`)
-            } else {
-              toast.info(`PDF com texto nativo (${textoPdf.total_chars.toLocaleString('pt-BR')} chars) — extraindo via IA (não é DANFE-padrão).`)
-            }
-            const r = await extrairDoc({ kind: 'texto', content: textoPdf.texto })
-            await iniciarRevisao({
-              fornecedor: r.fornecedor,
-              documento: r.documento,
-              itens: r.itens,
-              observacoes: r.observacoes,
-              origem: 'texto',
-              modelo: r._meta?.modelo,
-              custo_cents: r._meta?.custo_cents,
-            })
-          }
+        if (resp.kind === 'danfe' && resp.danfe && resp.danfe.itens.length >= 1) {
+          // Caminho ouro: parser DANFE no server retornou estrutura pronta
+          toast.success(`DANFE parseada: ${resp.danfe.itens.length} itens, ${Math.round(resp.danfe.qualidade * 100)}% de validação. Sem IA, custo zero.`)
+          await iniciarRevisao({
+            fornecedor: resp.danfe.fornecedor,
+            documento: resp.danfe.documento,
+            itens: resp.danfe.itens,
+            observacoes: resp.danfe.observacoes,
+            origem: 'texto',
+            modelo: 'parser_danfe_server',
+            custo_cents: 0,
+          })
+        } else if (resp.kind === 'texto' && resp.texto) {
+          // Servidor extraiu texto mas não casou DANFE-padrão — manda texto pra IA
+          toast.info(`Texto extraído do PDF (${(resp.total_chars ?? 0).toLocaleString('pt-BR')} chars) — extraindo via IA (não é DANFE-padrão).`)
+          const r = await extrairDoc({ kind: 'texto', content: resp.texto })
+          await iniciarRevisao({
+            fornecedor: r.fornecedor,
+            documento: r.documento,
+            itens: r.itens,
+            observacoes: r.observacoes,
+            origem: 'texto',
+            modelo: r._meta?.modelo,
+            custo_cents: r._meta?.custo_cents,
+          })
         } else {
-          // PDF escaneado (foto digitalizada) — sem texto extraível. Rasteriza e usa Vision.
-          toast.info('PDF sem texto nativo (escaneado) — convertendo em imagens pra IA Vision…')
+          // PDF escaneado ou erro do servidor → rasteriza no client e manda pra Vision
+          const motivo = resp.kind === 'erro' ? `erro do servidor: ${resp.erro}` : 'PDF sem texto extraível (escaneado)'
+          toast.info(`${motivo} — convertendo em imagens pra IA Vision…`)
           const paginas = await pdfFileToImages(file)
           if (paginas.length === 0) {
             toast.error('PDF sem páginas')
             return
           }
           toast.info(`Extraindo ${paginas.length} página(s) com IA Vision…`)
-          // Chama IA em paralelo (1 chamada por página). Para 1 página, eh equivalente.
           const resultados = await Promise.all(paginas.map(p => extrairDoc({
             kind: 'imagem',
             content: p.base64,
             prompt_extra: paginas.length > 1 ? `Esta eh a pagina ${p.pagina} de ${paginas.length} de uma NF.` : undefined,
           })))
-          // Consolida: usa fornecedor/documento da primeira pagina, junta TODOS os itens
           const r0 = resultados[0]!
           const itensConsolidados = resultados.flatMap((r, idx) =>
             (r.itens ?? []).map((it, j) => ({ ...it, ordem: idx * 1000 + (it.ordem ?? j + 1) }))
