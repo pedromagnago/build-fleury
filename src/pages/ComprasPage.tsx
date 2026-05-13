@@ -1525,36 +1525,77 @@ function PedidosTab({ search }: { search: string }) {
                     )
                   })()}
 
-                  {/* Children Rows */}
-                  {group.items.map(p => (
-                    <tr key={p.id} className="group/row hover:bg-muted/10 text-muted-foreground border-b border-border/40 last:border-0">
-                      <td className="px-3 py-2 text-center">
-                        <input type="checkbox" checked={selection.isSelected(p.id)}
-                          onChange={() => selection.toggle(p.id)}
-                          className="h-3 w-3 rounded accent-primary" />
-                      </td>
-                      <td className="px-3 py-2 pl-6" colSpan={2}>
-                        <div className="text-xs font-medium text-foreground">{p.item_descricao ?? '—'}</div>
-                        <div className="font-mono text-[10px] opacity-70">{p.item_codigo ?? ''}</div>
-                      </td>
-                      <td className="px-3 py-2 text-right text-xs" colSpan={2}>{p.casas_lote ? `${formatNumber(Number(p.casas_lote), 2, 2)} unid.` : ''}</td>
-                      <td className="px-3 py-2 text-right text-xs font-mono">{p.qtd_lote ? `${formatNumber(Number(p.qtd_lote), 2, 2)} unid.` : ''}</td>
-                      <td className="px-3 py-2 text-right text-xs font-medium">{p.valor_total_real != null ? formatCurrency(p.valor_total_real) : '—'}</td>
-                      <td className="px-3 py-2 text-center">
-                        <div className="flex items-center justify-center gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
-                          <button onClick={() => startEdit(p)} className="rounded-md p-1 hover:bg-accent text-foreground" title="Editar">
-                            <Pencil className="h-3.5 w-3.5" />
-                          </button>
-                          <button onClick={() => duplicatePedido(p)} className="rounded-md p-1 hover:bg-accent text-foreground" title="Duplicar">
-                            <Copy className="h-3.5 w-3.5" />
-                          </button>
-                          <button onClick={() => setConfirmDelete(p.id)} className="rounded-md p-1 hover:bg-destructive/10 text-destructive" title="Excluir">
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {/* Children Rows — pós-migration split: 1 row por pedido_item.
+                      Pedidos com .itens[] populado (do JOIN) desdobram em N linhas.
+                      Pedidos legacy ainda sem pedido_itens carregados caem no
+                      array vazio e renderizam 1 linha com dados do header.
+                      Ações (editar/duplicar/excluir) ficam na PRIMEIRA linha de
+                      cada pedido — são escopo de pedido, não de item. */}
+                  {group.items.flatMap(p => {
+                    const itensDoPedido = (p.itens && p.itens.length > 0)
+                      ? p.itens
+                      : [{
+                          id: p.id,
+                          item_compra_id: p.item_compra_id,
+                          item_descricao: p.item_descricao,
+                          item_codigo: p.item_codigo,
+                          casas_lote: p.casas_lote,
+                          qtd: p.qtd_lote ?? 0,
+                          valor_total_real: p.valor_total_real ?? 0,
+                          qtd_recebida: 0,
+                          ordem: 1,
+                        }]
+                    return itensDoPedido.map((pi: any, idx: number) => {
+                      const isPrimeira = idx === 0
+                      const totalItens = itensDoPedido.length
+                      const recebidoOk = pi.qtd_recebida != null && pi.qtd > 0 && Math.abs(pi.qtd_recebida - pi.qtd) <= 0.001
+                      const recebidoParcial = pi.qtd_recebida != null && pi.qtd_recebida > 0 && pi.qtd_recebida < pi.qtd
+                      return (
+                        <tr key={`${p.id}-${pi.id ?? idx}`} className="group/row hover:bg-muted/10 text-muted-foreground border-b border-border/40 last:border-0">
+                          <td className="px-3 py-2 text-center">
+                            {isPrimeira && (
+                              <input type="checkbox" checked={selection.isSelected(p.id)}
+                                onChange={() => selection.toggle(p.id)}
+                                className="h-3 w-3 rounded accent-primary" />
+                            )}
+                          </td>
+                          <td className="px-3 py-2 pl-6" colSpan={2}>
+                            <div className="flex items-center gap-1.5">
+                              {totalItens > 1 && (
+                                <span className="font-mono text-[9px] text-muted-foreground bg-muted/40 rounded px-1">{idx + 1}/{totalItens}</span>
+                              )}
+                              <div className="text-xs font-medium text-foreground truncate">{pi.item_descricao ?? '—'}</div>
+                              {recebidoOk && (
+                                <span className="text-[9px] rounded bg-emerald-500/15 text-emerald-700 px-1" title="Item totalmente recebido (qtd_recebida = qtd)">✓ recebido</span>
+                              )}
+                              {recebidoParcial && (
+                                <span className="text-[9px] rounded bg-amber-500/15 text-amber-700 px-1" title={`Recebido ${pi.qtd_recebida}/${pi.qtd}`}>{Math.round((pi.qtd_recebida / pi.qtd) * 100)}% recebido</span>
+                              )}
+                            </div>
+                            <div className="font-mono text-[10px] opacity-70">{pi.item_codigo ?? ''}</div>
+                          </td>
+                          <td className="px-3 py-2 text-right text-xs" colSpan={2}>{pi.casas_lote ? `${formatNumber(Number(pi.casas_lote), 2, 2)} unid.` : ''}</td>
+                          <td className="px-3 py-2 text-right text-xs font-mono">{pi.qtd ? `${formatNumber(Number(pi.qtd), 2, 2)} unid.` : ''}</td>
+                          <td className="px-3 py-2 text-right text-xs font-medium">{pi.valor_total_real != null ? formatCurrency(pi.valor_total_real) : '—'}</td>
+                          <td className="px-3 py-2 text-center">
+                            {isPrimeira && (
+                              <div className="flex items-center justify-center gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
+                                <button onClick={() => startEdit(p)} className="rounded-md p-1 hover:bg-accent text-foreground" title="Editar">
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                                <button onClick={() => duplicatePedido(p)} className="rounded-md p-1 hover:bg-accent text-foreground" title="Duplicar">
+                                  <Copy className="h-3.5 w-3.5" />
+                                </button>
+                                <button onClick={() => setConfirmDelete(p.id)} className="rounded-md p-1 hover:bg-destructive/10 text-destructive" title="Excluir">
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })
+                  })}
                 </React.Fragment>
               ))}
             </tbody>
