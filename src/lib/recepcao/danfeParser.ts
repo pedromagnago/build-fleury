@@ -106,7 +106,8 @@ const RE_INICIO_ITEM = /^\s*(\d{6,})\s+/
 
 // Layout DANFE (varia, mas padrão: CÓDIGO DESCRIÇÃO NCM(8) CST(3) CFOP(4) UNID QTD VU VT [impostos])
 // Captura: 1=cod, 2=desc, 3=ncm, 4=cst, 5=cfop, 6=unid, 7=qtd, 8=vu, 9=vt
-const RE_LINHA_ITEM = /^\s*(\d{6,})\s+(.+?)\s+(\d{8})\s+\d{2,4}\s+\d{4}\s+([A-Z0-9]{1,5})\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\b/
+// Tolerância: aceita \t, espaços múltiplos, CST de 2-4 dígitos (alguns layouts usam 60/600), CFOP 4 dígitos.
+const RE_LINHA_ITEM = /(?:^|\s)(\d{6,})[\s\t]+(.+?)[\s\t]+(\d{8})[\s\t]+\d{2,4}[\s\t]+\d{4}[\s\t]+([A-Z0-9]{1,5})[\s\t]+([\d.,]+)[\s\t]+([\d.,]+)[\s\t]+([\d.,]+)(?:[\s\t]|$)/
 
 // ─────────────────────────────────────────────────────────────────────────
 // Parser de itens
@@ -123,9 +124,13 @@ export function parseDanfeItens(texto: string): { itens: DanfeItem[]; notas: str
   const fim = secao.search(RE_FIM_ITENS)
   if (fim > 0) secao = secao.slice(0, fim)
 
-  const linhas = secao.split(/\n/).map(l => l.replace(/\t+/g, ' ').trim()).filter(l => l.length > 0)
+  // NÃO substitui \t por espaço aqui — preserva tab pra ajudar o regex,
+  // mas colapsa whitespace múltiplo logo abaixo.
+  const linhas = secao.split(/\n/).map(l => l.trim()).filter(l => l.length > 0)
 
   // Mescla linhas: cada item agrega tudo até o próximo código de 6+ dígitos
+  // mas SOMENTE quando esse código aparece NO INÍCIO da linha (não em uma
+  // descrição tipo "PARAFUSO 4X40 100UN" onde 100 é parte da descrição).
   const blocos: string[] = []
   let atual = ''
   for (const linha of linhas) {
@@ -135,7 +140,6 @@ export function parseDanfeItens(texto: string): { itens: DanfeItem[]; notas: str
     } else if (atual) {
       atual += ' ' + linha
     }
-    // Se nenhum item iniciou ainda, ignora a linha (provavelmente é header de coluna)
   }
   if (atual) blocos.push(atual)
 
@@ -147,9 +151,11 @@ export function parseDanfeItens(texto: string): { itens: DanfeItem[]; notas: str
   const itens: DanfeItem[] = []
   let ordem = 0
   for (const bloco of blocos) {
-    const m = bloco.match(RE_LINHA_ITEM)
+    // Normaliza whitespace só pra match — preserva o original pra descricao depois
+    const blocoNormalizado = bloco.replace(/[\t ]+/g, ' ')
+    const m = blocoNormalizado.match(RE_LINHA_ITEM)
     if (!m) {
-      notas.push(`linha não casou regex DANFE: ${bloco.slice(0, 80)}…`)
+      notas.push(`linha não casou regex: "${bloco.slice(0, 120)}..."`)
       continue
     }
     ordem++
@@ -264,9 +270,13 @@ function parseDocumento(texto: string): DanfeHeader['documento'] {
  * itens passaram na validação qtd × vu ≈ vt.
  */
 export function parseDanfe(texto: string): DanfeParseResult | null {
-  if (!RE_INICIO_ITENS.test(texto)) return null
+  if (!RE_INICIO_ITENS.test(texto)) {
+    console.warn('[danfeParser] texto não contém "DADOS DOS PRODUTOS/SERVIÇOS" — não é DANFE-padrão.')
+    return null
+  }
 
   const { itens, notas } = parseDanfeItens(texto)
+  console.log(`[danfeParser] extraiu ${itens.length} item(ns); ${notas.length} nota(s)`, { notas })
   if (itens.length === 0) return null
 
   const fornecedor = parseFornecedor(texto)
@@ -289,7 +299,7 @@ export function parseDanfe(texto: string): DanfeParseResult | null {
     notas.push(`soma das linhas R$ ${somaLinhas.toFixed(2)} ≠ total NF R$ ${documento.valor_total.toFixed(2)}`)
   }
 
-  return {
+  const resultado: DanfeParseResult = {
     fornecedor,
     documento,
     itens,
@@ -297,4 +307,7 @@ export function parseDanfe(texto: string): DanfeParseResult | null {
     notas_parser: notas,
     qualidade,
   }
+  // Exposição pra debug — operador pode inspecionar no console: window.__danfeDebug
+  try { (window as any).__danfeDebug = resultado } catch { /* noop em SSR */ }
+  return resultado
 }

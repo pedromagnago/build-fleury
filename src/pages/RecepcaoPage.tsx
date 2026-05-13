@@ -228,8 +228,12 @@ export default function RecepcaoPage() {
         if (textoPdf.tem_texto_nativo) {
           // Caminho ouro: PDF com texto nativo + DANFE-padrão → parser determinístico (sem IA)
           const danfe = parseDanfe(textoPdf.texto)
-          if (danfe && danfe.itens.length > 0 && danfe.qualidade >= 0.7) {
-            toast.success(`DANFE parseada deterministicamente: ${danfe.itens.length} itens, ${Math.round(danfe.qualidade * 100)}% de validação. Sem IA, custo zero.`)
+          // Threshold permissivo: se o parser conseguiu extrair ao menos 1 item
+          // (não é DANFE inválida) E pelo menos 50% dos itens tem qtd×vu=vt OK,
+          // prefere o parser. Mesmo com qualidade parcial, o parser é mais fiel
+          // que IA (que inventa descrições).
+          if (danfe && danfe.itens.length >= 1 && danfe.qualidade >= 0.5) {
+            toast.success(`DANFE parseada: ${danfe.itens.length} itens, ${Math.round(danfe.qualidade * 100)}% de validação. Sem IA, custo zero.`)
             await iniciarRevisao({
               fornecedor: danfe.fornecedor,
               documento: danfe.documento,
