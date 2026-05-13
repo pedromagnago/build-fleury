@@ -1,6 +1,7 @@
 // Recepção de Documentos — wizard de entrada de NF/PDF/imagem/texto
 // Fluxo: Upload → Extração (XML deterministico OU OpenAI) → Revisão linha-a-linha → Comitar
 import { useState, useMemo } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useDropzone } from 'react-dropzone'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useProject } from '@/contexts/ProjectContext'
@@ -175,6 +176,53 @@ export default function RecepcaoPage() {
   // Preenchida automaticamente do fornecedor cadastrado quando o CNPJ bate;
   // editável a qualquer momento. Vai pro pedido no aplicar().
   const [condPagamento, setCondPagamento] = useState<string>('')
+
+  // C: lista de NFs aplicadas + exclusão (com reversão via trigger no banco)
+  const qc = useQueryClient()
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<{ id: string; numero: string | null; fornecedor: string | null } | null>(null)
+  const { data: docsAplicadas = [] } = useQuery<Array<{
+    id: string; numero_doc: string | null; fornecedor_nome: string | null;
+    valor_total: number | string | null; data_emissao: string | null; applied_at: string | null;
+    qtdPedidosCriados: number; qtdConsumos: number;
+  }>>({
+    queryKey: ['recepcao_docs_aplicadas', currentCompany?.id],
+    enabled: !!currentCompany,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('recepcao_docs')
+        .select('id, numero_doc, fornecedor_nome, valor_total, data_emissao, applied_at, recepcao_consumos(id, created_pedido_id)')
+        .eq('company_id', currentCompany!.id)
+        .order('applied_at', { ascending: false })
+        .limit(20)
+      if (error) throw error
+      return (data ?? []).map((d: any) => ({
+        id: d.id,
+        numero_doc: d.numero_doc,
+        fornecedor_nome: d.fornecedor_nome,
+        valor_total: d.valor_total,
+        data_emissao: d.data_emissao,
+        applied_at: d.applied_at,
+        qtdConsumos: (d.recepcao_consumos ?? []).length,
+        qtdPedidosCriados: (d.recepcao_consumos ?? []).filter((c: any) => c.created_pedido_id != null).length,
+      }))
+    },
+  })
+
+  const excluirNF = useMutation({
+    mutationFn: async (docId: string) => {
+      const { error } = await supabase.rpc('excluir_recepcao_doc', { p_doc_id: docId })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      toast.success('NF excluída · consumo revertido')
+      qc.invalidateQueries({ queryKey: ['recepcao_docs_aplicadas'] })
+      qc.invalidateQueries({ queryKey: ['pedidos'] })
+      qc.invalidateQueries({ queryKey: ['pedido_itens'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      setConfirmDeleteDoc(null)
+    },
+    onError: (err: any) => toast.error('Erro ao excluir NF: ' + (err?.message ?? String(err))),
+  })
 
   const handleIndexar = async () => {
     if (!currentCompany) return
@@ -580,6 +628,9 @@ export default function RecepcaoPage() {
       ))
       const sobraParaPedidoNovo: Array<{ item_compra_id: string; qtd: number; vu: number; vt: number; descricao: string }> = []
       const pedidoItensConsumidos: Array<{ pedidoId: string; pedidoItemId: string }> = []
+      /** Log: cada delta de consumo aplicado por esta NF — alimenta recepcao_consumos
+       *  para permitir reversão exata ao excluir a NF (B do plano anti-fantasma). */
+      const consumoLog: Array<{ pedido_item_id: string; delta_qtd_recebida: number }> = []
 
       if (itemIdsAConsumir.length > 0) {
         const { data: itensPlanRaw } = await supabase
@@ -623,6 +674,7 @@ export default function RecepcaoPage() {
               }).eq('id', pi.pedido_id)
             }
             pedidoItensConsumidos.push({ pedidoId: pi.pedido_id, pedidoItemId: pi.id })
+            consumoLog.push({ pedido_item_id: pi.id, delta_qtd_recebida: consumir })
             restante -= consumir
           }
           // Sobra: vai pro pedido novo
@@ -712,6 +764,34 @@ export default function RecepcaoPage() {
 
       // Compat com toast final: total que entrou em algum pedido (consumido + novo)
       const totalLinhasProcessadas = pedidoItensConsumidos.length + totalItensCriadosNovoPedido
+
+      // 4b) Log de consumo: alimenta recepcao_consumos pra permitir reversão
+      // exata se a NF for excluída depois. Inclui (a) deltas em planejados
+      // existentes e (b) o pedido novo criado pela NF.
+      const consumoRows: Array<{
+        doc_id: string; company_id: string;
+        pedido_item_id?: string; delta_qtd_recebida?: number;
+        created_pedido_id?: string;
+      }> = []
+      for (const c of consumoLog) {
+        consumoRows.push({
+          doc_id: docRow!.id,
+          company_id: currentCompany.id,
+          pedido_item_id: c.pedido_item_id,
+          delta_qtd_recebida: c.delta_qtd_recebida,
+        })
+      }
+      if (novoPedidoId) {
+        consumoRows.push({
+          doc_id: docRow!.id,
+          company_id: currentCompany.id,
+          created_pedido_id: novoPedidoId,
+        })
+      }
+      if (consumoRows.length > 0) {
+        const { error: logErr } = await supabase.from('recepcao_consumos').insert(consumoRows)
+        if (logErr) console.warn('Falha ao gravar log de consumo (NF aplicada, mas reversão poderá ficar imprecisa):', logErr)
+      }
 
       // 5) Auditoria em recepcao_matches — todos os matches apontam pro mesmo
       // pedido novo (pois agora é 1 pedido por NF).
@@ -834,7 +914,88 @@ export default function RecepcaoPage() {
               Extrair com IA
             </button>
           </div>
+
+          {/* C: Lista de NFs aplicadas — permite excluir e reverter o consumo
+              via trigger no banco (recepcao_consumos → fn_recepcao_doc_revert_consumo).
+              Substitui a prática insegura de apagar pelo Studio. */}
+          {docsAplicadas.length > 0 && (
+            <div className="rounded-xl border bg-card p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold">Últimas NFs aplicadas</h3>
+                <span className="text-[10px] text-muted-foreground">excluir reverte automaticamente o consumo nos pedidos</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-[9px] uppercase text-muted-foreground border-b">
+                      <th className="py-1.5 text-left">NF</th>
+                      <th className="py-1.5 text-left">Fornecedor</th>
+                      <th className="py-1.5 text-left">Data emissão</th>
+                      <th className="py-1.5 text-left">Aplicada em</th>
+                      <th className="py-1.5 text-right">Valor</th>
+                      <th className="py-1.5 text-center">Impacto</th>
+                      <th className="py-1.5 text-center w-16">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/40">
+                    {docsAplicadas.map(d => (
+                      <tr key={d.id} className="hover:bg-muted/10">
+                        <td className="py-1.5 font-mono text-primary font-bold">#{d.numero_doc ?? '?'}</td>
+                        <td className="py-1.5 truncate max-w-[200px]">{d.fornecedor_nome ?? '—'}</td>
+                        <td className="py-1.5 font-mono text-[10px]">{d.data_emissao ?? '—'}</td>
+                        <td className="py-1.5 font-mono text-[10px]">{d.applied_at ? new Date(d.applied_at).toLocaleString('pt-BR') : '—'}</td>
+                        <td className="py-1.5 text-right font-medium">{d.valor_total != null ? Number(d.valor_total).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—'}</td>
+                        <td className="py-1.5 text-center text-[10px] text-muted-foreground">
+                          {d.qtdConsumos - d.qtdPedidosCriados > 0 && <span className="mr-1">{d.qtdConsumos - d.qtdPedidosCriados} consumo(s)</span>}
+                          {d.qtdPedidosCriados > 0 && <span className="rounded bg-blue-500/10 text-blue-700 px-1">+ {d.qtdPedidosCriados} pedido novo</span>}
+                          {d.qtdConsumos === 0 && <span className="text-amber-700">sem log</span>}
+                        </td>
+                        <td className="py-1.5 text-center">
+                          <button
+                            onClick={() => setConfirmDeleteDoc({ id: d.id, numero: d.numero_doc, fornecedor: d.fornecedor_nome })}
+                            className="rounded p-1 hover:bg-destructive/10 text-destructive"
+                            title="Excluir NF (reverte o consumo nos pedidos)"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </>
+      )}
+
+      {/* Confirm dialog: Excluir NF */}
+      {confirmDeleteDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setConfirmDeleteDoc(null)}>
+          <div className="w-full max-w-md rounded-xl border bg-card shadow-2xl p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-bold mb-2 text-destructive flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4" /> Excluir NF #{confirmDeleteDoc.numero ?? '?'}
+            </h3>
+            <p className="text-xs text-muted-foreground mb-4">
+              Fornecedor: <span className="text-foreground font-medium">{confirmDeleteDoc.fornecedor ?? '—'}</span>.
+              Esta ação reverte o consumo nos planejados (qtd_recebida) e apaga o pedido novo criado pela NF (se houver).
+              Não é possível desfazer.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setConfirmDeleteDoc(null)} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">
+                Cancelar
+              </button>
+              <button
+                onClick={() => excluirNF.mutate(confirmDeleteDoc.id)}
+                disabled={excluirNF.isPending}
+                className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {excluirNF.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                Excluir e reverter
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Modal: Criar item rapido */}
