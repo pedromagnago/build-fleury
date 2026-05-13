@@ -7,6 +7,7 @@ import { MatrizCompras } from '@/components/compras/MatrizCompras'
 import { usePedidosConformidade } from '@/hooks/usePedidos'
 import {
   useItensCompra, useFornecedores, useCreateItemCompra, useUpdateItemCompra, useDeleteItemCompra,
+  usePedidoItens,
   useCreateFornecedor, useUpdateFornecedor, useDeleteFornecedor,
   usePedidos, useCreatePedidoLote, useUpdatePedido, useDeletePedido,
   type ItemCompra, type Pedido, type Fornecedor,
@@ -31,6 +32,7 @@ import {
 import {
   ShoppingCart, Plus, X, Check, Pencil, Package, Truck, Users, Copy,
   Search, BarChart3, ChevronDown, ChevronRight, CalendarClock, Trash2, Boxes,
+  AlertTriangle,
 } from 'lucide-react'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
@@ -162,13 +164,45 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
   const { data: fornecedores = [] } = useFornecedores()
   const { data: parcelas = [] } = useParcelas()
   const { data: pedidos = [] } = usePedidos()
+  const { data: pedidoItens = [] } = usePedidoItens()
   const createItem = useCreateItemCompra()
   const updateItem = useUpdateItemCompra()
   const deleteItem = useDeleteItemCompra()
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [inlineField, setInlineField] = useState<{ id: string; field: string; value: string } | null>(null)
+  // Drill-down: item de orçamento selecionado pra ver detalhes de consumo
+  const [drillDownItemId, setDrillDownItemId] = useState<string | null>(null)
   const selection = useSelection()
+
+  // Pós-migration: consumo é derivado de pedido_itens agrupado por item_compra_id.
+  // Antes a tabela usava pedido.valor_total_real direto, o que sobre-contava em
+  // pedidos novos (1 NF = N itens compartilham o mesmo valor_total no header).
+  const consumoPorItem = useMemo(() => {
+    const map = new Map<string, {
+      qtd_planejada: number       // pedidos não-cancelados, qtd ainda não recebida
+      qtd_recebida: number        // SUM(qtd_recebida) em não-cancelados
+      valor_comprometido: number  // SUM(valor_total_real) em não-cancelados
+      valor_recebido: number      // SUM(qtd_recebida × valor_unitario_real) em não-cancelados
+      ocorrencias: number         // quantos pedido_itens existem
+    }>()
+    for (const pi of pedidoItens) {
+      const ped = pi.pedidos
+      if (!ped || ped.status === 'cancelado') continue
+      const k = pi.item_compra_id
+      const entry = map.get(k) ?? { qtd_planejada: 0, qtd_recebida: 0, valor_comprometido: 0, valor_recebido: 0, ocorrencias: 0 }
+      const qtd = Number(pi.qtd ?? 0)
+      const qtdRec = Number(pi.qtd_recebida ?? 0)
+      const vu = Number(pi.valor_unitario_real ?? 0)
+      entry.qtd_recebida += qtdRec
+      entry.qtd_planejada += Math.max(qtd - qtdRec, 0)
+      entry.valor_comprometido += Number(pi.valor_total_real ?? 0)
+      entry.valor_recebido += qtdRec * vu
+      entry.ocorrencias += 1
+      map.set(k, entry)
+    }
+    return map
+  }, [pedidoItens])
 
   const [form, setForm] = useState({
     codigo: '', descricao: '', tipo: 'MATERIAL' as string, etapa_id: filterEtapa ?? '',
@@ -326,8 +360,8 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Tipo</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fornecedor</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orçado</th>
-                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Consumido</th>
-                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">% Consum.</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground" title="Soma comprometida em pedidos não-cancelados (planejado + recebido)">Comprometido</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground" title="Quantidade efetivamente recebida via NF (qtd_recebida) / quantidade total orçada">Recebido (qtd)</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pago</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Saldo</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ações</th>
@@ -335,9 +369,15 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
             </thead>
             <tbody className="divide-y">
               {filtered.map((item) => {
-                const itemConsumido = pedidos.filter(p => p.item_compra_id === item.id).reduce((s, p) => s + (p.valor_total_real || 0), 0)
+                // Consumo derivado de pedido_itens (fonte de verdade pós-migration).
+                const consumo = consumoPorItem.get(item.id) ?? { qtd_planejada: 0, qtd_recebida: 0, valor_comprometido: 0, valor_recebido: 0, ocorrencias: 0 }
+                const itemComprometido = consumo.valor_comprometido
                 const itemPago = parcelas.filter(p => p.item_compra_id === item.id).reduce((s, p) => s + (p.valor_pago || 0), 0)
-                const saldoReal = item.valor_total_orcado - itemConsumido
+                const saldoReal = item.valor_total_orcado - itemComprometido
+                const qtdTotal = item.qtd_total ?? 0
+                const qtdRecebida = consumo.qtd_recebida
+                const pctRecebido = qtdTotal > 0 ? (qtdRecebida / qtdTotal) * 100 : 0
+                const duplicadoSuspeito = qtdTotal > 0 && qtdRecebida > qtdTotal + 0.001
                 return (
                 <tr key={item.id} className="group hover:bg-muted/20">
                   <td className="px-2 py-2.5 text-center">
@@ -368,12 +408,32 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                     )}
                   </td>
                   <td className="px-3 py-2.5 text-right text-xs">{formatCurrency(item.valor_total_orcado)}</td>
-                  <td className="px-3 py-2.5 text-right text-xs text-amber-500">{formatCurrency(itemConsumido)}</td>
-                  <td className="px-3 py-2.5 text-right text-xs text-amber-500 font-mono text-[10px]">{item.valor_total_orcado > 0 ? ((itemConsumido / item.valor_total_orcado) * 100).toFixed(0) : 0}%</td>
+                  <td className="px-3 py-2.5 text-right text-xs text-amber-500">{formatCurrency(itemComprometido)}</td>
+                  <td className="px-3 py-2.5 text-right text-xs">
+                    {qtdTotal > 0 ? (
+                      <div className="flex items-center justify-end gap-1">
+                        <span className={`font-mono text-[10px] ${duplicadoSuspeito ? 'text-red-600 font-bold' : pctRecebido >= 99.9 ? 'text-emerald-600' : pctRecebido > 0 ? 'text-amber-600' : 'text-muted-foreground'}`}>
+                          {formatNumber(qtdRecebida, 2, 2)} / {formatNumber(qtdTotal, 2, 2)}
+                        </span>
+                        {duplicadoSuspeito && (
+                          <span className="text-red-600" title={`Atenção: recebido (${qtdRecebida}) excede orçado (${qtdTotal}). Possível duplicação.`}>⚠</span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground/50">—</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2.5 text-right text-xs text-blue-500 font-medium">{formatCurrency(itemPago)}</td>
                   <td className={`px-3 py-2.5 text-right text-xs font-medium ${saldoReal >= 0 ? '' : 'text-red-500'}`}>{formatCurrency(saldoReal)}</td>
                   <td className="px-3 py-2.5 text-center">
                     <div className="flex items-center justify-center gap-0.5">
+                      <button
+                        onClick={() => setDrillDownItemId(item.id)}
+                        className="rounded-md p-1 hover:bg-accent text-foreground"
+                        title="Ver pedidos e consumo detalhado deste item"
+                      >
+                        <Search className="h-3.5 w-3.5" />
+                      </button>
                       <button onClick={() => startEdit(item)} className="rounded-md p-1 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent" title="Editar"><Pencil className="h-3.5 w-3.5" /></button>
                       <button onClick={() => { if (window.confirm(`Excluir "${item.descricao}"? Pedidos e parcelas vinculados serão removidos.`)) deleteItem.mutate(item.id) }} className="rounded-md p-1 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-500/10 text-red-500" title="Excluir"><Trash2 className="h-3.5 w-3.5" /></button>
                     </div>
@@ -388,6 +448,152 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
       <BulkActionBar count={selection.count} onClear={selection.clear}>
         <ComprasBulkActions itens={itens} selectedIds={selection.selected} onDone={selection.clear} />
       </BulkActionBar>
+
+      {/* Drill-down: detalha o consumo do item — todos os pedidos, NFs, recebido, saldo */}
+      {drillDownItemId && (() => {
+        const item = itens.find(i => i.id === drillDownItemId)
+        if (!item) return null
+        const linhasDoItem = pedidoItens.filter((pi: any) => pi.item_compra_id === drillDownItemId)
+        const ativas = linhasDoItem.filter((pi: any) => pi.pedidos?.status !== 'cancelado')
+        const canceladas = linhasDoItem.filter((pi: any) => pi.pedidos?.status === 'cancelado')
+        const totQtd = ativas.reduce((s, pi: any) => s + Number(pi.qtd ?? 0), 0)
+        const totQtdRec = ativas.reduce((s, pi: any) => s + Number(pi.qtd_recebida ?? 0), 0)
+        const totValor = ativas.reduce((s, pi: any) => s + Number(pi.valor_total_real ?? 0), 0)
+        const totRecebido = ativas.reduce((s, pi: any) => s + Number(pi.qtd_recebida ?? 0) * Number(pi.valor_unitario_real ?? 0), 0)
+        const qtdOrc = item.qtd_total ?? 0
+        const excedeOrcamento = qtdOrc > 0 && totQtdRec > qtdOrc + 0.001
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setDrillDownItemId(null)}>
+            <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-xl border bg-card shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="sticky top-0 bg-card border-b px-5 py-3 flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold">{item.descricao}</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    <span className="font-mono">{item.codigo}</span>
+                    {item.etapa_nome && <> · {item.etapa_nome}</>}
+                    {item.fornecedor_nome && <> · {item.fornecedor_nome}</>}
+                  </p>
+                </div>
+                <button onClick={() => setDrillDownItemId(null)} className="rounded-md p-1 hover:bg-accent">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4">
+                {/* Resumo numérico — comparação direta orçado vs comprometido vs recebido */}
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                  <div className="rounded-md border bg-muted/10 p-2">
+                    <p className="text-[9px] uppercase text-muted-foreground">Qtd orçada</p>
+                    <p className="font-bold text-sm">{formatNumber(qtdOrc, 2, 2)} {item.unidade ?? ''}</p>
+                  </div>
+                  <div className="rounded-md border bg-muted/10 p-2">
+                    <p className="text-[9px] uppercase text-muted-foreground">Qtd comprometida</p>
+                    <p className="font-bold text-sm text-amber-600">{formatNumber(totQtd, 2, 2)}</p>
+                  </div>
+                  <div className={`rounded-md border p-2 ${excedeOrcamento ? 'border-red-500/40 bg-red-500/5' : 'bg-muted/10'}`}>
+                    <p className="text-[9px] uppercase text-muted-foreground">Qtd recebida</p>
+                    <p className={`font-bold text-sm ${excedeOrcamento ? 'text-red-600' : totQtdRec > 0 ? 'text-emerald-600' : ''}`}>
+                      {formatNumber(totQtdRec, 2, 2)}
+                    </p>
+                  </div>
+                  <div className="rounded-md border bg-muted/10 p-2">
+                    <p className="text-[9px] uppercase text-muted-foreground">Saldo planejado</p>
+                    <p className="font-bold text-sm">{formatNumber(Math.max(totQtd - totQtdRec, 0), 2, 2)}</p>
+                  </div>
+                  <div className="rounded-md border bg-muted/10 p-2">
+                    <p className="text-[9px] uppercase text-muted-foreground">Saldo orçamento</p>
+                    <p className={`font-bold text-sm ${(qtdOrc - totQtd) < 0 ? 'text-red-600' : 'text-foreground'}`}>
+                      {formatNumber(qtdOrc - totQtd, 2, 2)}
+                    </p>
+                  </div>
+                </div>
+
+                {excedeOrcamento && (
+                  <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-700 flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <strong>Possível duplicação:</strong> a quantidade recebida ({formatNumber(totQtdRec, 2, 2)}) excede a orçada ({formatNumber(qtdOrc, 2, 2)}).
+                      Verifique se alguma NF foi aplicada duas vezes ou se o orçamento precisa ser ajustado.
+                    </div>
+                  </div>
+                )}
+
+                {/* Lista de pedidos ativos com este item */}
+                {ativas.length > 0 ? (
+                  <div className="rounded-lg border overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted/40">
+                        <tr>
+                          <th className="px-2 py-1.5 text-left">Pedido</th>
+                          <th className="px-2 py-1.5 text-left">Fornecedor</th>
+                          <th className="px-2 py-1.5 text-center">Status</th>
+                          <th className="px-2 py-1.5 text-right">Qtd</th>
+                          <th className="px-2 py-1.5 text-right">Qtd receb.</th>
+                          <th className="px-2 py-1.5 text-right">Valor unit.</th>
+                          <th className="px-2 py-1.5 text-right">Valor total</th>
+                          <th className="px-2 py-1.5 text-left">Origem</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {ativas.map((pi: any) => {
+                          const ped = pi.pedidos
+                          const numero = ped?.numero_pedido ?? '?'
+                          const isNF = !!ped?.nf_origem_id
+                          return (
+                            <tr key={pi.id} className="hover:bg-muted/20">
+                              <td className="px-2 py-1.5 font-mono">#{numero}</td>
+                              <td className="px-2 py-1.5 truncate max-w-[150px]">{ped?.fornecedores?.nome ?? '—'}</td>
+                              <td className="px-2 py-1.5 text-center">
+                                <span className="rounded px-1 py-0.5 text-[9px] capitalize bg-muted">{(ped?.status ?? '').replace('_', ' ')}</span>
+                              </td>
+                              <td className="px-2 py-1.5 text-right font-mono">{formatNumber(Number(pi.qtd ?? 0), 2, 2)}</td>
+                              <td className="px-2 py-1.5 text-right font-mono">{formatNumber(Number(pi.qtd_recebida ?? 0), 2, 2)}</td>
+                              <td className="px-2 py-1.5 text-right font-mono">{formatCurrency(Number(pi.valor_unitario_real ?? 0))}</td>
+                              <td className="px-2 py-1.5 text-right font-mono font-medium">{formatCurrency(Number(pi.valor_total_real ?? 0))}</td>
+                              <td className="px-2 py-1.5 text-[10px]">
+                                {isNF ? <span className="text-blue-600">via NF</span> : <span className="text-muted-foreground">manual</span>}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                        <tr className="bg-primary/5 font-bold">
+                          <td colSpan={3} className="px-2 py-1.5 text-right">Total ativo</td>
+                          <td className="px-2 py-1.5 text-right font-mono">{formatNumber(totQtd, 2, 2)}</td>
+                          <td className="px-2 py-1.5 text-right font-mono">{formatNumber(totQtdRec, 2, 2)}</td>
+                          <td className="px-2 py-1.5 text-right">—</td>
+                          <td className="px-2 py-1.5 text-right font-mono">{formatCurrency(totValor)}</td>
+                          <td className="px-2 py-1.5 text-[10px] text-muted-foreground">recebido R$ {formatNumber(totRecebido, 2, 2)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="rounded-md border bg-muted/10 p-4 text-center text-xs text-muted-foreground">
+                    Nenhum pedido ativo deste item ainda. Saldo orçado integral.
+                  </div>
+                )}
+
+                {canceladas.length > 0 && (
+                  <details className="rounded-md border bg-muted/5">
+                    <summary className="cursor-pointer px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-muted/20">
+                      + {canceladas.length} pedido(s) cancelado(s) (não contam no consumo)
+                    </summary>
+                    <div className="border-t divide-y text-[10px] max-h-32 overflow-y-auto">
+                      {canceladas.map((pi: any) => (
+                        <div key={pi.id} className="px-3 py-1 flex items-center justify-between gap-2 text-muted-foreground">
+                          <span className="font-mono">#{pi.pedidos?.numero_pedido ?? '?'}</span>
+                          <span>{formatNumber(Number(pi.qtd ?? 0), 2, 2)} × {formatCurrency(Number(pi.valor_unitario_real ?? 0))}</span>
+                          <span className="line-through">{formatCurrency(Number(pi.valor_total_real ?? 0))}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </>
   )
 }
