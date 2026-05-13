@@ -15,14 +15,21 @@ export interface PdfPageImage {
 }
 
 export async function pdfFileToImages(file: File): Promise<PdfPageImage[]> {
-  // Dynamic import — não inclui no bundle inicial
-  const pdfjs = await import('pdfjs-dist')
-  // Worker do pdfjs (mesma versão do main)
-  const workerMod: any = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
+  // Dynamic import — não inclui no bundle inicial.
+  // LEGACY build pelo mesmo motivo do pdfText.ts: o build "main" v5+ tem bug
+  // de ReadableStream/AsyncIterator no Vite ("undefined is not a function").
+  const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  const workerMod: any = await import('pdfjs-dist/legacy/build/pdf.worker.mjs?url')
   pdfjs.GlobalWorkerOptions.workerSrc = workerMod.default
 
   const buffer = await file.arrayBuffer()
-  const pdf = await pdfjs.getDocument({ data: buffer }).promise
+  const pdf = await pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+    disableStream: true,
+    disableAutoFetch: true,
+    useWorkerFetch: false,
+    isEvalSupported: false,
+  }).promise
 
   const out: PdfPageImage[] = []
   for (let n = 1; n <= pdf.numPages; n++) {
