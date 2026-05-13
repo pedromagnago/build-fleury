@@ -14,6 +14,7 @@ import { extrairDoc, searchItensCompra, fileToBase64, carregarAliasesFornecedor,
 import { indexarEmbeddingsPendentes, embedQuery } from '@/lib/recepcao/indexador'
 import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
 import { pdfFileToText } from '@/lib/recepcao/pdfText'
+import { parseDanfe } from '@/lib/recepcao/danfeParser'
 import { ItemPickerCombobox } from '@/components/recepcao/ItemPickerCombobox'
 import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle } from 'lucide-react'
 import { useEtapas } from '@/hooks/useEtapas'
@@ -225,17 +226,37 @@ export default function RecepcaoPage() {
           textoPdf = { texto: '', paginas: 0, total_chars: 0, tem_texto_nativo: false, paginas_com_erro: 0 }
         }
         if (textoPdf.tem_texto_nativo) {
-          toast.info(`PDF com texto nativo (${textoPdf.total_chars.toLocaleString('pt-BR')} chars) — extraindo direto, sem Vision.`)
-          const r = await extrairDoc({ kind: 'texto', content: textoPdf.texto })
-          await iniciarRevisao({
-            fornecedor: r.fornecedor,
-            documento: r.documento,
-            itens: r.itens,
-            observacoes: r.observacoes,
-            origem: 'texto',
-            modelo: r._meta?.modelo,
-            custo_cents: r._meta?.custo_cents,
-          })
+          // Caminho ouro: PDF com texto nativo + DANFE-padrão → parser determinístico (sem IA)
+          const danfe = parseDanfe(textoPdf.texto)
+          if (danfe && danfe.itens.length > 0 && danfe.qualidade >= 0.7) {
+            toast.success(`DANFE parseada deterministicamente: ${danfe.itens.length} itens, ${Math.round(danfe.qualidade * 100)}% de validação. Sem IA, custo zero.`)
+            await iniciarRevisao({
+              fornecedor: danfe.fornecedor,
+              documento: danfe.documento,
+              itens: danfe.itens,
+              observacoes: danfe.observacoes,
+              origem: 'texto',
+              modelo: 'parser_danfe',
+              custo_cents: 0,
+            })
+          } else {
+            // PDF tem texto mas não casou DANFE-padrão — manda pra IA com o texto extraído
+            if (danfe) {
+              toast.info(`Parser DANFE incompleto (${danfe.itens.length} itens, ${Math.round(danfe.qualidade * 100)}% qualidade) — fallback pra IA.`)
+            } else {
+              toast.info(`PDF com texto nativo (${textoPdf.total_chars.toLocaleString('pt-BR')} chars) — extraindo via IA (não é DANFE-padrão).`)
+            }
+            const r = await extrairDoc({ kind: 'texto', content: textoPdf.texto })
+            await iniciarRevisao({
+              fornecedor: r.fornecedor,
+              documento: r.documento,
+              itens: r.itens,
+              observacoes: r.observacoes,
+              origem: 'texto',
+              modelo: r._meta?.modelo,
+              custo_cents: r._meta?.custo_cents,
+            })
+          }
         } else {
           // PDF escaneado (foto digitalizada) — sem texto extraível. Rasteriza e usa Vision.
           toast.info('PDF sem texto nativo (escaneado) — convertendo em imagens pra IA Vision…')
