@@ -14,13 +14,18 @@ export interface TeamMember {
   created_at?: string
 }
 
+export type InviteStatus = 'pending' | 'used' | 'revoked' | 'expired'
+
 export interface Invite {
   id: string
-  invited_email: string
-  role: string
-  active: boolean
+  token: string
+  email: string
+  role: UserRole
+  expires_at: string
+  used_at: string | null
+  revoked_at: string | null
   created_at: string
-  is_resolved: boolean
+  status: InviteStatus
 }
 
 interface TeamStats {
@@ -29,6 +34,15 @@ interface TeamStats {
   active: number
   inactive: number
   pendingInvites: number
+}
+
+export interface CreateInviteResult {
+  ok: boolean
+  message: string
+  token?: string
+  inviteUrl?: string
+  expiresAt?: string
+  status?: 'invited' | 'already_invited' | 'already_member'
 }
 
 interface UseGestaoUsuariosReturn {
@@ -42,9 +56,9 @@ interface UseGestaoUsuariosReturn {
   updateRole: (roleId: string, newRole: UserRole) => Promise<boolean>
   toggleActive: (roleId: string, currentlyActive: boolean) => Promise<boolean>
   removeMember: (roleId: string) => Promise<boolean>
-  inviteUser: (email: string, role: string) => Promise<{ ok: boolean; message: string }>
+  createInvite: (email: string, role: string) => Promise<CreateInviteResult>
   revokeInvite: (inviteId: string) => Promise<boolean>
-  resendInvite: (email: string) => Promise<boolean>
+  buildInviteUrl: (token: string) => string
 }
 
 export function useGestaoUsuarios(): UseGestaoUsuariosReturn {
@@ -55,6 +69,10 @@ export function useGestaoUsuarios(): UseGestaoUsuariosReturn {
   const [inviting, setInviting] = useState(false)
 
   const companyId = currentCompany?.id
+
+  const buildInviteUrl = useCallback((token: string) => {
+    return `${window.location.origin}/convite/${token}`
+  }, [])
 
   const fetchMembers = useCallback(async () => {
     if (!companyId) return
@@ -70,7 +88,7 @@ export function useGestaoUsuarios(): UseGestaoUsuariosReturn {
 
   const fetchInvites = useCallback(async () => {
     if (!companyId) return
-    const { data, error } = await supabase.rpc('list_invites', { _company_id: companyId })
+    const { data, error } = await supabase.rpc('list_user_invites', { _company_id: companyId })
     if (data && !error) setInvites(data as Invite[])
   }, [companyId])
 
@@ -161,7 +179,7 @@ export function useGestaoUsuarios(): UseGestaoUsuariosReturn {
     return true
   }, [companyId, members, fetchMembers])
 
-  const inviteUser = useCallback(async (email: string, role: string): Promise<{ ok: boolean; message: string }> => {
+  const createInvite = useCallback(async (email: string, role: string): Promise<CreateInviteResult> => {
     if (!companyId) return { ok: false, message: 'Sem projeto selecionado' }
 
     const trimmed = email.trim().toLowerCase()
@@ -172,100 +190,79 @@ export function useGestaoUsuarios(): UseGestaoUsuariosReturn {
     setInviting(true)
 
     try {
-      const { data: result, error: rpcError } = await supabase.rpc('invite_user', {
+      const { data: result, error } = await supabase.rpc('create_invite', {
         _email: trimmed,
         _role: role,
         _company_id: companyId,
       })
 
-      if (rpcError) {
-        setInviting(false)
-        return { ok: false, message: rpcError.message }
+      if (error) {
+        return { ok: false, message: error.message }
       }
 
-      const res = result as { status: string; message: string }
-
-      if (res.status === 'already_invited' || res.status === 'already_member') {
-        setInviting(false)
-        return { ok: false, message: res.message }
+      const res = result as {
+        status: 'invited' | 'already_invited' | 'already_member'
+        message: string
+        token?: string
+        expires_at?: string
       }
 
-      if (res.status === 'linked' || res.status === 'reactivated') {
+      if (res.status === 'already_member') {
+        return { ok: false, status: res.status, message: res.message }
+      }
+
+      const token = res.token
+      const inviteUrl = token ? buildInviteUrl(token) : undefined
+
+      if (res.status === 'invited') {
         await writeAuditLog({
           companyId,
-          tabela: 'user_roles',
-          acao: res.status === 'reactivated' ? 'UPDATE' : 'INSERT',
+          tabela: 'user_invites',
+          acao: 'INSERT',
           dadosDepois: { email: trimmed, role },
-          resumo: res.status === 'reactivated'
-            ? `Reativou ${trimmed} como ${role}`
-            : `Vinculou ${trimmed} ao projeto como ${role}`,
+          resumo: `Gerou convite para ${trimmed} como ${role}`,
         })
-        await fetchInvites()
-        await fetchMembers()
-        setInviting(false)
-        return { ok: true, message: res.message }
       }
-
-      const { error: otpError } = await supabase.auth.signInWithOtp({
-        email: trimmed,
-        options: {
-          shouldCreateUser: true,
-          emailRedirectTo: `${window.location.origin}/dashboard`,
-        },
-      })
-
-      await writeAuditLog({
-        companyId,
-        tabela: 'user_roles',
-        acao: 'INSERT',
-        dadosDepois: { invited_email: trimmed, role },
-        resumo: `Convidou ${trimmed} como ${role}`,
-      })
 
       await fetchInvites()
-      await fetchMembers()
 
-      setInviting(false)
-
-      if (otpError) {
-        return { ok: false, message: `Convite registrado mas falha ao enviar e-mail: ${otpError.message}` }
+      return {
+        ok: true,
+        status: res.status,
+        message: res.status === 'already_invited'
+          ? 'Já havia um convite ativo para este email — link atual abaixo.'
+          : `Convite criado para ${trimmed}. Compartilhe o link.`,
+        token,
+        inviteUrl,
+        expiresAt: res.expires_at,
       }
-      return { ok: true, message: `Convite enviado para ${trimmed}!` }
     } catch {
+      return { ok: false, message: 'Erro inesperado ao criar convite' }
+    } finally {
       setInviting(false)
-      return { ok: false, message: 'Erro inesperado ao enviar convite' }
     }
-  }, [companyId, fetchInvites, fetchMembers])
+  }, [companyId, fetchInvites, buildInviteUrl])
 
   const revokeInvite = useCallback(async (inviteId: string): Promise<boolean> => {
-    const { error } = await supabase.rpc('revoke_invite', { _role_id: inviteId })
+    const { error } = await supabase.rpc('revoke_user_invite', { _invite_id: inviteId })
     if (error) return false
 
     if (companyId) {
       await writeAuditLog({
         companyId,
-        tabela: 'user_roles',
-        acao: 'DELETE',
+        tabela: 'user_invites',
+        acao: 'UPDATE',
         registroId: inviteId,
+        dadosDepois: { revoked_at: new Date().toISOString() },
         resumo: 'Revogou convite de usuário',
       })
     }
 
     await fetchInvites()
-    await fetchMembers()
     return true
-  }, [companyId, fetchInvites, fetchMembers])
+  }, [companyId, fetchInvites])
 
-  const resendInvite = useCallback(async (email: string): Promise<boolean> => {
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        shouldCreateUser: true,
-        emailRedirectTo: `${window.location.origin}/dashboard`,
-      },
-    })
-    return !error
-  }, [])
+  const pendingInvites = invites.filter(i => i.status === 'pending').length
 
   const stats: TeamStats = {
     total: members.length,
@@ -275,7 +272,7 @@ export function useGestaoUsuarios(): UseGestaoUsuariosReturn {
     }, {} as Record<string, number>),
     active: members.filter(m => m.active).length,
     inactive: members.filter(m => !m.active).length,
-    pendingInvites: invites.filter(i => !i.is_resolved).length,
+    pendingInvites,
   }
 
   return {
@@ -289,8 +286,8 @@ export function useGestaoUsuarios(): UseGestaoUsuariosReturn {
     updateRole,
     toggleActive,
     removeMember,
-    inviteUser,
+    createInvite,
     revokeInvite,
-    resendInvite,
+    buildInviteUrl,
   }
 }

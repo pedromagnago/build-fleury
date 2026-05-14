@@ -15,6 +15,7 @@ import '@/lib/tours/tour.css'
 import LandingPage from '@/pages/LandingPage'
 import Login from '@/pages/Login'
 import ResetSenhaPage from '@/pages/ResetSenhaPage'
+import AceitarConvitePage from '@/pages/AceitarConvitePage'
 import Onboarding from '@/pages/Onboarding'
 import ProjectSelector from '@/pages/ProjectSelector'
 // Dashboard removed — redirects to /cronograma
@@ -61,6 +62,7 @@ export default function App() {
               <Route path="/" element={<LandingPage />} />
               <Route path="/login" element={<Login />} />
               <Route path="/reset-senha" element={<ResetSenhaPage />} />
+              <Route path="/convite/:token" element={<AceitarConvitePage />} />
 
               {/* Protected: Onboarding (no project needed) */}
               <Route

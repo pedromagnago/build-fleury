@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { useGestaoUsuarios, type TeamMember, type Invite } from '@/hooks/useGestaoUsuarios'
+import { useGestaoUsuarios, type TeamMember, type Invite, type InviteStatus } from '@/hooks/useGestaoUsuarios'
 import { useUserRole, ROLE_LABELS, type UserRole } from '@/hooks/useUserRole'
 import { toast } from 'sonner'
 import {
-  Users, UserPlus, Mail, Send, Trash2, Shield, ShieldCheck,
+  Users, UserPlus, Mail, Trash2, Shield, ShieldCheck,
   ShieldAlert, UserCog, CheckCircle2, Clock, AlertCircle,
   Search, MoreVertical, UserX, UserCheck, Crown,
+  Copy, Link as LinkIcon, X, ExternalLink,
 } from 'lucide-react'
 
 const ROLE_ICON: Record<UserRole, typeof Shield> = {
@@ -23,18 +24,43 @@ const ROLE_COLOR: Record<UserRole, string> = {
   cliente: 'bg-slate-500/10 text-slate-600 border-slate-500/20',
 }
 
+const STATUS_LABEL: Record<InviteStatus, { label: string; color: string }> = {
+  pending: { label: 'Aguardando aceite', color: 'bg-amber-500/10 text-amber-600' },
+  used:    { label: 'Conta criada',      color: 'bg-emerald-500/10 text-emerald-600' },
+  revoked: { label: 'Revogado',          color: 'bg-red-500/10 text-red-600' },
+  expired: { label: 'Expirado',          color: 'bg-slate-500/10 text-slate-600' },
+}
+
+interface GeneratedInvite {
+  email: string
+  role: string
+  inviteUrl: string
+  expiresAt?: string
+  reused: boolean
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export default function GestaoUsuariosPage() {
   const { role: currentUserRole } = useUserRole()
   const {
     members, invites, stats, loading, inviting,
     updateRole, toggleActive, removeMember,
-    inviteUser, revokeInvite, resendInvite,
+    createInvite, revokeInvite, buildInviteUrl,
   } = useGestaoUsuarios()
 
   const [search, setSearch] = useState('')
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<string>('operador')
   const [activeMenu, setActiveMenu] = useState<string | null>(null)
+  const [generated, setGenerated] = useState<GeneratedInvite | null>(null)
 
   const isAdmin = currentUserRole === 'super_admin' || currentUserRole === 'supervisor'
 
@@ -48,14 +74,34 @@ export default function GestaoUsuariosPage() {
     )
   })
 
-  const handleInvite = async () => {
-    const result = await inviteUser(inviteEmail, inviteRole)
-    if (result.ok) {
-      toast.success(result.message)
+  const handleCreate = async () => {
+    const result = await createInvite(inviteEmail, inviteRole)
+    if (!result.ok) {
+      toast.error(result.message)
+      return
+    }
+    if (result.inviteUrl) {
+      setGenerated({
+        email: inviteEmail.trim().toLowerCase(),
+        role: inviteRole,
+        inviteUrl: result.inviteUrl,
+        expiresAt: result.expiresAt,
+        reused: result.status === 'already_invited',
+      })
       setInviteEmail('')
     } else {
-      toast.error(result.message)
+      toast.success(result.message)
     }
+  }
+
+  const handleCopy = async (url: string) => {
+    const ok = await copyToClipboard(url)
+    if (ok) toast.success('Link copiado para a área de transferência')
+    else toast.error('Não foi possível copiar — selecione manualmente.')
+  }
+
+  const handleCopyExisting = (inv: Invite) => {
+    handleCopy(buildInviteUrl(inv.token))
   }
 
   const handleUpdateRole = async (roleId: string, newRole: UserRole) => {
@@ -82,16 +128,10 @@ export default function GestaoUsuariosPage() {
   }
 
   const handleRevokeInvite = async (inv: Invite) => {
-    if (!window.confirm(`Revogar convite de ${inv.invited_email}?`)) return
+    if (!window.confirm(`Revogar convite de ${inv.email}? O link deixará de funcionar.`)) return
     const ok = await revokeInvite(inv.id)
     if (ok) toast.success('Convite revogado')
     else toast.error('Erro ao revogar convite')
-  }
-
-  const handleResendInvite = async (email: string) => {
-    const ok = await resendInvite(email)
-    if (ok) toast.success(`Link reenviado para ${email}`)
-    else toast.error('Erro ao reenviar link')
   }
 
   if (loading) {
@@ -132,7 +172,7 @@ export default function GestaoUsuariosPage() {
                 type="email"
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleInvite()}
+                onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
                 placeholder="email@exemplo.com"
                 className="w-full rounded-lg border bg-background py-2.5 pl-9 pr-3 text-sm placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               />
@@ -147,17 +187,17 @@ export default function GestaoUsuariosPage() {
               <option value="cliente">Cliente</option>
             </select>
             <button
-              onClick={handleInvite}
+              onClick={handleCreate}
               disabled={inviting || !inviteEmail.trim()}
               className="flex items-center justify-center gap-1.5 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
             >
-              <UserPlus className="h-4 w-4" />
-              {inviting ? 'Enviando...' : 'Convidar'}
+              <LinkIcon className="h-4 w-4" />
+              {inviting ? 'Gerando...' : 'Gerar link'}
             </button>
           </div>
           <p className="mt-2.5 flex items-start gap-1.5 text-[11px] text-muted-foreground">
             <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
-            O convidado receberá um link de acesso por e-mail. Se já tiver conta, será vinculado automaticamente ao projeto.
+            Gera um link único que você compartilha com o convidado (WhatsApp, e-mail, etc). Ele cria a própria senha ao abrir.
           </p>
         </div>
       )}
@@ -205,7 +245,6 @@ export default function GestaoUsuariosPage() {
 
                 return (
                   <tr key={member.id} className="transition-colors hover:bg-muted/20">
-                    {/* User */}
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
                         <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
@@ -220,7 +259,6 @@ export default function GestaoUsuariosPage() {
                       </div>
                     </td>
 
-                    {/* Role */}
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-semibold ${roleConfig}`}>
                         <RoleIcon className="h-3 w-3" />
@@ -228,7 +266,6 @@ export default function GestaoUsuariosPage() {
                       </span>
                     </td>
 
-                    {/* Status */}
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
                         member.active
@@ -240,7 +277,6 @@ export default function GestaoUsuariosPage() {
                       </span>
                     </td>
 
-                    {/* Date */}
                     <td className="px-4 py-3 hidden sm:table-cell">
                       <span className="text-xs text-muted-foreground">
                         {member.created_at
@@ -249,7 +285,6 @@ export default function GestaoUsuariosPage() {
                       </span>
                     </td>
 
-                    {/* Actions */}
                     {isAdmin && (
                       <td className="px-4 py-3 text-right">
                         <div className="relative inline-block">
@@ -264,7 +299,6 @@ export default function GestaoUsuariosPage() {
                             <>
                               <div className="fixed inset-0 z-40" onClick={() => setActiveMenu(null)} />
                               <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-xl border bg-popover p-1.5 shadow-xl">
-                                {/* Change role */}
                                 <p className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
                                   Alterar Role
                                 </p>
@@ -287,7 +321,6 @@ export default function GestaoUsuariosPage() {
 
                                 <div className="my-1.5 border-t" />
 
-                                {/* Toggle active */}
                                 <button
                                   onClick={() => handleToggleActive(member)}
                                   className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-foreground hover:bg-accent transition-colors"
@@ -298,7 +331,6 @@ export default function GestaoUsuariosPage() {
                                   }
                                 </button>
 
-                                {/* Remove */}
                                 <button
                                   onClick={() => handleRemove(member)}
                                   className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-destructive hover:bg-destructive/10 transition-colors"
@@ -329,60 +361,64 @@ export default function GestaoUsuariosPage() {
         </div>
       </div>
 
-      {/* Pending Invites */}
+      {/* Invites */}
       {invites.length > 0 && (
         <div className="mt-6 rounded-xl border bg-card p-5">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <Mail className="h-4 w-4 text-primary" />
-            Convites Pendentes
+            Convites
             <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600">
-              {invites.filter(i => !i.is_resolved).length}
+              {invites.filter(i => i.status === 'pending').length} pendentes
             </span>
           </h3>
 
           <div className="space-y-2">
-            {invites.map((inv) => (
-              <div key={inv.id} className="flex items-center justify-between rounded-lg border border-dashed px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-500/10">
-                    {inv.is_resolved
-                      ? <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                      : <Clock className="h-4 w-4 text-amber-500" />
-                    }
+            {invites.map((inv) => {
+              const cfg = STATUS_LABEL[inv.status]
+              const canCopy = inv.status === 'pending'
+              const canRevoke = isAdmin && inv.status === 'pending'
+              return (
+                <div key={inv.id} className="flex items-center justify-between rounded-lg border border-dashed px-4 py-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted/40">
+                      {inv.status === 'used'    ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> :
+                       inv.status === 'pending' ? <Clock className="h-4 w-4 text-amber-500" /> :
+                                                   <AlertCircle className="h-4 w-4 text-muted-foreground" />}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{inv.email}</p>
+                      <p className="truncate text-xs text-muted-foreground capitalize">
+                        {ROLE_LABELS[inv.role] ?? inv.role} ·{' '}
+                        <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] ${cfg.color}`}>{cfg.label}</span>
+                        {inv.status === 'pending' && (
+                          <> · expira {new Date(inv.expires_at).toLocaleDateString('pt-BR')}</>
+                        )}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm font-medium">{inv.invited_email}</p>
-                    <p className="text-xs text-muted-foreground capitalize">
-                      {inv.role.replace('_', ' ')} •{' '}
-                      {inv.is_resolved
-                        ? <span className="text-emerald-600">Conta criada ✓</span>
-                        : <span className="text-amber-600">Aguardando confirmação</span>
-                      }
-                    </p>
-                  </div>
-                </div>
-                {isAdmin && (
                   <div className="flex items-center gap-1">
-                    {!inv.is_resolved && (
+                    {canCopy && (
                       <button
-                        onClick={() => handleResendInvite(inv.invited_email)}
+                        onClick={() => handleCopyExisting(inv)}
                         className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                        title="Reenviar convite"
+                        title="Copiar link do convite"
                       >
-                        <Send className="h-3.5 w-3.5" />
+                        <Copy className="h-3.5 w-3.5" />
                       </button>
                     )}
-                    <button
-                      onClick={() => handleRevokeInvite(inv)}
-                      className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                      title="Revogar convite"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {canRevoke && (
+                      <button
+                        onClick={() => handleRevokeInvite(inv)}
+                        className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        title="Revogar convite"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
@@ -395,22 +431,10 @@ export default function GestaoUsuariosPage() {
         </h3>
         <div className="grid gap-3 sm:grid-cols-2">
           {([
-            {
-              role: 'super_admin' as UserRole,
-              desc: 'Acesso total ao sistema. Pode gerenciar usuários, configurações e todos os módulos.',
-            },
-            {
-              role: 'supervisor' as UserRole,
-              desc: 'Acesso a todos os módulos. Pode gerenciar equipe e aprovar operações.',
-            },
-            {
-              role: 'operador' as UserRole,
-              desc: 'Acesso a compras, pagamentos, conciliação, documentos e relatórios.',
-            },
-            {
-              role: 'cliente' as UserRole,
-              desc: 'Visualização somente leitura do cronograma, avanço físico e relatórios.',
-            },
+            { role: 'super_admin' as UserRole, desc: 'Acesso total ao sistema. Pode gerenciar usuários, configurações e todos os módulos.' },
+            { role: 'supervisor' as UserRole,  desc: 'Acesso a todos os módulos. Pode gerenciar equipe e aprovar operações.' },
+            { role: 'operador' as UserRole,    desc: 'Acesso a compras, pagamentos, conciliação, documentos e relatórios.' },
+            { role: 'cliente' as UserRole,     desc: 'Visualização somente leitura do cronograma, avanço físico e relatórios.' },
           ]).map(item => {
             const RIcon = ROLE_ICON[item.role]
             return (
@@ -427,6 +451,72 @@ export default function GestaoUsuariosPage() {
           })}
         </div>
       </div>
+
+      {/* Generated Invite Modal */}
+      {generated && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-xl border bg-card p-5 shadow-2xl">
+            <div className="mb-3 flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-500">
+                  <LinkIcon className="h-4 w-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold">
+                    {generated.reused ? 'Convite ativo recuperado' : 'Convite criado'}
+                  </h4>
+                  <p className="text-[11px] text-muted-foreground">
+                    para <span className="font-medium">{generated.email}</span> · {ROLE_LABELS[generated.role as UserRole] ?? generated.role}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setGenerated(null)}
+                className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <p className="mb-2 text-xs text-muted-foreground">
+              Compartilhe este link com o convidado. Ele vai criar a própria senha ao abrir.
+            </p>
+
+            <div className="mb-3 flex items-stretch gap-2">
+              <input
+                type="text"
+                value={generated.inviteUrl}
+                readOnly
+                onFocus={(e) => e.currentTarget.select()}
+                className="flex-1 rounded-lg border bg-muted/30 px-3 py-2 text-xs font-mono text-foreground focus:outline-none"
+              />
+              <button
+                onClick={() => handleCopy(generated.inviteUrl)}
+                className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:opacity-90"
+              >
+                <Copy className="h-3.5 w-3.5" />
+                Copiar
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>
+                {generated.expiresAt
+                  ? <>Expira em {new Date(generated.expiresAt).toLocaleDateString('pt-BR')}</>
+                  : 'Validade 7 dias'}
+              </span>
+              <a
+                href={generated.inviteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-primary hover:underline"
+              >
+                Abrir <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
