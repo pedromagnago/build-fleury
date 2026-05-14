@@ -464,11 +464,15 @@ export default function RecepcaoPage() {
           if (top && (zona === 'alta' || zona === 'media')) {
             novas[idx]!.item_compra_id = top.item_id
             // Match SÓ POR ITEM (não filtra fornecedor): qualquer pedido com saldo
-            // pra consumir conta. Status com saldo = planejado, pedido_enviado ou
-            // parcialmente_entregue.
+            // pra consumir conta. Pós split_pedidos_header_e_itens o item_compra_id
+            // do header é legado — temos que olhar dentro de `pedido.itens` (estrutura
+            // nova) E só considerar quem ainda tem saldo (qtd > qtd_recebida).
             const pedidoExistente = pedidos.find(p =>
-              p.item_compra_id === top.item_id
-              && ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status)
+              ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status)
+              && (p.itens ?? []).some(pi =>
+                pi.item_compra_id === top.item_id
+                && Number(pi.qtd ?? 0) > Number(pi.qtd_recebida ?? 0) + 0.001
+              )
             )
             novas[idx]!.acao = pedidoExistente ? 'substituir_pedido' : 'criar_pedido'
             if (pedidoExistente) novas[idx]!.pedido_substituido_id = pedidoExistente.id
@@ -610,10 +614,16 @@ export default function RecepcaoPage() {
   // Handler unificado: operador escolheu um item do orçamento pra esta linha da NF.
   // Substitui as 2 lógicas duplicadas dos antigos <select> de sugestões.
   const escolherItemParaLinha = (idx: number, novoItemId: string | null) => {
-    // Match SÓ POR ITEM (sem fornecedor) — mesma regra do auto-match.
+    // Match SÓ POR ITEM (sem fornecedor) — busca em pedido_itens (estrutura nova)
+    // e considera apenas pedidos com saldo aberto.
     const pedidoExistente = novoItemId
-      ? pedidos.find(p => p.item_compra_id === novoItemId
-                          && ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status))
+      ? pedidos.find(p =>
+          ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status)
+          && (p.itens ?? []).some(pi =>
+            pi.item_compra_id === novoItemId
+            && Number(pi.qtd ?? 0) > Number(pi.qtd_recebida ?? 0) + 0.001
+          )
+        )
       : undefined
     setExtracao(prev => prev ? {
       ...prev,
@@ -1790,6 +1800,19 @@ export default function RecepcaoPage() {
                   const sugTop = linha.sugestoesItens?.[0]
                   const itemSelecionado = linha.item_compra_id ? itens.find(i => i.id === linha.item_compra_id) : null
                   const pedidoSel = linha.pedido_substituido_id ? pedidos.find(p => p.id === linha.pedido_substituido_id) : null
+                  // Há QUALQUER pedido planejado com saldo aberto pra este item?
+                  // Se sim, "Consumir previsão" fica habilitado mesmo que o auto-match
+                  // não tenha pré-selecionado um pedido (operador escolhe na hora).
+                  const candidatoConsumo = !pedidoSel && linha.item_compra_id
+                    ? pedidos.find(p =>
+                        ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status)
+                        && (p.itens ?? []).some(pi =>
+                          pi.item_compra_id === linha.item_compra_id
+                          && Number(pi.qtd ?? 0) > Number(pi.qtd_recebida ?? 0) + 0.001
+                        )
+                      )
+                    : undefined
+                  const podeConsumir = !!pedidoSel || !!candidatoConsumo
                   const zona = zonaDeScore(sugTop?.score_combined)
                   const precisaConf = !!linha.precisaConfirmar && !linha.confirmado
                   // Destaque de fundo por estado: pendente confirmação > alta confiança > nenhum
@@ -1940,14 +1963,24 @@ export default function RecepcaoPage() {
                             const acao = e.target.value as Acao
                             setExtracao(prev => prev ? {
                               ...prev,
-                              itens: prev.itens.map((l, i) => i === idx ? { ...l, acao, confirmado: true, precisaConfirmar: false } : l)
+                              itens: prev.itens.map((l, i) => {
+                                if (i !== idx) return l
+                                // Ao mudar pra "substituir_pedido" sem pedido pré-selecionado,
+                                // pega o primeiro candidato (FIFO) — operador pode confirmar/aplicar.
+                                const pedSubId = acao === 'substituir_pedido'
+                                  ? (l.pedido_substituido_id || candidatoConsumo?.id || null)
+                                  : l.pedido_substituido_id
+                                return { ...l, acao, pedido_substituido_id: pedSubId, confirmado: true, precisaConfirmar: false }
+                              })
                             } : prev)
                           }}
                           className="w-full rounded border bg-background px-1.5 py-1 text-[11px]"
                         >
                           <option value="">— escolher —</option>
                           <option value="criar_pedido">Criar pedido novo</option>
-                          <option value="substituir_pedido" disabled={!pedidoSel}>Consumir previsão (FIFO entre planejados)</option>
+                          <option value="substituir_pedido" disabled={!podeConsumir}>
+                            Consumir previsão (FIFO entre planejados)
+                          </option>
                           <option value="criar_item">Criar item novo (manual)</option>
                           <option value="ignorar">Ignorar</option>
                         </select>
