@@ -36,7 +36,10 @@ type Item = {
   data: string
   tipo: 'entrada' | 'firme' | 'bruto'
   modified?: boolean
-  meta?: { cat?: string; etapa?: string; forn?: string; item?: string; orig?: number }
+  meta?: {
+    cat?: string; etapa?: string; forn?: string; item?: string; orig?: number;
+    origem?: 'nf' | 'saldo' | 'planejado' | 'despesa' | 'avulsa' | 'medicao' | 'mutuo'
+  }
 }
 
 interface SimuladorProps {
@@ -180,7 +183,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         data: o?.newDate || ev.date,
         tipo: ev.type,
         modified: mod,
-        meta: { cat: ev.meta.cat, etapa: ev.meta.etapa, forn: ev.meta.forn, item: ev.meta.item, orig: ev.valor }
+        meta: { cat: ev.meta.cat, etapa: ev.meta.etapa, forn: ev.meta.forn, item: ev.meta.item, orig: ev.valor, origem: ev.meta.origem }
       } as Item
     })
   }, [cashFlowEvents, overrides])
@@ -441,42 +444,96 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
         if (!expanded[fornKey]) continue
 
-        // Level 3: Individual items within Fornecedor
-        const itemGroups = new Map<string, Item[]>()
+        // Level 3 (NOVO): agrupa items por ORIGEM (NF / Saldo / Planejado / etc).
+        // Permite ao operador ver, dentro de um fornecedor, quanto vem de NF
+        // aplicada vs de planejamento puro vs saldo após consumo parcial.
+        const origemGroups = new Map<string, Item[]>()
         fornItems.forEach(i => {
-          const k = i.desc
-          if (!itemGroups.has(k)) itemGroups.set(k, [])
-          itemGroups.get(k)!.push(i)
+          const k = i.meta?.origem || 'planejado'
+          if (!origemGroups.has(k)) origemGroups.set(k, [])
+          origemGroups.get(k)!.push(i)
         })
 
-        for (const [desc, its] of itemGroups) {
+        // Ordem fixa pras origens (visual mais previsível)
+        const ordemOrigem: Record<string, number> = { nf: 1, saldo: 2, planejado: 3, despesa: 4, avulsa: 5, medicao: 6, mutuo: 7 }
+        const origensOrdenadas = Array.from(origemGroups.entries()).sort(
+          (a, b) => (ordemOrigem[a[0]] ?? 99) - (ordemOrigem[b[0]] ?? 99)
+        )
+
+        const origemLabel: Record<string, string> = {
+          nf: 'NF (real)', saldo: 'Saldo após NF', planejado: 'Planejado',
+          despesa: 'Despesa', avulsa: 'Avulsa', medicao: 'Medição', mutuo: 'Mútuo',
+        }
+        const origemDot: Record<string, string> = {
+          nf: 'bg-emerald-500', saldo: 'bg-amber-500', planejado: 'bg-blue-400',
+          despesa: 'bg-rose-400', avulsa: 'bg-slate-400', medicao: 'bg-purple-400', mutuo: 'bg-indigo-500',
+        }
+
+        for (const [origemKey, origemItems] of origensOrdenadas) {
+          const origKey = `${fornKey}-or-${origemKey}`
           rows.push(
-            <tr key={`${fornKey}-${desc}`} className="border-b border-muted/20 hover:bg-muted/10 text-[11px]">
-              <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-[60px] truncate max-w-[220px] text-foreground/60 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]" title={desc}>
-                {its[0]!.modified && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5 -mt-0.5" />}
-                {desc}
+            <tr key={origKey} className="border-b border-muted/20 hover:bg-muted/10 text-[10.5px] cursor-pointer" onClick={() => toggle(origKey)}>
+              <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1 pl-[60px] text-foreground/65 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                <div className="flex items-center gap-1.5">
+                  {expanded[origKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${origemDot[origemKey] ?? 'bg-slate-400'}`} />
+                  <span className="truncate">{origemLabel[origemKey] ?? origemKey}</span>
+                  <span className="text-muted-foreground">({origemItems.length})</span>
+                </div>
               </td>
               {grid.map((w, ci) => {
-                const match = weekMatch(its, w)
-                const sum = match.reduce((s, i) => s + i.valor, 0)
+                const sum = weekSum(origemItems, w)
                 return (
-                  <td
-                    key={ci}
-                    className={`border-r px-2 py-1.5 text-right tabular-nums cursor-pointer hover:bg-primary/5 ${match.some(m => m.modified) ? 'bg-amber-50/60 dark:bg-amber-900/10' : ''}`}
-                    onClick={() => match.length > 0 && setInspectingBucket({
-                      label: `${desc} · ${w.lbl}`,
-                      eventIds: match.map(m => m.id),
-                    })}
-                  >
+                  <td key={ci} className="border-r px-2 py-1 text-right tabular-nums">
                     {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
                   </td>
                 )
               })}
-              <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-medium text-foreground/60 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
-                {(() => { const t = its.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
+              <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1 text-right tabular-nums text-foreground/65 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                {(() => { const t = origemItems.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
               </td>
             </tr>
           )
+
+          if (!expanded[origKey]) continue
+
+          // Level 4 (antes era 3): items individuais dentro da origem.
+          const itemGroups = new Map<string, Item[]>()
+          origemItems.forEach(i => {
+            const k = i.desc
+            if (!itemGroups.has(k)) itemGroups.set(k, [])
+            itemGroups.get(k)!.push(i)
+          })
+
+          for (const [desc, its] of itemGroups) {
+            rows.push(
+              <tr key={`${origKey}-${desc}`} className="border-b border-muted/20 hover:bg-muted/10 text-[11px]">
+                <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-[80px] truncate max-w-[260px] text-foreground/60 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]" title={desc}>
+                  {its[0]!.modified && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5 -mt-0.5" />}
+                  {desc}
+                </td>
+                {grid.map((w, ci) => {
+                  const match = weekMatch(its, w)
+                  const sum = match.reduce((s, i) => s + i.valor, 0)
+                  return (
+                    <td
+                      key={ci}
+                      className={`border-r px-2 py-1.5 text-right tabular-nums cursor-pointer hover:bg-primary/5 ${match.some(m => m.modified) ? 'bg-amber-50/60 dark:bg-amber-900/10' : ''}`}
+                      onClick={() => match.length > 0 && setInspectingBucket({
+                        label: `${desc} · ${w.lbl}`,
+                        eventIds: match.map(m => m.id),
+                      })}
+                    >
+                      {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
+                    </td>
+                  )
+                })}
+                <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-medium text-foreground/60 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                  {(() => { const t = its.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
+                </td>
+              </tr>
+            )
+          }
         }
       }
     }

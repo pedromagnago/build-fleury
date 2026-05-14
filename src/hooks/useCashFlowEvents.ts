@@ -41,6 +41,10 @@ export interface CashFlowEvent {
     valorPago?: number
     /** Status real da parcela no banco. */
     parcelaStatus?: string
+    /** Origem da parcela: NF (pedido âncora), Saldo (regerada após consumo), Plan (planejado),
+     *  Despesa (indireta), Avulsa (sem pedido nem despesa). Pra rendering hierárquico
+     *  e badges visuais em fluxo de caixa. */
+    origem?: 'nf' | 'saldo' | 'planejado' | 'despesa' | 'avulsa' | 'medicao' | 'mutuo'
   }
 }
 
@@ -170,7 +174,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             date: evDate,
             type: 'entrada',
             valor: val,
-            meta: { cat: 'Cliente', etapa: etapa?.nome, desc: `M${m.numero} — ${etapa?.nome || 'Serviço'}`, orig: val }
+            meta: { cat: 'Cliente', etapa: etapa?.nome, desc: `M${m.numero} — ${etapa?.nome || 'Serviço'}`, orig: val, origem: 'medicao' }
           })
         })
       } else {
@@ -181,7 +185,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             date: baseDate,
             type: 'entrada',
             valor: val,
-            meta: { cat: 'Cliente', desc: `Medição nº ${m.numero}`, orig: val }
+            meta: { cat: 'Cliente', desc: `Medição nº ${m.numero}`, orig: val, origem: 'medicao' }
           })
         }
       }
@@ -359,7 +363,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           date: m.data_captacao,
           type: 'firme',
           valor: val,
-          meta: { cat: m.tipo || 'Mútuo', etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Adiantamento feito: ${m.nome}`, orig: val },
+          meta: { cat: m.tipo || 'Mútuo', etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Adiantamento feito: ${m.nome}`, orig: val, origem: 'mutuo' },
         })
       } else {
         all.push({
@@ -367,7 +371,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           date: m.data_captacao,
           type: 'entrada',
           valor: val,
-          meta: { cat: m.tipo, desc: `Mútuo: ${m.nome}`, orig: val },
+          meta: { cat: m.tipo, desc: `Mútuo: ${m.nome}`, orig: val, origem: 'mutuo' },
         })
       }
     })
@@ -407,12 +411,19 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       if (!isPaga && date < today && !apenasRealizado) date = amanha
 
       const ped = pedidos.find(pd => pd.id === p.pedido_id)
-      
+
+      // Conta total de parcelas do mesmo pedido para sublabel "P1/3"
+      const totalParcPedido = ped ? parcelas.filter(pp => pp.pedido_id === ped.id).length : undefined
+      const partLbl = totalParcPedido && totalParcPedido > 1
+        ? `P${p.numero_parcela}/${totalParcPedido}`
+        : `Parc ${p.numero_parcela}`
+
       let catStr = 'Obra'
-      let etapaStr = undefined
-      let fornStr = undefined
-      let itemStr = undefined
-      let descStr = `Parc ${p.numero_parcela}`
+      let etapaStr: string | undefined = undefined
+      let fornStr: string | undefined = undefined
+      let itemStr: string | undefined = undefined
+      let descStr = partLbl
+      let origemKind: 'nf' | 'saldo' | 'planejado' | 'despesa' | 'avulsa' = 'planejado'
 
       if (ped) {
         const itemObj = itens.find(i => i.id === ped.item_compra_id)
@@ -421,23 +432,40 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
         etapaStr = etapaObj?.nome
         fornStr = ped.fornecedor_nome
         itemStr = ped.item_descricao || itemObj?.descricao
-        descStr = `Parc ${p.numero_parcela}${isResiduo ? ' (saldo)' : ''} — ${ped.fornecedor_nome || ''}`
+
+        // Origem da parcela:
+        //   - 'saldo': parcela regerada num pedido planejado após consumo parcial por NF
+        //     (descrição padrão: "Saldo após consumo NF X" — gerada pelo aplicar()).
+        //   - 'nf': parcela do pedido âncora criado por uma NF aplicada. O aplicar()
+        //     grava `observacoes` começando com "NF " no pedido âncora.
+        //   - 'planejado': demais casos (pedido sem NF aplicada).
+        const desc = (p as any).descricao as string | undefined
+        const obs = (ped as any).observacoes as string | undefined
+        if (desc && desc.startsWith('Saldo após consumo NF')) origemKind = 'saldo'
+        else if (obs && /^NF\s/.test(obs)) origemKind = 'nf'
+        else origemKind = 'planejado'
+
+        const tag = origemKind === 'nf' ? '[NF]' : origemKind === 'saldo' ? '[Saldo]' : '[Plan.]'
+        const numPed = ped.numero_pedido != null ? `Ped #${ped.numero_pedido} · ` : ''
+        const residuoTag = isResiduo ? ' (resíduo)' : ''
+        descStr = `${tag} ${numPed}${partLbl}${residuoTag} — ${ped.fornecedor_nome || ''}`
       } else if (p.despesa_indireta_id && (p as any).despesas_indiretas) {
         const di = (p as any).despesas_indiretas
         catStr = di.categoria || 'Despesa Indireta'
         etapaStr = 'Custos Indiretos'
         fornStr = di.fornecedor_nome || di.categoria || 'Indireto'
         itemStr = di.descricao
-        descStr = `Parc ${p.numero_parcela} — ${di.descricao || 'Despesa'}`
-      } else if (!ped) {
+        descStr = `[Desp.] ${partLbl} — ${di.descricao || 'Despesa'}`
+        origemKind = 'despesa'
+      } else {
         // Parcela avulsa (sem pedido nem despesa)
-        descStr = p.descricao ? `Parc ${p.numero_parcela} — ${p.descricao}` : `Parc avulsa ${p.numero_parcela}`
+        descStr = p.descricao
+          ? `[Avulsa] ${partLbl} — ${p.descricao}`
+          : `[Avulsa] ${partLbl}`
         catStr = 'Avulsa'
         etapaStr = 'Outros'
+        origemKind = 'avulsa'
       }
-
-      // Conta total de parcelas do mesmo pedido para sublabel "Parc 1/3"
-      const totalParcPedido = ped ? parcelas.filter(pp => pp.pedido_id === ped.id).length : undefined
 
       all.push({
         id: `par-${p.id}`,
@@ -460,6 +488,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           valorOriginal: Number(p.valor),
           valorPago: Number(p.valor_pago || 0),
           parcelaStatus: p.status,
+          origem: origemKind,
         }
       })
     })
@@ -491,7 +520,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           date,
           type: parcelaEhEntrada ? 'entrada' : 'firme',
           valor: calcVal,
-          meta: { cat: m.tipo, etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Mútuo Parc ${p.numero_parcela} — ${m.nome}`, orig: calcVal }
+          meta: { cat: m.tipo, etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Mútuo Parc ${p.numero_parcela} — ${m.nome}`, orig: calcVal, origem: 'mutuo' }
         })
       })
     })
