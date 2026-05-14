@@ -22,6 +22,7 @@ import {
   Users,
   ChevronRight,
   Gauge,
+  Bug,
 } from 'lucide-react'
 
 const sections = [
@@ -54,6 +55,7 @@ const sections = [
       { to: '/painel-controle', icon: Gauge, label: 'Painel de Controle' },
       { to: '/documentos', icon: FileText, label: 'Documentos' },
       { to: '/auditoria', icon: Shield, label: 'Auditoria' },
+      { to: '/logs', icon: Bug, label: 'Logs' },
       { to: '/relatorios', icon: BarChart3, label: 'Relatórios' },
       { to: '/importacao', icon: Upload, label: 'Importação' },
       { to: '/usuarios', icon: Users, label: 'Usuários' },

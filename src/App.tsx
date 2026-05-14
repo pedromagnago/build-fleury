@@ -28,6 +28,7 @@ import PagamentosPage from '@/pages/PagamentosPage'
 import RecebimentosPage from '@/pages/RecebimentosPage'
 import DocumentosPage from '@/pages/DocumentosPage'
 import AuditoriaPage from '@/pages/AuditoriaPage'
+import LogsPage from '@/pages/LogsPage'
 import PainelControlePage from '@/pages/PainelControlePage'
 import AvancoFisicoPage from '@/pages/AvancoFisicoPage'
 // MedicoesPage removed — absorbed into CronogramaPage
@@ -98,6 +99,7 @@ export default function App() {
                 <Route path="/mutuos" element={<RoleGate route="/mutuos"><MutuosPage /></RoleGate>} />
                 <Route path="/documentos" element={<RoleGate route="/documentos"><DocumentosPage /></RoleGate>} />
                 <Route path="/auditoria" element={<RoleGate route="/auditoria"><AuditoriaPage /></RoleGate>} />
+                <Route path="/logs" element={<RoleGate route="/logs"><LogsPage /></RoleGate>} />
                 <Route path="/painel-controle" element={<RoleGate route="/painel-controle"><PainelControlePage /></RoleGate>} />
                 <Route path="/avanco" element={<RoleGate route="/avanco"><AvancoFisicoPage /></RoleGate>} />
                 <Route path="/medicoes" element={<Navigate to="/cronograma" replace />} />
