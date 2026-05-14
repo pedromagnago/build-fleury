@@ -39,21 +39,35 @@ function ExcluirLoteModal({ fornecedores, onClose, onDone }: { fornecedores: For
     setSaving(true)
     try {
       const ids = fornecedores.map(f => f.id)
-      
+
+      // Snapshot ANTES do delete pra audit auto-suficiente.
+      const { data: snapshot } = await supabase.from('fornecedores')
+        .select('*')
+        .in('id', ids)
+
+      const { data: { user } } = await supabase.auth.getUser()
+
+      await supabase.from('audit_logs').insert({
+        company_id: currentCompany?.id,
+        user_id: user?.id,
+        user_email: user?.email,
+        tabela: 'fornecedores',
+        acao: 'DELETE',
+        agente: 'humano',
+        dados_antes: {
+          type: 'bulk_delete',
+          qtd: ids.length,
+          fornecedores: snapshot,
+        },
+        resumo: `Bulk delete: ${ids.length} fornecedor(es)`,
+      })
+
       const chunkSize = 50
       for (let i = 0; i < ids.length; i += chunkSize) {
         const chunk = ids.slice(i, i + chunkSize)
         const { error } = await supabase.from('fornecedores').delete().in('id', chunk)
         if (error) throw error
       }
-
-      await supabase.from('audit_logs').insert({
-        company_id: currentCompany?.id,
-        tabela: 'fornecedores',
-        acao: 'DELETE',
-        agente: 'humano',
-        dados_antes: { qtd: ids.length, type: 'bulk_delete', ids },
-      })
 
       qc.invalidateQueries({ queryKey: ['fornecedores'] })
       qc.invalidateQueries({ queryKey: ['pedidos'] })
