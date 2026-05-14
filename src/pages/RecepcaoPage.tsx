@@ -1,6 +1,6 @@
 // Recepção de Documentos — wizard de entrada de NF/PDF/imagem/texto
 // Fluxo: Upload → Extração (XML deterministico OU OpenAI) → Revisão linha-a-linha → Comitar
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useDropzone } from 'react-dropzone'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -17,7 +17,7 @@ import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
 // Nota: pdfFileToText e parseDanfe foram movidos pra edge function recepcao-pdf-parse
 // (server-side), pra evitar o bug "value of readableStream" do pdfjs v5 no Vite.
 import { ItemPickerCombobox } from '@/components/recepcao/ItemPickerCombobox'
-import { gerarParcelas } from '@/lib/parcelas'
+import { gerarParcelas, localDate } from '@/lib/parcelas'
 import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle } from 'lucide-react'
 import { useEtapas } from '@/hooks/useEtapas'
 
@@ -36,6 +36,29 @@ function zonaDeScore(score: number | null | undefined): ZonaConfianca {
   if (score >= THRESHOLD_AUTO) return 'alta'
   if (score >= THRESHOLD_SUGESTAO) return 'media'
   return 'baixa'
+}
+
+/** Parse Brazilian currency input: "1.234,56" → 1234.56 */
+function parseBRL(v: string): number {
+  if (!v) return 0
+  const cleaned = v.replace(/\./g, '').replace(',', '.')
+  return parseFloat(cleaned) || 0
+}
+
+/** Format number for input display: 1234.56 → "1234,56" */
+function toBRLInput(v: number | string): string {
+  const n = typeof v === 'string' ? parseFloat(v) : v
+  if (!n && n !== 0) return ''
+  return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/** Parcela editável no header da recepção — antes de virar registro em `parcelas`. */
+interface EditableParcela {
+  id: string                  // local UUID, não persiste
+  numero_parcela: number
+  valor: string               // BRL input "1.234,56"
+  data_vencimento: string     // YYYY-MM-DD
+  descricao: string
 }
 
 // F2.3: gera próximo código sugerido pra um item dentro de uma etapa.
@@ -174,8 +197,18 @@ export default function RecepcaoPage() {
   const [filtroVisao, setFiltroVisao] = useState<'todas' | 'pendentes' | 'sem_match' | 'confirmadas'>('todas')
   // Condição de pagamento que o operador define no header da revisão.
   // Preenchida automaticamente do fornecedor cadastrado quando o CNPJ bate;
-  // editável a qualquer momento. Vai pro pedido no aplicar().
+  // editável a qualquer momento. Atua como ATALHO pra (re)gerar a lista
+  // de `editableParcelas` linearmente — depois disso o operador pode editar
+  // valor/data/descrição de cada parcela individualmente.
   const [condPagamento, setCondPagamento] = useState<string>('')
+  // Frete (CIF) que entra no total da NF mas NÃO é diluído nos itens.
+  // BRL input ("1.234,56"). No aplicar(), vira `pedidos.valor_frete` do pedido âncora.
+  const [valorFreteInput, setValorFreteInput] = useState<string>('')
+  // Parcelas editáveis do pedido âncora. Substitui o input texto único de
+  // cond. pagamento — operador edita valor/data/descrição direto na UI.
+  // Geradas automaticamente a partir de `condPagamento` quando `parcelasManuallyEdited === false`.
+  const [editableParcelas, setEditableParcelas] = useState<EditableParcela[]>([])
+  const [parcelasManuallyEdited, setParcelasManuallyEdited] = useState(false)
 
   // C: lista de NFs aplicadas + exclusão (com reversão via trigger no banco)
   const qc = useQueryClient()
@@ -457,11 +490,75 @@ export default function RecepcaoPage() {
   }
 
   const totalLinhas = extracao?.itens.reduce((s, l) => s + (l.valor_total ?? 0), 0) ?? 0
-  const diferenca = (extracao?.documento.valor_total ?? 0) - totalLinhas
+  const valorFrete = parseBRL(valorFreteInput)
+  // Total a parcelar = itens + frete. É o que precisa bater com a NF e com a soma das parcelas.
+  const totalAParcelar = totalLinhas + valorFrete
+  const diferenca = (extracao?.documento.valor_total ?? 0) - totalAParcelar
   // F1.5: tolerância = 1 centavo (R$ 0,01). Acima disso, exige aceite explícito do operador.
   const TOLERANCIA_DIFERENCA = 0.01
   const temDivergencia = Math.abs(diferenca) > TOLERANCIA_DIFERENCA
   const divergenciaBloqueia = temDivergencia && !diferencaAceita
+  // Conferência soma das parcelas == total a parcelar (tolerância 1 cent).
+  const parcelasSoma = editableParcelas.reduce((s, p) => s + parseBRL(p.valor), 0)
+  const parcelasDiff = Math.abs(parcelasSoma - totalAParcelar)
+  const parcelasOk = parcelasDiff <= 0.01
+
+  // Regera `editableParcelas` automaticamente sempre que (total a parcelar, cond. pagamento,
+  // data de emissão) mudarem — desde que o operador NÃO tenha mexido manualmente. Quem mexer
+  // numa parcela individual seta `parcelasManuallyEdited = true` e congela a auto-geração até
+  // clicar em "Redistribuir".
+  useEffect(() => {
+    if (parcelasManuallyEdited) return
+    if (!extracao || totalAParcelar <= 0 || !condPagamento.trim()) {
+      setEditableParcelas([])
+      return
+    }
+    const dataBase = extracao.documento.data_emissao ? localDate(extracao.documento.data_emissao) : new Date()
+    try {
+      const generated = gerarParcelas({
+        pedidoId: 'preview', companyId: 'preview',
+        valorTotal: totalAParcelar,
+        condPagamento: condPagamento.trim(),
+        dataEntrega: dataBase,
+      })
+      setEditableParcelas(generated.map(p => ({
+        id: crypto.randomUUID(),
+        numero_parcela: p.numero_parcela,
+        valor: toBRLInput(p.valor),
+        data_vencimento: p.data_vencimento,
+        descricao: '',
+      })))
+    } catch (err) {
+      console.warn('gerarParcelas falhou:', err)
+    }
+  }, [totalAParcelar, condPagamento, extracao?.documento.data_emissao, parcelasManuallyEdited])
+
+  const addParcela = () => {
+    setParcelasManuallyEdited(true)
+    setEditableParcelas(prev => [...prev, {
+      id: crypto.randomUUID(),
+      numero_parcela: prev.length + 1,
+      valor: '0,00',
+      data_vencimento: extracao?.documento.data_emissao || new Date().toISOString().slice(0, 10),
+      descricao: '',
+    }])
+  }
+
+  const removeParcela = (id: string) => {
+    setParcelasManuallyEdited(true)
+    setEditableParcelas(prev => prev
+      .filter(p => p.id !== id)
+      .map((p, i) => ({ ...p, numero_parcela: i + 1 })))
+  }
+
+  const updateParcela = (id: string, field: 'valor' | 'data_vencimento' | 'descricao', value: string) => {
+    setParcelasManuallyEdited(true)
+    setEditableParcelas(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p))
+  }
+
+  const redistribuirParcelas = () => {
+    setParcelasManuallyEdited(false) // re-dispara o useEffect acima
+  }
   // Uma linha está "ok pra aplicar" se tem ação ≠ ignorar e não está pendente de confirmação
   const linhasOk = extracao?.itens.filter(l => l.acao && l.acao !== 'ignorar' && !(l.precisaConfirmar && !l.confirmado)).length ?? 0
   const linhasAConfirmar = extracao?.itens.filter(l => l.precisaConfirmar && !l.confirmado).length ?? 0
@@ -590,6 +687,7 @@ export default function RecepcaoPage() {
         serie: extracao.documento.serie,
         data_emissao: extracao.documento.data_emissao,
         valor_total: extracao.documento.valor_total,
+        valor_frete: valorFrete,
         raw_extracao: extracao as any,
         modelo_ia: extracao.modelo ?? null,
         custo_ia_cents: extracao.custo_cents ?? 0,
@@ -598,23 +696,33 @@ export default function RecepcaoPage() {
         applied_at: new Date().toISOString(),
       }).select('id').single()
       if (docErr) throw docErr
+      // Defensa: se RLS bloqueia SELECT pós-INSERT, o supabase-js retorna
+      // `data: null, error: null`. Sem o ID do doc, todo o resto da função
+      // grava `nf_origem_id = null` e `recepcao_consumos.doc_id = null` —
+      // resultando em pedidos âncora órfãos, impossíveis de reverter.
+      if (!docRow?.id) throw new Error('INSERT em recepcao_docs retornou sem ID. Verifique RLS/permissões.')
 
-      // 3) NOVA LÓGICA DE CONSUMO (PR 3):
+      // 3) LÓGICA DE CONSUMO (PR 3 + PR 3.5):
       //
       // - Ação 'substituir_pedido' = CONSUMIR: busca TODOS os pedido_itens
       //   planejados desse item_compra_id (match SÓ POR ITEM, ignorando
       //   fornecedor), distribui a qtd da NF em FIFO (mais antigo primeiro)
       //   incrementando qtd_recebida em cada um. Triggers SQL atualizam o
       //   status do pedido. Se sobrar qtd da NF além do que cabe nos planejados,
-      //   a sobra entra como pedido_item no pedido novo consolidado da NF.
+      //   a sobra entra como pedido_item no pedido âncora da NF.
       //
       // - Ação 'criar_pedido' = CRIAR NOVO: vai direto como pedido_item do
-      //   pedido novo (criado APENAS se houver pelo menos uma linha desta ação
-      //   ou sobra de consumo).
+      //   pedido âncora da NF.
       //
-      // - Parcelas existentes nos pedidos planejados consumidos ficam intactas
-      //   (já foram geradas com cond_pagamento original). O pedido NOVO, se
-      //   criado, gera parcelas via gerarParcelas() no passo 5.
+      // - PR 3.5: o PEDIDO ÂNCORA é SEMPRE criado (mesmo se 100% das linhas
+      //   forem consumidas), pra carregar o frete + as parcelas configuradas
+      //   pelo operador no header. Quando não há itensParaPedidoNovo, o âncora
+      //   é criado sem `pedido_itens`.
+      //
+      // - PR 3.5: as parcelas do âncora SUBSTITUEM as parcelas FUTURAS (não
+      //   pagas / não conciliadas) dos pedidos consumidos. As parcelas pagas
+      //   ou já conciliadas em movimentação bancária são PRESERVADAS, e o
+      //   operador é avisado da duplicidade pra agir manualmente.
 
       // Linhas elegíveis pra processamento (não 'ignorar', não 'criar_item' puro)
       const linhasElegiveis = extracao.itens.filter(
@@ -702,62 +810,145 @@ export default function RecepcaoPage() {
         ...sobraParaPedidoNovo,
       ]
 
-      // 3c) Cria o PEDIDO NOVO consolidado (se houver algo pra ele)
+      // 3c) Cria o PEDIDO ÂNCORA da NF — sempre, mesmo se 100% das linhas
+      // forem consumidas. Ele carrega o frete + as parcelas configuradas pelo
+      // operador, e é o único ponto de vinculação financeira da NF. Quando
+      // houver itensParaPedidoNovo, eles entram como pedido_itens dele.
+      //
+      // O pedido_itens é opcional: se 100% foi consumido (sem sobra e sem
+      // 'criar_pedido'), o âncora fica com 0 itens e `valor_total_real = 0`,
+      // representando apenas o documento financeiro da NF (frete + parcelas).
       let novoPedidoId: string | null = null
       let totalItensCriadosNovoPedido = 0
-      if (itensParaPedidoNovo.length > 0) {
-        const primeira = itensParaPedidoNovo[0]!
+      let pedidoAncoraSemItens = false
+
+      // `item_compra_id` é coluna legacy no header — precisa de algum valor não-nulo.
+      // Prioridade: primeira linha do pedido novo → primeira linha elegível qualquer.
+      const itemAncoraId =
+        itensParaPedidoNovo[0]?.item_compra_id ??
+        linhasElegiveis[0]?.item_compra_id ??
+        null
+
+      // Só cria âncora se há algo pra ele (itens novos, consumo, ou frete/parcelas).
+      // Senão (tudo 'ignorar' / 'criar_item' puro), não há nada pra ancorar.
+      const houveAlgumConsumo = pedidoItensConsumidos.length > 0
+      const temFreteOuParcelas = valorFrete > 0 || editableParcelas.length > 0
+      const precisaAncora = itensParaPedidoNovo.length > 0 || (houveAlgumConsumo && temFreteOuParcelas) || temFreteOuParcelas
+
+      if (precisaAncora && itemAncoraId) {
+        const primeira = itensParaPedidoNovo[0]
+        pedidoAncoraSemItens = itensParaPedidoNovo.length === 0
+        const obsAncora = pedidoAncoraSemItens
+          ? `NF ${extracao.documento.numero ?? ''} · ${extracao.fornecedor.nome ?? 'fornecedor sem nome'} · âncora financeiro (toda NF consumida)`
+          : `NF ${extracao.documento.numero ?? ''} · ${extracao.fornecedor.nome ?? 'fornecedor sem nome'}`
+
         const { data: novoPedido, error: pedErr } = await supabase.from('pedidos').insert({
           company_id: currentCompany.id,
           fornecedor_id: fornId,
-          item_compra_id: primeira.item_compra_id,
+          item_compra_id: itemAncoraId,
           casas_lote: null,
-          qtd_lote: primeira.qtd,
-          valor_unitario_real: primeira.vu,
+          qtd_lote: primeira?.qtd ?? 0,
+          valor_unitario_real: primeira?.vu ?? 0,
           valor_total_real: 0,
+          valor_frete: valorFrete,
           cond_pagamento: condPagamento.trim() || null,
           data_entrega_prevista: extracao.documento.data_emissao ?? null,
           data_entrega_real: extracao.documento.data_emissao ?? null,
           status: 'planejado' as const,
-          observacoes: `NF ${extracao.documento.numero ?? ''} · ${extracao.fornecedor.nome ?? 'fornecedor sem nome'}`,
+          observacoes: obsAncora,
           nf_origem_id: docRow!.id,
         }).select('id').single()
         if (pedErr) throw pedErr
         novoPedidoId = novoPedido!.id
 
-        const itensPayload = itensParaPedidoNovo.map((l, idx) => ({
-          pedido_id: novoPedidoId!,
-          item_compra_id: l.item_compra_id,
-          qtd: l.qtd,
-          valor_unitario_real: l.vu,
-          valor_total_real: l.vt,
-          qtd_recebida: l.qtd,
-          ordem: idx + 1,
-        }))
-        const { error: itensErr } = await supabase.from('pedido_itens').insert(itensPayload)
-        if (itensErr) throw itensErr
-        totalItensCriadosNovoPedido = itensPayload.length
+        if (itensParaPedidoNovo.length > 0) {
+          const itensPayload = itensParaPedidoNovo.map((l, idx) => ({
+            pedido_id: novoPedidoId!,
+            item_compra_id: l.item_compra_id,
+            qtd: l.qtd,
+            valor_unitario_real: l.vu,
+            valor_total_real: l.vt,
+            qtd_recebida: l.qtd,
+            ordem: idx + 1,
+          }))
+          const { error: itensErr } = await supabase.from('pedido_itens').insert(itensPayload)
+          if (itensErr) throw itensErr
+          totalItensCriadosNovoPedido = itensPayload.length
+        }
+      }
 
-        // Gera parcelas pro pedido novo se houver cond_pagamento
-        if (condPagamento.trim()) {
-          const totalNovoPedido = itensParaPedidoNovo.reduce((s, l) => s + l.vt, 0)
-          const dataBase = extracao.documento.data_emissao
-            ? new Date(extracao.documento.data_emissao)
-            : new Date()
-          try {
-            const parcelas = gerarParcelas({
-              pedidoId: novoPedidoId!,
-              companyId: currentCompany.id,
-              valorTotal: totalNovoPedido,
-              condPagamento: condPagamento.trim(),
-              dataEntrega: dataBase,
-            })
-            if (parcelas.length > 0) {
-              const { error: parcErr } = await supabase.from('parcelas').insert(parcelas)
-              if (parcErr) console.warn('Falha ao criar parcelas do pedido novo:', parcErr)
+      // 3d) PARCELAS — as configuradas pelo operador SUBSTITUEM as parcelas
+      // futuras dos pedidos consumidos. Parcelas pagas/conciliadas são preservadas
+      // (não dá pra mexer sem quebrar histórico financeiro). Se houver protegidas,
+      // o operador é avisado pra resolver o overlap manualmente.
+      let parcelasPreservadasComAviso = 0
+      /** Snapshot das parcelas APAGADAS — vai pra recepcao_consumos.parcelas_snapshot
+       *  pra que o trigger BEFORE DELETE restaure tudo se a NF for excluída. */
+      let parcelasApagadasSnapshot: any[] = []
+      if (novoPedidoId) {
+        // 3d.1) Apaga parcelas futuras dos pedidos consumidos.
+        const pedidoIdsConsumidos = Array.from(new Set(pedidoItensConsumidos.map(c => c.pedidoId)))
+        if (pedidoIdsConsumidos.length > 0) {
+          // SELECT * pra ter o snapshot completo das parcelas (incluindo id pra reinserir)
+          const { data: parcelasExistentes } = await supabase
+            .from('parcelas')
+            .select('*')
+            .in('pedido_id', pedidoIdsConsumidos)
+
+          const allIds = (parcelasExistentes ?? []).map((p: any) => p.id)
+          // Verifica quais têm vínculo em conciliacao_parcelas (link polimórfico)
+          const { data: links } = allIds.length > 0
+            ? await supabase.from('conciliacao_parcelas').select('parcela_id').in('parcela_id', allIds)
+            : { data: [] as any[] }
+          const idsComLink = new Set((links ?? []).map((l: any) => l.parcela_id))
+
+          const protegidas = (parcelasExistentes ?? []).filter((p: any) =>
+            p.status === 'paga' || p.status === 'parcialmente_paga' ||
+            Number(p.valor_pago || 0) > 0 || idsComLink.has(p.id)
+          )
+          const deletaveis = (parcelasExistentes ?? []).filter((p: any) => !protegidas.find((pr: any) => pr.id === p.id))
+          parcelasPreservadasComAviso = protegidas.length
+
+          if (deletaveis.length > 0) {
+            // Guarda snapshot ANTES do DELETE — usado pelo trigger pra restaurar
+            parcelasApagadasSnapshot = deletaveis.map((p: any) => ({
+              id: p.id,
+              company_id: p.company_id,
+              pedido_id: p.pedido_id,
+              numero_parcela: p.numero_parcela,
+              valor: p.valor,
+              data_vencimento: p.data_vencimento,
+              status: p.status,
+              descricao: p.descricao,
+              tipo: p.tipo,
+              created_at: p.created_at,
+            }))
+            const delIds = deletaveis.map((p: any) => p.id)
+            // Limpa ponteiro legacy mb.parcela_id antes do DELETE pra evitar FK violation.
+            await supabase.from('movimentacoes_bancarias').update({ parcela_id: null }).in('parcela_id', delIds)
+            const { error: delErr } = await supabase.from('parcelas').delete().in('id', delIds)
+            if (delErr) {
+              console.warn('Falha ao apagar parcelas dos pedidos consumidos:', delErr)
+              throw delErr
             }
-          } catch (err) {
-            console.warn('gerarParcelas falhou:', err)
+          }
+        }
+
+        // 3d.2) Insere as parcelas configuradas no header, vinculadas ao âncora.
+        if (editableParcelas.length > 0) {
+          const parcelasPayload = editableParcelas.map(ep => ({
+            company_id: currentCompany.id,
+            pedido_id: novoPedidoId!,
+            numero_parcela: ep.numero_parcela,
+            valor: parseBRL(ep.valor),
+            data_vencimento: ep.data_vencimento,
+            status: 'futura' as const,
+            descricao: ep.descricao || null,
+          }))
+          const { error: parcErr } = await supabase.from('parcelas').insert(parcelasPayload)
+          if (parcErr) {
+            console.warn('Falha ao inserir parcelas do âncora:', parcErr)
+            throw parcErr
           }
         }
       }
@@ -772,6 +963,7 @@ export default function RecepcaoPage() {
         doc_id: string; company_id: string;
         pedido_item_id?: string; delta_qtd_recebida?: number;
         created_pedido_id?: string;
+        parcelas_snapshot?: any[];
       }> = []
       for (const c of consumoLog) {
         consumoRows.push({
@@ -786,11 +978,17 @@ export default function RecepcaoPage() {
           doc_id: docRow!.id,
           company_id: currentCompany.id,
           created_pedido_id: novoPedidoId,
+          // Snapshot das parcelas dos pedidos consumidos que foram apagadas —
+          // trigger BEFORE DELETE restaura ao excluir a NF.
+          parcelas_snapshot: parcelasApagadasSnapshot.length > 0 ? parcelasApagadasSnapshot : undefined,
         })
       }
       if (consumoRows.length > 0) {
         const { error: logErr } = await supabase.from('recepcao_consumos').insert(consumoRows)
-        if (logErr) console.warn('Falha ao gravar log de consumo (NF aplicada, mas reversão poderá ficar imprecisa):', logErr)
+        // Antes era console.warn. Mas sem o log, a reversão (excluir NF) deixa
+        // o pedido âncora órfão no banco — exatamente o bug que vimos no PR 3.5.
+        // Melhor falhar e o operador reaplicar do que silenciosamente quebrar.
+        if (logErr) throw logErr
       }
 
       // 5) Auditoria em recepcao_matches — todos os matches apontam pro mesmo
@@ -821,13 +1019,24 @@ export default function RecepcaoPage() {
       const totalIgnoradosOuItem = extracao.itens.length - totalLinhasProcessadas
       const partes: string[] = []
       if (pedidosConsumidosUnicos > 0) partes.push(`${pedidosConsumidosUnicos} previsão(ões) consumida(s)`)
-      if (novoPedidoId) partes.push(`1 pedido novo com ${totalItensCriadosNovoPedido} ite${totalItensCriadosNovoPedido === 1 ? 'm' : 'ns'}`)
+      if (novoPedidoId) {
+        const sufixo = pedidoAncoraSemItens ? ' (âncora financeiro)' : ` com ${totalItensCriadosNovoPedido} ite${totalItensCriadosNovoPedido === 1 ? 'm' : 'ns'}`
+        partes.push(`1 pedido novo${sufixo}`)
+      }
+      if (valorFrete > 0) partes.push(`frete ${formatCurrency(valorFrete)}`)
+      if (editableParcelas.length > 0) partes.push(`${editableParcelas.length} parcela(s)`)
       if (totalIgnoradosOuItem > 0) partes.push(`${totalIgnoradosOuItem} linha(s) ignorada(s)`)
       toast.success(`NF aplicada · ${partes.join(' · ') || 'nada a aplicar'}`)
+      if (parcelasPreservadasComAviso > 0) {
+        toast.warning(`${parcelasPreservadasComAviso} parcela(s) dos pedidos consumidos foram preservada(s) porque já têm baixa/conciliação. Revise manualmente em Compras pra evitar duplicidade.`)
+      }
       setExtracao(null)
       setTextoColado('')
       setDiferencaAceita(false)
       setCondPagamento('')
+      setValorFreteInput('')
+      setEditableParcelas([])
+      setParcelasManuallyEdited(false)
     } catch (err) {
       // Extrai mensagem útil de qualquer formato de erro (Error nativo, PostgrestError, etc.)
       const e: any = err
@@ -1226,8 +1435,8 @@ export default function RecepcaoPage() {
                 <p className="font-bold text-sm">{formatCurrency(extracao.documento.valor_total ?? 0)}</p>
               </div>
               <div>
-                <p className="text-[10px] uppercase text-muted-foreground">Soma das linhas</p>
-                <p className={`font-bold text-sm ${Math.abs(diferenca) > 0.01 ? 'text-amber-600' : 'text-emerald-600'}`}>{formatCurrency(totalLinhas)}</p>
+                <p className="text-[10px] uppercase text-muted-foreground">Itens + frete</p>
+                <p className={`font-bold text-sm ${Math.abs(diferenca) > 0.01 ? 'text-amber-600' : 'text-emerald-600'}`} title={`Itens: ${formatCurrency(totalLinhas)} + Frete: ${formatCurrency(valorFrete)}`}>{formatCurrency(totalAParcelar)}</p>
               </div>
               <div>
                 <p className="text-[10px] uppercase text-muted-foreground">Diferença</p>
@@ -1248,19 +1457,120 @@ export default function RecepcaoPage() {
                 </div>
               </div>
             </div>
-            {/* Campos editáveis aplicados no insert do pedido */}
+            {/* Campos editáveis aplicados no insert do pedido âncora da NF */}
             <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
               <div>
-                <label className="text-[10px] uppercase text-muted-foreground">Cond. pagamento</label>
+                <label className="text-[10px] uppercase text-muted-foreground">Frete (CIF)</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={valorFreteInput}
+                  onChange={e => setValorFreteInput(e.target.value)}
+                  placeholder="0,00"
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-xs font-mono text-right"
+                  title="Frete cobrado pelo fornecedor na NF. Entra no total a parcelar mas NÃO é diluído nos itens."
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase text-muted-foreground">Cond. pagamento (atalho)</label>
                 <input
                   type="text"
                   value={condPagamento}
-                  onChange={e => setCondPagamento(e.target.value)}
+                  onChange={e => { setCondPagamento(e.target.value); setParcelasManuallyEdited(false) }}
                   placeholder="30/60 · à vista · vencimento na NF"
                   className="w-full rounded-md border bg-background px-2 py-1.5 text-xs"
-                  title="Será aplicada ao pedido criado. Vazio = sem condição definida (pode editar depois em Compras)."
+                  title="Atalho para gerar a lista de parcelas abaixo linearmente. Depois disso você pode editar cada parcela individualmente."
                 />
               </div>
+              <div className="flex items-end">
+                <div className="w-full rounded-md border bg-muted/30 px-2 py-1.5 text-[11px]">
+                  <span className="text-muted-foreground">Total a parcelar:</span>{' '}
+                  <strong className="font-mono">{formatCurrency(totalAParcelar)}</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Editor de parcelas — substitui o texto único "30/60/90".
+                As parcelas configuradas aqui SUBSTITUEM as parcelas futuras (não pagas/
+                não conciliadas) dos pedidos consumidos por esta NF. As parcelas pagas
+                ou conciliadas são preservadas. */}
+            <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+                  Parcelas da NF ({editableParcelas.length}x)
+                </p>
+                <div className="flex items-center gap-2">
+                  {parcelasManuallyEdited && condPagamento.trim() && (
+                    <button
+                      type="button"
+                      onClick={redistribuirParcelas}
+                      className="rounded border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-accent"
+                      title={`Redistribui ${formatCurrency(totalAParcelar)} sobre "${condPagamento.trim()}"`}
+                    >
+                      Redistribuir
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={addParcela}
+                    className="inline-flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/10"
+                  >
+                    <Plus className="h-3 w-3" /> Parcela
+                  </button>
+                </div>
+              </div>
+
+              {editableParcelas.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground italic">
+                  Preencha a cond. pagamento (ex: <span className="font-mono">30/60</span>) ou clique em <strong>+ Parcela</strong> pra começar.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {editableParcelas.map(p => (
+                    <div key={p.id} className="flex items-center gap-2 rounded-md border bg-card px-2 py-1 shadow-sm text-xs">
+                      <span className="font-bold text-primary w-8 shrink-0">P{p.numero_parcela}</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={p.valor}
+                        onChange={e => updateParcela(p.id, 'valor', e.target.value)}
+                        className="w-28 rounded border bg-background px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                        placeholder="Valor"
+                      />
+                      <input
+                        type="date"
+                        value={p.data_vencimento}
+                        onChange={e => updateParcela(p.id, 'data_vencimento', e.target.value)}
+                        className="rounded border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
+                      />
+                      <input
+                        type="text"
+                        value={p.descricao}
+                        onChange={e => updateParcela(p.id, 'descricao', e.target.value)}
+                        placeholder="Descrição (opcional)"
+                        className="flex-1 min-w-[120px] rounded border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeParcela(p.id)}
+                        className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        title="Remover parcela"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {editableParcelas.length > 0 && (
+                <div className={`flex items-center gap-3 text-[11px] font-medium ${parcelasOk ? 'text-emerald-700' : 'text-red-600'}`}>
+                  <span>Soma: <span className="font-mono">{formatCurrency(parcelasSoma)}</span></span>
+                  <span>Total a parcelar: <span className="font-mono">{formatCurrency(totalAParcelar)}</span></span>
+                  {!parcelasOk && <span className="font-bold">Diferença: {formatCurrency(parcelasDiff)}</span>}
+                  {parcelasOk && <Check className="h-3.5 w-3.5" />}
+                </div>
+              )}
             </div>
             {/* Preview do CONSUMO de previsões: lista os pedidos planejados que serão
                 consumidos. Note que a distribuição real é FIFO automática entre todos
@@ -1314,7 +1624,7 @@ export default function RecepcaoPage() {
                 <div className="flex items-center gap-1.5">
                   <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
                   <span>
-                    Soma das linhas ({formatCurrency(totalLinhas)}) difere do total da NF ({formatCurrency(extracao.documento.valor_total ?? 0)}) — diferença <strong>{formatCurrency(diferenca)}</strong>.
+                    Itens + frete ({formatCurrency(totalAParcelar)}) difere do total da NF ({formatCurrency(extracao.documento.valor_total ?? 0)}) — diferença <strong>{formatCurrency(diferenca)}</strong>.
                     {divergenciaBloqueia ? ' Confira os valores ou aceite a diferença pra aplicar.' : ' Diferença aceita pelo operador.'}
                   </span>
                 </div>
@@ -1572,13 +1882,19 @@ export default function RecepcaoPage() {
                 Aceite a diferença NF×linhas antes de aplicar.
               </span>
             )}
-            <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false); setCondPagamento('') }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
+            {editableParcelas.length > 0 && !parcelasOk && (
+              <span className="text-[11px] text-red-700 mr-2">
+                Soma das parcelas ≠ total a parcelar (diferença {formatCurrency(parcelasDiff)}).
+              </span>
+            )}
+            <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false); setCondPagamento(''); setValorFreteInput(''); setEditableParcelas([]); setParcelasManuallyEdited(false) }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
             <button
               onClick={aplicar}
-              disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia}
+              disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia || (editableParcelas.length > 0 && !parcelasOk)}
               title={
                 linhasAConfirmar > 0 ? 'Há linhas com match de média confiança que precisam ser confirmadas'
                 : divergenciaBloqueia ? 'Soma das linhas difere do total da NF — aceite a diferença pra liberar'
+                : (editableParcelas.length > 0 && !parcelasOk) ? 'Soma das parcelas precisa bater com o total a parcelar'
                 : ''
               }
               className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
