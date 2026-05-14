@@ -12,27 +12,33 @@ import { X, Save, Search, ArrowDownCircle, ArrowUpCircle, Info } from 'lucide-re
 import { useCreateMovimentoManual } from '@/hooks/useConciliacao'
 import { useContasBancarias, useParcelas } from '@/hooks/useFinanceiro'
 import { useMutuos } from '@/hooks/useMutuos'
-import { formatCurrency } from '@/lib/utils'
+import { useMedicoes } from '@/hooks/useOperacional'
+import { formatCurrency, parseValorBR } from '@/lib/utils'
 
-type VinculoSel = { tipo: 'parcela' | 'mutuo' | 'mutuo_parcela'; id: string; label: string; sublabel: string; valor: number }
+type VinculoSel = { tipo: 'parcela' | 'mutuo' | 'mutuo_parcela' | 'medicao'; id: string; label: string; sublabel: string; valor: number }
 
 interface Props {
   defaultContaId?: string
+  defaultTipo?: 'entrada' | 'saida'
+  defaultValor?: string
+  defaultDescricao?: string
+  defaultVinculo?: VinculoSel | null
   onClose: () => void
 }
 
-export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
+export function NovoLancamentoDialog({ defaultContaId, defaultTipo, defaultValor, defaultDescricao, defaultVinculo, onClose }: Props) {
   const { data: contas = [] } = useContasBancarias()
   const { data: parcelas = [] } = useParcelas()
   const { data: mutuos = [] } = useMutuos()
+  const { data: medicoes = [] } = useMedicoes()
   const createMov = useCreateMovimentoManual()
 
   const [contaId, setContaId] = useState(defaultContaId ?? contas[0]?.id ?? '')
-  const [tipo, setTipo] = useState<'entrada' | 'saida'>('saida')
+  const [tipo, setTipo] = useState<'entrada' | 'saida'>(defaultTipo ?? 'saida')
   const [data, setData] = useState(() => new Date().toISOString().split('T')[0]!)
-  const [valor, setValor] = useState('')
-  const [descricao, setDescricao] = useState('')
-  const [vinculo, setVinculo] = useState<VinculoSel | null>(null)
+  const [valor, setValor] = useState(defaultValor ?? '')
+  const [descricao, setDescricao] = useState(defaultDescricao ?? '')
+  const [vinculo, setVinculo] = useState<VinculoSel | null>(defaultVinculo ?? null)
   const [observacao, setObservacao] = useState('')
   const [search, setSearch] = useState('')
   const [autoConciliar, setAutoConciliar] = useState(true)
@@ -44,6 +50,22 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
   const candidatos = useMemo<VinculoSel[]>(() => {
     const q = search.toLowerCase().trim()
     const out: VinculoSel[] = []
+    // Medições (só fazem sentido em entrada — receita do contrato)
+    if (tipo === 'entrada') {
+      for (const med of medicoes as any[]) {
+        if (med.status === 'paga') continue
+        const valorMed = Number(med.valor_planejado) || 0
+        const liberado = Number(med.valor_liberado) || 0
+        const saldoMed = valorMed - liberado
+        // Mostra se ainda há saldo OU se é futura (pode ainda não ter valor_liberado movimentado)
+        if (saldoMed < 0.01 && med.status !== 'futura') continue
+        const label = `Medição nº ${med.numero}`
+        const sublabel = `Contrato · Prev ${med.data_prevista} · saldo ${formatCurrency(Math.max(saldoMed, 0))} · ${med.status}`
+        const hay = `${label} medição medicao ${med.numero} ${valorMed} ${med.status}`.toLowerCase()
+        if (q && !hay.includes(q)) continue
+        out.push({ tipo: 'medicao', id: med.id, label, sublabel, valor: saldoMed > 0 ? saldoMed : valorMed })
+      }
+    }
     // Parcelas em aberto
     for (const p of parcelas as any[]) {
       if (p.status === 'paga') continue
@@ -81,10 +103,15 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
       }
     }
     return out.slice(0, 30)
-  }, [parcelas, mutuos, search])
+  }, [parcelas, mutuos, medicoes, search, tipo])
+
+  // Se mudou o tipo e o vínculo selecionado não é mais coerente (ex: medicao em saída), limpa
+  useEffect(() => {
+    if (vinculo?.tipo === 'medicao' && tipo === 'saida') setVinculo(null)
+  }, [tipo, vinculo])
 
   const handleSubmit = async () => {
-    const num = parseFloat(valor.replace(',', '.'))
+    const num = parseValorBR(valor)
     if (!contaId || !data || !num || !descricao.trim()) {
       alert('Preencha conta, data, valor e descrição')
       return
@@ -195,9 +222,12 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
                           <span className={`text-[9px] rounded px-1 ${
                             vinculo.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' :
                             vinculo.tipo === 'mutuo_parcela' ? 'bg-violet-500/10 text-violet-600' :
+                            vinculo.tipo === 'medicao' ? 'bg-purple-500/10 text-purple-600' :
                             'bg-blue-500/10 text-blue-600'
                           }`}>
-                            {vinculo.tipo === 'mutuo' ? 'MUT' : vinculo.tipo === 'mutuo_parcela' ? 'MUT-P' : 'PARC'}
+                            {vinculo.tipo === 'mutuo' ? 'MUT' :
+                              vinculo.tipo === 'mutuo_parcela' ? 'MUT-P' :
+                              vinculo.tipo === 'medicao' ? 'MED' : 'PARC'}
                           </span>
                         </div>
                         <p className="text-[10px] text-muted-foreground">
@@ -212,7 +242,9 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
                       <div className="relative mt-1">
                         <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
                         <input value={search} onChange={(e) => setSearch(e.target.value)}
-                          placeholder="Buscar por descrição, nome do mútuo ou valor..."
+                          placeholder={tipo === 'entrada'
+                            ? 'Buscar medição, mútuo, parcela ou valor...'
+                            : 'Buscar parcela, mútuo ou valor...'}
                           className="w-full rounded-md border bg-background pl-7 pr-2 py-1.5 text-xs" />
                       </div>
                       {search && (
@@ -226,9 +258,12 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
                                   <span className={`text-[9px] rounded px-1 ${
                                     c.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' :
                                     c.tipo === 'mutuo_parcela' ? 'bg-violet-500/10 text-violet-600' :
+                                    c.tipo === 'medicao' ? 'bg-purple-500/10 text-purple-600' :
                                     'bg-blue-500/10 text-blue-600'
                                   }`}>
-                                    {c.tipo === 'mutuo' ? 'MUT' : c.tipo === 'mutuo_parcela' ? 'MUT-P' : 'PARC'}
+                                    {c.tipo === 'mutuo' ? 'MUT' :
+                                      c.tipo === 'mutuo_parcela' ? 'MUT-P' :
+                                      c.tipo === 'medicao' ? 'MED' : 'PARC'}
                                   </span>
                                 </div>
                                 <p className="text-[10px] text-muted-foreground">{c.sublabel}</p>
@@ -244,6 +279,26 @@ export function NovoLancamentoDialog({ defaultContaId, onClose }: Props) {
                     </>
                   )}
                 </div>
+                {vinculo && vinculo.tipo !== 'mutuo' && (() => {
+                  const num = parseValorBR(valor)
+                  if (!num) return null
+                  const diff = num - vinculo.valor
+                  if (Math.abs(diff) < 0.01) return null
+                  const nomeOrigem =
+                    vinculo.tipo === 'medicao' ? 'medição' :
+                    vinculo.tipo === 'mutuo_parcela' ? 'parcela do mútuo' : 'parcela'
+                  return (
+                    <p className="flex items-start gap-1 rounded-md bg-amber-500/10 p-2 text-[10px] text-amber-700">
+                      <Info className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                      <span>
+                        Valor difere do saldo da {nomeOrigem} ({formatCurrency(vinculo.valor)}).
+                        {num < vinculo.valor
+                          ? ` Será registrado como parcial — a ${nomeOrigem} segue em aberto pelo restante.`
+                          : ` Excede o saldo — a ${nomeOrigem} pode ficar com valor pago acima do total.`}
+                      </span>
+                    </p>
+                  )
+                })()}
                 <p className="flex items-start gap-1 text-[10px] text-muted-foreground">
                   <Info className="h-3 w-3 mt-0.5 flex-shrink-0" />
                   <span>Sem vínculo, o movimento é criado como conciliado mas sem link (útil para contrapartidas que se zeram).</span>

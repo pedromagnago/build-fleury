@@ -15,12 +15,13 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import {
   TrendingUp, Plus, Search, Calendar, AlertTriangle,
   CheckCircle2, Clock, DollarSign, ArrowDownCircle,
-  FileText, Landmark, ExternalLink,
+  FileText, Landmark, ExternalLink, CircleDollarSign,
 } from 'lucide-react'
 import { useMedicoes } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
 import { formatCurrency } from '@/lib/utils'
 import { NovoAdiantamentoDialog } from '@/components/financeiro/NovoAdiantamentoDialog'
+import { NovoLancamentoDialog } from '@/components/conciliacao/NovoLancamentoDialog'
 import { VinculosMovsPanel } from '@/components/conciliacao/VinculosMovsPanel'
 
 type Tab = 'geral' | 'medicoes' | 'adiantamentos'
@@ -52,6 +53,7 @@ export default function RecebimentosPage() {
   const [search, setSearch] = useState('')
   const [showNovo, setShowNovo] = useState(false)
   const [viewingVinculos, setViewingVinculos] = useState<RecebimentoItem | null>(null)
+  const [baixando, setBaixando] = useState<RecebimentoItem | null>(null)
 
   // Consolidar: medições + captações (Capital de Giro) + adiantamentos a receber
   const todosRecebimentos: RecebimentoItem[] = useMemo(() => {
@@ -60,20 +62,26 @@ export default function RecebimentosPage() {
 
     // 1) Medições (receita contrato)
     for (const m of medicoes) {
-      const recebido = m.status === 'paga' || m.status === 'liberada'
-      const atrasado = !recebido && m.data_prevista < today
-      const valor = m.status === 'liberada' || m.status === 'paga'
-        ? (Number(m.valor_liberado) || Number(m.valor_planejado) || 0)
-        : Number(m.valor_planejado) || 0
+      const total = Number(m.valor_planejado) || 0
+      const recebidoSofar = Number(m.valor_liberado) || 0
+      const saldo = total - recebidoSofar
+      const recebidoFull = m.status === 'paga' || (total > 0 && saldo <= 0.01 && recebidoSofar > 0)
+      const parcial = !recebidoFull && recebidoSofar > 0.01 && saldo > 0.01
+      const atrasado = !recebidoFull && !parcial && m.data_prevista < today
+      // Em parcial mostramos o SALDO RESTANTE (não o total nem o já recebido)
+      const valor = recebidoFull ? (recebidoSofar || total) : parcial ? saldo : total
+      const descricao = parcial
+        ? `Medição nº ${m.numero} (parcial: ${formatCurrency(recebidoSofar)} de ${formatCurrency(total)})`
+        : `Medição nº ${m.numero}`
       result.push({
         id: `med-${m.id}`,
         origem: 'medicao',
-        descricao: `Medição nº ${m.numero}`,
+        descricao,
         parceiro: 'Cliente (Contrato)',
         valor,
         data_prevista: m.data_prevista,
         data_efetiva: m.data_liberacao,
-        status: recebido ? 'recebido' : atrasado ? 'vencido' : 'previsto',
+        status: recebidoFull ? 'recebido' : parcial ? 'parcial' : atrasado ? 'vencido' : 'previsto',
         sem_valor: valor <= 0.01,
         raw: m,
       })
@@ -92,16 +100,25 @@ export default function RecebimentosPage() {
       if (isAdiantamentoFeito) {
         // Parcelas de devolução = recebimentos esperados (entrada futura)
         for (const mp of (mut.parcelas ?? []) as any[]) {
+          const totalMp = Number(mp.valor) || 0
+          const pagoMp = Number(mp.valor_pago || 0)
+          const saldoMp = totalMp - pagoMp
+          const fullPaga = mp.status === 'paga' || (totalMp > 0 && saldoMp <= 0.01 && pagoMp > 0)
+          const parcialMp = !fullPaga && pagoMp > 0.01 && saldoMp > 0.01
+          const valor = fullPaga ? totalMp : parcialMp ? saldoMp : totalMp
+          const descricaoMp = `Devolução: ${mut.nome}` + (mp.numero_parcela ? ` · P${mp.numero_parcela}` : '')
+            + (parcialMp ? ` (parcial: ${formatCurrency(pagoMp)} de ${formatCurrency(totalMp)})` : '')
           result.push({
             id: `mutpar-${mp.id}`,
             origem: 'adiantamento',
-            descricao: `Devolução: ${mut.nome}` + (mp.numero_parcela ? ` · P${mp.numero_parcela}` : ''),
+            descricao: descricaoMp,
             parceiro: (mut as any).fornecedor?.nome ?? '—',
-            valor: Number(mp.valor) || 0,
+            valor,
             data_prevista: mp.data_vencimento,
-            data_efetiva: mp.status === 'paga' ? mp.data_pagamento_real : null,
-            status: mp.status === 'paga' ? 'recebido' : 'previsto',
-            raw: mp,
+            data_efetiva: fullPaga ? mp.data_pagamento_real : null,
+            status: fullPaga ? 'recebido' : parcialMp ? 'parcial' : 'previsto',
+            sem_valor: valor <= 0.01,
+            raw: { ...mp, _mutuoNome: mut.nome },
           })
         }
         // valor_captado do adiantamento NÃO é recebimento — é a saída original (já entra em Pagamentos/Fluxo)
@@ -109,15 +126,23 @@ export default function RecebimentosPage() {
       }
 
       // Captação ou Adiantamento Recebido = entrada de dinheiro no projeto
+      const totalMut = Number(mut.valor_captado) || 0
+      const conciliadoMut = Number((mut as any).valor_conciliado_entrada || 0) + Number((mut as any).valor_conciliado_saida || 0)
+      const saldoMut = Math.max(0, totalMut - conciliadoMut)
+      const quitado = mut.status === 'quitado' || (totalMut > 0 && saldoMut <= 0.01 && conciliadoMut > 0)
+      const parcialMut = !quitado && conciliadoMut > 0.01 && saldoMut > 0.01
+      const valorMut = quitado ? totalMut : parcialMut ? saldoMut : totalMut
+      const descricaoMut = mut.nome + (parcialMut ? ` (parcial: ${formatCurrency(conciliadoMut)} de ${formatCurrency(totalMut)})` : '')
       result.push({
         id: `mut-${mut.id}`,
         origem: 'captacao',
-        descricao: mut.nome,
+        descricao: descricaoMut,
         parceiro: (mut as any).fornecedor?.nome ?? '—',
-        valor: Number(mut.valor_captado) || 0,
+        valor: valorMut,
         data_prevista: mut.data_captacao,
-        data_efetiva: mut.status === 'quitado' ? mut.data_captacao : null,
-        status: mut.status === 'quitado' ? 'recebido' : 'previsto',
+        data_efetiva: quitado ? mut.data_captacao : null,
+        status: quitado ? 'recebido' : parcialMut ? 'parcial' : 'previsto',
+        sem_valor: valorMut <= 0.01,
         raw: mut,
       })
     }
@@ -152,11 +177,12 @@ export default function RecebimentosPage() {
 
     for (const r of todosRecebimentos) {
       totalGeral += r.valor
-      if (r.status === 'previsto' || r.status === 'parcial') {
+      const emAberto = r.status === 'previsto' || r.status === 'parcial' || r.status === 'vencido'
+      if (emAberto) {
         totalReceber += r.valor
+        if (r.data_prevista < today) atrasado += r.valor
         if (r.data_prevista >= today && r.data_prevista <= em30Str) prox30 += r.valor
       }
-      if (r.status === 'vencido') { totalReceber += r.valor; atrasado += r.valor }
       if (r.status === 'recebido' && r.data_efetiva && r.data_efetiva >= inicioMes) {
         recebidoMes += r.valor
       }
@@ -248,7 +274,14 @@ export default function RecebimentosPage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {filtrados.map(r => <RecebimentoRow key={r.id} item={r} onShowVinculos={() => setViewingVinculos(r)} />)}
+                {filtrados.map(r => (
+                  <RecebimentoRow
+                    key={r.id}
+                    item={r}
+                    onShowVinculos={() => setViewingVinculos(r)}
+                    onBaixar={r.status !== 'recebido' && !r.sem_valor ? () => setBaixando(r) : undefined}
+                  />
+                ))}
               </tbody>
               <tfoot className="bg-muted/30 font-bold">
                 <tr>
@@ -283,6 +316,68 @@ export default function RecebimentosPage() {
         <NovoAdiantamentoDialog onClose={() => setShowNovo(false)} />
       )}
 
+      {/* Baixar recebimento: abre dialog de lançamento manual pré-preenchido conforme origem */}
+      {baixando && (() => {
+        const raw = baixando.raw as any
+        let vinculo: { tipo: 'medicao' | 'mutuo_parcela' | 'mutuo'; id: string; label: string; sublabel: string; valor: number } | null = null
+        let descricao = baixando.descricao
+        let saldo = baixando.valor
+
+        if (baixando.origem === 'medicao') {
+          saldo = Math.max(0, Number(raw.valor_planejado) - Number(raw.valor_liberado))
+          const sugerido = saldo > 0.01 ? saldo : Number(raw.valor_planejado)
+          descricao = `Recebimento Medição nº ${raw.numero}`
+          vinculo = {
+            tipo: 'medicao',
+            id: raw.id,
+            label: `Medição nº ${raw.numero}`,
+            sublabel: `Contrato · saldo ${formatCurrency(saldo)}`,
+            valor: sugerido,
+          }
+          saldo = sugerido
+        } else if (baixando.origem === 'adiantamento') {
+          // raw = mutuo_parcela (com _mutuoNome injetado)
+          const valorTotal = Number(raw.valor) || 0
+          const pago = Number(raw.valor_pago || 0)
+          const restante = Math.max(0, valorTotal - pago)
+          const sugerido = restante > 0.01 ? restante : valorTotal
+          descricao = `Devolução ${raw._mutuoNome ?? 'adiantamento'} · P${raw.numero_parcela ?? ''}`
+          vinculo = {
+            tipo: 'mutuo_parcela',
+            id: raw.id,
+            label: descricao,
+            sublabel: `Parcela mútuo · Venc ${raw.data_vencimento} · saldo ${formatCurrency(restante)}`,
+            valor: sugerido,
+          }
+          saldo = sugerido
+        } else if (baixando.origem === 'captacao') {
+          // raw = mutuo
+          const valorTotal = Number(raw.valor_captado) || 0
+          const jaConc = Number(raw.valor_conciliado_entrada || 0) + Number(raw.valor_conciliado_saida || 0)
+          const restante = Math.max(0, valorTotal - jaConc)
+          const sugerido = restante > 0.01 ? restante : valorTotal
+          descricao = `Captação: ${raw.nome}`
+          vinculo = {
+            tipo: 'mutuo',
+            id: raw.id,
+            label: raw.nome,
+            sublabel: `Mútuo · ${raw.data_captacao} · saldo ${formatCurrency(restante)}`,
+            valor: sugerido,
+          }
+          saldo = sugerido
+        }
+
+        return (
+          <NovoLancamentoDialog
+            defaultTipo="entrada"
+            defaultDescricao={descricao}
+            defaultValor={saldo.toFixed(2).replace('.', ',')}
+            defaultVinculo={vinculo}
+            onClose={() => setBaixando(null)}
+          />
+        )
+      })()}
+
       {/* Visão reversa: movs vinculados ao recebimento */}
       {viewingVinculos && (
         <VinculosMovsPanel
@@ -313,7 +408,7 @@ function KpiCard({ icon: Icon, label, value, color }: {
   )
 }
 
-function RecebimentoRow({ item, onShowVinculos }: { item: RecebimentoItem; onShowVinculos: () => void }) {
+function RecebimentoRow({ item, onShowVinculos, onBaixar }: { item: RecebimentoItem; onShowVinculos: () => void; onBaixar?: () => void }) {
   const statusCfg = {
     previsto: { label: 'Previsto', cls: 'bg-blue-500/10 text-blue-600', Icon: Clock },
     recebido: { label: 'Recebido', cls: 'bg-emerald-500/10 text-emerald-600', Icon: CheckCircle2 },
@@ -356,6 +451,15 @@ function RecebimentoRow({ item, onShowVinculos }: { item: RecebimentoItem; onSho
       </td>
       <td className="px-3 py-2 text-center">
         <div className="inline-flex items-center gap-2">
+          {onBaixar && (
+            <button
+              onClick={onBaixar}
+              className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 hover:bg-emerald-500/20"
+              title="Registrar recebimento (parcial ou total) e conciliar"
+            >
+              <CircleDollarSign className="h-3 w-3" />Baixar
+            </button>
+          )}
           <button onClick={onShowVinculos} className="text-muted-foreground hover:text-primary" title="Ver movs vinculados">
             🔗
           </button>

@@ -34,6 +34,32 @@ import { pageTours } from '@/lib/tours/page-tours'
 import RecepcaoPage from '@/pages/RecepcaoPage'
 
 // ---------------------------------------------------------------------------
+// Helper: detecta mov bancária pré-existente conciliada com a parcela.
+// Evita duplicação no extrato quando a baixa já foi feita manualmente.
+// Retorna null se nenhuma, ou objeto com info da mov se existir.
+// ---------------------------------------------------------------------------
+async function findMovConciliadaParaParcela(
+  parcelaId: string,
+  tipoOrigem: 'parcela' | 'mutuo_parcela',
+): Promise<{ movId: string; data: string; valor: number; descricao: string } | null> {
+  const col = tipoOrigem === 'parcela' ? 'parcela_id' : 'mutuo_parcela_id'
+  const { data: cps } = await supabase
+    .from('conciliacao_parcelas')
+    .select(`conciliacao_id, conciliacoes!inner(id, movimentacao_id, status, movimentacoes_bancarias!inner(id, data, valor, descricao))`)
+    .eq(col, parcelaId)
+  if (!cps || cps.length === 0) return null
+  for (const cp of cps as any[]) {
+    const conc = Array.isArray(cp.conciliacoes) ? cp.conciliacoes[0] : cp.conciliacoes
+    if (!conc) continue
+    if (conc.status !== 'confirmado' && conc.status !== 'aprovado') continue
+    const mov = Array.isArray(conc.movimentacoes_bancarias) ? conc.movimentacoes_bancarias[0] : conc.movimentacoes_bancarias
+    if (!mov) continue
+    return { movId: mov.id, data: mov.data, valor: Number(mov.valor), descricao: mov.descricao }
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 const INPUT = 'w-full rounded-lg border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary'
@@ -796,6 +822,18 @@ function PaymentModal({
       return
     }
 
+    // Anti-duplicação: já existe mov conciliada com esta parcela?
+    const movExistente = await findMovConciliadaParaParcela(parcela.id, 'parcela')
+    if (movExistente) {
+      const ok = window.confirm(
+        `Já existe um lançamento no extrato vinculado a esta parcela:\n\n` +
+        `${movExistente.data} · ${formatCurrency(movExistente.valor)} · ${movExistente.descricao}\n\n` +
+        `Registrar a baixa agora vai criar OUTRA mov no extrato (duplicação).\n\n` +
+        `Cancele e use a mov existente, ou clique OK para criar mesmo assim.`
+      )
+      if (!ok) return
+    }
+
     setSaving(true)
     try {
       // 1. Upload comprovante (if any)
@@ -1031,6 +1069,17 @@ function MutuoBaixaModal({
     if (!form.conta_bancaria_id) {
       toast.error('Selecione a conta bancaria')
       return
+    }
+    // Anti-duplicação: já existe mov conciliada com esta parcela de mútuo?
+    const movExistente = await findMovConciliadaParaParcela(parcela.id, 'mutuo_parcela')
+    if (movExistente) {
+      const ok = window.confirm(
+        `Já existe um lançamento no extrato vinculado a esta parcela de mútuo:\n\n` +
+        `${movExistente.data} · ${formatCurrency(movExistente.valor)} · ${movExistente.descricao}\n\n` +
+        `Registrar a baixa agora vai criar OUTRA mov no extrato (duplicação).\n\n` +
+        `Cancele e use a mov existente, ou clique OK para criar mesmo assim.`
+      )
+      if (!ok) return
     }
     setSaving(true)
     const valorPago = parseFloat(form.valor_pago) || 0
@@ -2068,6 +2117,23 @@ function BatchPaymentModal({
   const totalValor = selected.reduce((s, p) => s + p.valor - p.valor_pago, 0)
 
   const handleBatchPay = async () => {
+    // Anti-duplicação: identifica parcelas que já têm mov conciliada no extrato.
+    const duplicadas: Array<{ parc: typeof selected[number]; mov: { data: string; valor: number; descricao: string } }> = []
+    for (const parc of selected) {
+      const movExistente = await findMovConciliadaParaParcela(parc.id, 'parcela')
+      if (movExistente) duplicadas.push({ parc, mov: movExistente })
+    }
+    if (duplicadas.length > 0) {
+      const lista = duplicadas.slice(0, 5).map(d =>
+        `• ${d.mov.data} · ${formatCurrency(d.mov.valor)} · ${d.mov.descricao}`
+      ).join('\n')
+      const extra = duplicadas.length > 5 ? `\n... e mais ${duplicadas.length - 5}` : ''
+      const ok = window.confirm(
+        `${duplicadas.length} parcela(s) já têm lançamento no extrato:\n\n${lista}${extra}\n\n` +
+        `Pagar em lote vai criar movs duplicadas. Continuar mesmo assim?`
+      )
+      if (!ok) return
+    }
     setSaving(true)
     try {
       for (const parc of selected) {

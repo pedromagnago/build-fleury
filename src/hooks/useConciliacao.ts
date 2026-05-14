@@ -1181,17 +1181,21 @@ export function useCreateMovimentoManual() {
         }).select('id').single()
 
         if (conc) {
-          const linkRow: any = { conciliacao_id: conc.id, valor_aplicado: Math.abs(payload.valor) }
+          const valorAplicado = Math.abs(payload.valor)
+          const linkRow: any = { conciliacao_id: conc.id, valor_aplicado: valorAplicado }
           if (vinculo.tipo === 'parcela')        linkRow.parcela_id        = vinculo.id
           else if (vinculo.tipo === 'medicao')   linkRow.medicao_id        = vinculo.id
           else if (vinculo.tipo === 'mutuo_parcela') linkRow.mutuo_parcela_id = vinculo.id
           else if (vinculo.tipo === 'mutuo')     linkRow.mutuo_id          = vinculo.id
           await supabase.from('conciliacao_parcelas').insert(linkRow)
-          // valor_pago/status de parcela são sincronizados pelo trigger do banco.
-          // Para parcela, ainda gravamos data_pagamento_real (sem trigger para isso).
-          if (vinculo.tipo === 'parcela') {
-            await supabase.from('parcelas').update({ data_pagamento_real: payload.data }).eq('id', vinculo.id)
-          }
+          // O trigger SQL trg_sync_parcela_valor_pago só recalcula parcelas de pedido.
+          // Para medicao/mutuo_parcela/mutuo precisamos chamar aplicarDeltaOrigem manualmente,
+          // senão o valor_pago/status da origem nunca atualiza.
+          const origem: VinculoOrigem =
+            vinculo.tipo === 'parcela' ? 'parcela' :
+            vinculo.tipo === 'medicao' ? 'medicao' :
+            vinculo.tipo === 'mutuo_parcela' ? 'mutuo_parcela' : 'mutuo'
+          await aplicarDeltaOrigem(origem, vinculo.id, valorAplicado, payload.data)
         }
       }
 
@@ -1210,6 +1214,8 @@ export function useCreateMovimentoManual() {
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
       toast.success('Lançamento manual criado')
     },
     onError: (err: Error) => toast.error('Erro ao criar lançamento: ' + err.message),
