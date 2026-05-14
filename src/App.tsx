@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { ProjectProvider } from '@/contexts/ProjectContext'
 import { TourProvider } from '@/contexts/TourContext'
+import { LoggerProvider } from '@/contexts/LoggerContext'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { ProjectGate } from '@/components/ProjectGate'
 import { RoleGate } from '@/components/RoleGate'
@@ -51,6 +53,8 @@ export default function App() {
         <ProjectProvider>
           <TourProvider>
           <BrowserRouter>
+          <LoggerProvider>
+          <ErrorBoundary>
             <Routes>
               {/* Public routes */}
               <Route path="/" element={<LandingPage />} />
@@ -110,6 +114,8 @@ export default function App() {
               {/* Default redirect */}
               <Route path="*" element={<Navigate to="/cronograma" replace />} />
             </Routes>
+          </ErrorBoundary>
+          </LoggerProvider>
           </BrowserRouter>
           <Toaster
             position="top-right"
