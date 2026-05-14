@@ -739,11 +739,22 @@ export default function RecepcaoPage() {
       /** Log: cada delta de consumo aplicado por esta NF — alimenta recepcao_consumos
        *  para permitir reversão exata ao excluir a NF (B do plano anti-fantasma). */
       const consumoLog: Array<{ pedido_item_id: string; delta_qtd_recebida: number }> = []
+      /** Valor financeiro consumido pela NF em cada pedido (qtd consumida × valor unitário da NF).
+       *  Usado em 3d.1 pra calcular o SALDO do pedido consumido = valor_total_real − consumido
+       *  e regerar parcelas pro saldo (em vez de apagar tudo). */
+      const valorConsumidoPorPedido = new Map<string, number>()
+      /** Info dos pedidos consumidos pra usar na regeneração de parcelas (valor_total_real,
+       *  cond_pagamento, data_entrega_prevista). */
+      const pedidoInfo = new Map<string, { valor_total_real: number; cond_pagamento: string | null; data_entrega_prevista: string | null }>()
+      /** IDs das parcelas que geramos no pedido consumido pra cobrir o saldo após NF.
+       *  Vão pra recepcao_consumos.parcelas_regeradas_ids — o trigger BEFORE DELETE
+       *  apaga essas parcelas ao reverter a NF (evita duplicação com snapshot restaurado). */
+      const parcelasRegeradasPorPedido = new Map<string, string[]>()
 
       if (itemIdsAConsumir.length > 0) {
         const { data: itensPlanRaw } = await supabase
           .from('pedido_itens')
-          .select('id, pedido_id, item_compra_id, qtd, qtd_recebida, pedidos!inner(id, status, nf_origem_id, created_at, company_id)')
+          .select('id, pedido_id, item_compra_id, qtd, qtd_recebida, pedidos!inner(id, status, nf_origem_id, created_at, company_id, valor_total_real, cond_pagamento, data_entrega_prevista)')
           .in('item_compra_id', itemIdsAConsumir)
           .eq('pedidos.company_id', currentCompany.id)
           .in('pedidos.status', ['planejado', 'pedido_enviado', 'parcialmente_entregue'])
@@ -783,6 +794,20 @@ export default function RecepcaoPage() {
             }
             pedidoItensConsumidos.push({ pedidoId: pi.pedido_id, pedidoItemId: pi.id })
             consumoLog.push({ pedido_item_id: pi.id, delta_qtd_recebida: consumir })
+            // Acumula valor financeiro consumido (qtd × valor unitário da NF).
+            // Usado em 3d.1 pra regerar parcelas com o saldo restante do pedido.
+            const valorConsumido = consumir * vu
+            valorConsumidoPorPedido.set(
+              pi.pedido_id,
+              (valorConsumidoPorPedido.get(pi.pedido_id) ?? 0) + valorConsumido
+            )
+            if (!pedidoInfo.has(pi.pedido_id)) {
+              pedidoInfo.set(pi.pedido_id, {
+                valor_total_real: Number(pi.pedidos.valor_total_real ?? 0),
+                cond_pagamento: pi.pedidos.cond_pagamento ?? null,
+                data_entrega_prevista: pi.pedidos.data_entrega_prevista ?? null,
+              })
+            }
             restante -= consumir
           }
           // Sobra: vai pro pedido novo
@@ -886,50 +911,106 @@ export default function RecepcaoPage() {
        *  pra que o trigger BEFORE DELETE restaure tudo se a NF for excluída. */
       let parcelasApagadasSnapshot: any[] = []
       if (novoPedidoId) {
-        // 3d.1) Apaga parcelas futuras dos pedidos consumidos.
+        // 3d.1) Apaga parcelas pendentes dos pedidos consumidos E regenera com o SALDO.
+        //
+        // Regra (PR pós-fix 2026-05-14): se a NF consome parcialmente um pedido,
+        // o pedido consumido fica com parcelas correspondentes ao SALDO restante
+        //   saldo = valor_total_real − valor_consumido_pela_nf − valor_já_pago_em_parcelas_protegidas
+        // Se saldo > 0: apaga as pendentes E regera com gerarParcelas(saldo).
+        // Se saldo ≈ 0: comportamento antigo (só apaga, âncora cobre tudo).
+        // Parcelas pagas / conciliadas são SEMPRE preservadas.
         const pedidoIdsConsumidos = Array.from(new Set(pedidoItensConsumidos.map(c => c.pedidoId)))
         if (pedidoIdsConsumidos.length > 0) {
-          // SELECT * pra ter o snapshot completo das parcelas (incluindo id pra reinserir)
           const { data: parcelasExistentes } = await supabase
             .from('parcelas')
             .select('*')
             .in('pedido_id', pedidoIdsConsumidos)
 
           const allIds = (parcelasExistentes ?? []).map((p: any) => p.id)
-          // Verifica quais têm vínculo em conciliacao_parcelas (link polimórfico)
           const { data: links } = allIds.length > 0
             ? await supabase.from('conciliacao_parcelas').select('parcela_id').in('parcela_id', allIds)
             : { data: [] as any[] }
           const idsComLink = new Set((links ?? []).map((l: any) => l.parcela_id))
 
-          const protegidas = (parcelasExistentes ?? []).filter((p: any) =>
+          const protegidasGlobal = (parcelasExistentes ?? []).filter((p: any) =>
             p.status === 'paga' || p.status === 'parcialmente_paga' ||
             Number(p.valor_pago || 0) > 0 || idsComLink.has(p.id)
           )
-          const deletaveis = (parcelasExistentes ?? []).filter((p: any) => !protegidas.find((pr: any) => pr.id === p.id))
-          parcelasPreservadasComAviso = protegidas.length
+          parcelasPreservadasComAviso = protegidasGlobal.length
 
-          if (deletaveis.length > 0) {
-            // Guarda snapshot ANTES do DELETE — usado pelo trigger pra restaurar
-            parcelasApagadasSnapshot = deletaveis.map((p: any) => ({
-              id: p.id,
-              company_id: p.company_id,
-              pedido_id: p.pedido_id,
-              numero_parcela: p.numero_parcela,
-              valor: p.valor,
-              data_vencimento: p.data_vencimento,
-              status: p.status,
-              descricao: p.descricao,
-              tipo: p.tipo,
-              created_at: p.created_at,
-            }))
-            const delIds = deletaveis.map((p: any) => p.id)
-            // Limpa ponteiro legacy mb.parcela_id antes do DELETE pra evitar FK violation.
-            await supabase.from('movimentacoes_bancarias').update({ parcela_id: null }).in('parcela_id', delIds)
-            const { error: delErr } = await supabase.from('parcelas').delete().in('id', delIds)
-            if (delErr) {
-              console.warn('Falha ao apagar parcelas dos pedidos consumidos:', delErr)
-              throw delErr
+          // Processa pedido a pedido pra calcular saldo individualmente.
+          for (const pedId of pedidoIdsConsumidos) {
+            const parcelasDoPed = (parcelasExistentes ?? []).filter((p: any) => p.pedido_id === pedId)
+            const protegidasDoPed = parcelasDoPed.filter((p: any) => protegidasGlobal.find((pg: any) => pg.id === p.id))
+            const deletaveisDoPed = parcelasDoPed.filter((p: any) => !protegidasDoPed.find((pp: any) => pp.id === p.id))
+
+            // Snapshot pra reversão na exclusão da NF
+            for (const p of deletaveisDoPed) {
+              parcelasApagadasSnapshot.push({
+                id: p.id,
+                company_id: p.company_id,
+                pedido_id: p.pedido_id,
+                numero_parcela: p.numero_parcela,
+                valor: p.valor,
+                data_vencimento: p.data_vencimento,
+                status: p.status,
+                descricao: p.descricao,
+                tipo: p.tipo,
+                created_at: p.created_at,
+              })
+            }
+
+            // Apaga as deletáveis deste pedido
+            if (deletaveisDoPed.length > 0) {
+              const delIds = deletaveisDoPed.map((p: any) => p.id)
+              await supabase.from('movimentacoes_bancarias').update({ parcela_id: null }).in('parcela_id', delIds)
+              const { error: delErr } = await supabase.from('parcelas').delete().in('id', delIds)
+              if (delErr) {
+                console.warn('Falha ao apagar parcelas dos pedidos consumidos:', delErr)
+                throw delErr
+              }
+            }
+
+            // Regera parcelas com o SALDO restante (se houver).
+            const info = pedidoInfo.get(pedId)
+            const consumidoPelaNF = valorConsumidoPorPedido.get(pedId) ?? 0
+            const valorJaPago = protegidasDoPed.reduce((s: number, p: any) => s + Number(p.valor_pago ?? p.valor ?? 0), 0)
+            if (info && info.valor_total_real > 0) {
+              const saldo = Math.round((info.valor_total_real - consumidoPelaNF - valorJaPago) * 100) / 100
+              if (saldo > 0.01) {
+                const baseEntrega = info.data_entrega_prevista
+                  ? localDate(info.data_entrega_prevista)
+                  : new Date()
+                const novas = gerarParcelas({
+                  pedidoId: pedId,
+                  companyId: currentCompany.id,
+                  valorTotal: saldo,
+                  condPagamento: info.cond_pagamento || 'à vista',
+                  dataEntrega: baseEntrega,
+                })
+                if (novas.length > 0) {
+                  // Offset numero_parcela pra não colidir com as protegidas que ficaram
+                  const offset = protegidasDoPed.length
+                  const payload = novas.map(p => ({
+                    ...p,
+                    numero_parcela: p.numero_parcela + offset,
+                    descricao: `Saldo após consumo NF ${extracao.documento.numero ?? ''}`.trim(),
+                  }))
+                  const { data: parcsInseridas, error: insErr } = await supabase
+                    .from('parcelas').insert(payload).select('id')
+                  if (insErr) {
+                    console.warn('Falha ao regerar parcelas de saldo do pedido consumido:', insErr)
+                    throw insErr
+                  }
+                  // Rastreia IDs pra reversão (trigger BEFORE DELETE apaga essas
+                  // antes de restaurar o snapshot — senão fica dobra de parcelas).
+                  const novosIds = (parcsInseridas ?? []).map((r: any) => r.id as string)
+                  if (novosIds.length > 0) {
+                    const acc = parcelasRegeradasPorPedido.get(pedId) ?? []
+                    parcelasRegeradasPorPedido.set(pedId, [...acc, ...novosIds])
+                  }
+                }
+              }
             }
           }
         }
@@ -972,6 +1053,7 @@ export default function RecepcaoPage() {
         delta_qtd_recebida: number;
         created_pedido_id: string | null;
         parcelas_snapshot: any[] | null;
+        parcelas_regeradas_ids: string[] | null;
       }> = []
       for (const c of consumoLog) {
         consumoRows.push({
@@ -981,18 +1063,22 @@ export default function RecepcaoPage() {
           delta_qtd_recebida: c.delta_qtd_recebida,
           created_pedido_id: null,
           parcelas_snapshot: null,
+          parcelas_regeradas_ids: null,
         })
       }
       if (novoPedidoId) {
+        // Consolida na linha do âncora todos os IDs de parcelas regeradas nos
+        // pedidos consumidos (trigger BEFORE DELETE faz `unnest` em todos os
+        // recepcao_consumos.doc_id = X, então tanto faz qual linha carrega).
+        const todosIdsRegerados = Array.from(parcelasRegeradasPorPedido.values()).flat()
         consumoRows.push({
           doc_id: docRow!.id,
           company_id: currentCompany.id,
           pedido_item_id: null,
           delta_qtd_recebida: 0,
           created_pedido_id: novoPedidoId,
-          // Snapshot das parcelas dos pedidos consumidos que foram apagadas —
-          // trigger BEFORE DELETE restaura ao excluir a NF.
           parcelas_snapshot: parcelasApagadasSnapshot.length > 0 ? parcelasApagadasSnapshot : null,
+          parcelas_regeradas_ids: todosIdsRegerados.length > 0 ? todosIdsRegerados : null,
         })
       }
       if (consumoRows.length > 0) {
