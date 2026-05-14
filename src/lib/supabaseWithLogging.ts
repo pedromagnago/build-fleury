@@ -39,7 +39,6 @@ export async function rpcWithLogging<T = unknown>(
   args: Record<string, unknown> | undefined,
   opts: RpcOpts,
 ): Promise<{ data: T | null; error: PostgrestError | null }> {
-  const op = opts.operacao ?? `rpc.${fn}`
   const t0 = performance.now()
 
   // Tentativa de propagar correlation_id pro lado SQL: se a RPC aceitar

@@ -277,7 +277,7 @@ function TrilhaRow({
             </pre>
           )}
         </div>
-        <span className="shrink-0 text-xs text-slate-400">{new Date(r.at).toLocaleTimeString()}</span>
+        <span className="shrink-0 text-xs text-slate-400">{new Date(item.at).toLocaleTimeString()}</span>
       </li>
     )
   }
@@ -304,7 +304,7 @@ function TrilhaRow({
             </details>
           )}
         </div>
-        <span className="shrink-0 text-xs text-slate-400">{new Date(r.at).toLocaleTimeString()}</span>
+        <span className="shrink-0 text-xs text-slate-400">{new Date(item.at).toLocaleTimeString()}</span>
       </li>
     )
   }
@@ -320,7 +320,7 @@ function TrilhaRow({
           <span className="ml-2 font-bold text-amber-700">{r.duracao_ms}ms</span>
         </div>
       </div>
-      <span className="shrink-0 text-xs text-slate-400">{new Date(r.at).toLocaleTimeString()}</span>
+      <span className="shrink-0 text-xs text-slate-400">{new Date(item.at).toLocaleTimeString()}</span>
     </li>
   )
 }
