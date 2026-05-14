@@ -959,11 +959,19 @@ export default function RecepcaoPage() {
       // 4b) Log de consumo: alimenta recepcao_consumos pra permitir reversão
       // exata se a NF for excluída depois. Inclui (a) deltas em planejados
       // existentes e (b) o pedido novo criado pela NF.
+      //
+      // IMPORTANTE: todas as linhas precisam ter EXATAMENTE as mesmas chaves.
+      // O PostgREST em bulk insert pega a união das chaves de todas as linhas
+      // e manda NULL para as chaves ausentes em cada linha — o que viola
+      // `delta_qtd_recebida NOT NULL` na linha do pedido âncora se não passarmos 0.
+      // (Bug 2026-05-14: NF BRUNO MARKLEWSKI 000.003.003 deixou estado corrompido.)
       const consumoRows: Array<{
-        doc_id: string; company_id: string;
-        pedido_item_id?: string; delta_qtd_recebida?: number;
-        created_pedido_id?: string;
-        parcelas_snapshot?: any[];
+        doc_id: string;
+        company_id: string;
+        pedido_item_id: string | null;
+        delta_qtd_recebida: number;
+        created_pedido_id: string | null;
+        parcelas_snapshot: any[] | null;
       }> = []
       for (const c of consumoLog) {
         consumoRows.push({
@@ -971,16 +979,20 @@ export default function RecepcaoPage() {
           company_id: currentCompany.id,
           pedido_item_id: c.pedido_item_id,
           delta_qtd_recebida: c.delta_qtd_recebida,
+          created_pedido_id: null,
+          parcelas_snapshot: null,
         })
       }
       if (novoPedidoId) {
         consumoRows.push({
           doc_id: docRow!.id,
           company_id: currentCompany.id,
+          pedido_item_id: null,
+          delta_qtd_recebida: 0,
           created_pedido_id: novoPedidoId,
           // Snapshot das parcelas dos pedidos consumidos que foram apagadas —
           // trigger BEFORE DELETE restaura ao excluir a NF.
-          parcelas_snapshot: parcelasApagadasSnapshot.length > 0 ? parcelasApagadasSnapshot : undefined,
+          parcelas_snapshot: parcelasApagadasSnapshot.length > 0 ? parcelasApagadasSnapshot : null,
         })
       }
       if (consumoRows.length > 0) {
@@ -1669,8 +1681,10 @@ export default function RecepcaoPage() {
             ))}
           </div>
 
-          {/* Linhas */}
-          <div className="rounded-xl border bg-card overflow-hidden">
+          {/* Linhas — overflow-visible pra que o dropdown do ItemPickerCombobox
+              escape do card sem ser cortado (a 3ª/4ª linha ficavam com a lista
+              de match invisível). */}
+          <div className="rounded-xl border bg-card">
             <table className="w-full text-xs">
               <thead className="bg-muted/40">
                 <tr>

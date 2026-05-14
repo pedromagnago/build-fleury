@@ -504,7 +504,21 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       pedidos
         .filter(p => p.status !== 'cancelado' && !parcelaPedidoIds.has(p.id))
         .forEach(p => {
-          const val = Number(p.valor_total_real ?? 0)
+          // PR 3.5: quando uma NF consome parte do pedido, suas parcelas são
+          // movidas pro pedido âncora (que carrega o consumido). O saldo NÃO
+          // consumido fica neste pedido sem parcela — então a previsão aqui
+          // deve refletir somente o saldo (qtd-qtd_recebida), senão duplicamos
+          // o que já está nas parcelas do âncora.
+          const valTotal = Number(p.valor_total_real ?? 0)
+          const valSaldo = (p.itens && p.itens.length > 0)
+            ? p.itens.reduce((s, pi) => {
+                const q = Number(pi.qtd || 0)
+                if (q <= 0) return s
+                const fracRestante = Math.max(0, 1 - Number(pi.qtd_recebida || 0) / q)
+                return s + Number(pi.valor_total_real || 0) * fracRestante
+              }, 0)
+            : valTotal
+          const val = valSaldo
           if (val <= 0) return
 
           const itemObj = itens.find(i => i.id === p.item_compra_id)

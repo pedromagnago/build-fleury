@@ -47,6 +47,7 @@ export function ItemPickerCombobox({
 }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [openUp, setOpenUp] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -62,9 +63,16 @@ export function ItemPickerCombobox({
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  // Foca o input ao abrir
+  // Foca o input ao abrir + decide se abre pra cima ou pra baixo. A lista pode
+  // chegar a ~360px (busca + 288px de items + footer). Se não cabe abaixo, vira.
   useEffect(() => {
-    if (open) inputRef.current?.focus()
+    if (!open) return
+    inputRef.current?.focus()
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const espacoAbaixo = window.innerHeight - rect.bottom
+    const espacoAcima = rect.top
+    setOpenUp(espacoAbaixo < 360 && espacoAcima > espacoAbaixo)
   }, [open])
 
   const selecionado = value ? todosItens.find(i => i.id === value) ?? null : null
@@ -121,9 +129,9 @@ export function ItemPickerCombobox({
         <ChevronDown className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
       </button>
 
-      {/* Dropdown */}
+      {/* Dropdown — flip pra cima quando o trigger está perto do bottom da viewport */}
       {open && (
-        <div className="absolute z-30 mt-1 w-[min(28rem,90vw)] rounded-lg border bg-card shadow-xl">
+        <div className={`absolute z-30 w-[min(28rem,90vw)] rounded-lg border bg-card shadow-xl ${openUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
           {/* Busca */}
           <div className="border-b p-1.5">
             <div className="relative">
