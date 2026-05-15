@@ -835,6 +835,7 @@ export function useOrcamentoRealizado() {
         supabase.from('pedido_itens')
           .select(`
             item_compra_id, qtd, valor_unitario_real, valor_total_real, qtd_recebida,
+            fora_orcamento,
             pedidos!inner(company_id, status)
           `)
           .eq('pedidos.company_id', companyId),

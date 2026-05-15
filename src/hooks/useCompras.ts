@@ -390,7 +390,7 @@ export function usePedidoItens() {
         .from('pedido_itens')
         .select(`
           id, pedido_id, item_compra_id, qtd, valor_unitario_real, valor_total_real,
-          qtd_recebida, casas_lote, ordem, observacoes, created_at,
+          qtd_recebida, casas_lote, ordem, observacoes, fora_orcamento, created_at,
           pedidos!inner(company_id, status, nf_origem_id, fornecedor_id, numero_pedido, fornecedores(nome)),
           itens_compra(descricao, codigo, etapa_id, etapas(nome))
         `)
