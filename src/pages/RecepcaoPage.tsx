@@ -167,12 +167,31 @@ interface LinhaExtraida {
 
 interface Extracao {
   fornecedor: { nome: string | null; cnpj: string | null; ie: string | null }
-  documento: { numero: string | null; serie: string | null; data_emissao: string | null; data_vencimento: string | null; valor_total: number | null; tipo: string }
+  documento: {
+    numero: string | null
+    serie: string | null
+    data_emissao: string | null
+    data_vencimento: string | null
+    valor_total: number | null
+    /** NF-e — 44 dígitos. Usado pra detectar reaplicação de uma NF já aplicada (dedup). */
+    chave_acesso?: string | null
+    tipo: string
+  }
   itens: LinhaExtraida[]
   observacoes?: string | null
   origem: 'xml_nfe' | 'imagem' | 'texto'
   modelo?: string
   custo_cents?: number
+}
+
+/** Conflito de NF já aplicada (chave_acesso já existe pra esta company). */
+interface ExistingDocConflict {
+  id: string
+  numero_doc: string | null
+  fornecedor_nome: string | null
+  valor_total: number | string | null
+  data_emissao: string | null
+  applied_at: string | null
 }
 
 export default function RecepcaoPage() {
@@ -209,6 +228,16 @@ export default function RecepcaoPage() {
   // Geradas automaticamente a partir de `condPagamento` quando `parcelasManuallyEdited === false`.
   const [editableParcelas, setEditableParcelas] = useState<EditableParcela[]>([])
   const [parcelasManuallyEdited, setParcelasManuallyEdited] = useState(false)
+  // Input controlado do "VALOR DA NF" — agora editável (era <p> readonly).
+  // Sincroniza nos dois sentidos com extracao.documento.valor_total via parseBRL.
+  // Necessário porque XML sem <ICMSTot> / OCR falho vinha com null e o operador
+  // não conseguia corrigir manualmente — tinha que aceitar diferença gigante.
+  const [valorTotalManualInput, setValorTotalManualInput] = useState<string>('')
+  // Dedup pré-aplicação: setado quando a chave_acesso da NF já existe em
+  // recepcao_docs (chave_acesso UNIQUE por company). Aciona dialog
+  // "esta NF já foi aplicada — excluir e refazer?".
+  const [existingDocConflict, setExistingDocConflict] = useState<ExistingDocConflict | null>(null)
+  const [checandoDedup, setChecandoDedup] = useState(false)
 
   // C: lista de NFs aplicadas + exclusão (com reversão via trigger no banco)
   const qc = useQueryClient()
@@ -412,15 +441,45 @@ export default function RecepcaoPage() {
     const extracaoAjustada = { ...e, fornecedor: fornecedorAjustado }
 
     const linhas: LinhaExtraida[] = e.itens.map((i: any) => ({ ...i, carregandoSugestoes: true }))
-    setExtracao({ ...extracaoAjustada, itens: linhas } as Extracao)
+    // Fallback do "valor total da NF": se XML/OCR não trouxe (vNF ausente, NFC-e, foto baixa
+    // qualidade), pré-preenche com a soma dos itens — o operador pode editar depois. Antes era
+    // null e a UI mostrava diferença gigante sem deixar editar.
+    const valorTotalEfetivo = extracaoAjustada.documento.valor_total ?? (linhas.reduce((s, l) => s + (l.valor_total ?? 0), 0) || null)
+    const extracaoComFallback = {
+      ...extracaoAjustada,
+      documento: { ...extracaoAjustada.documento, valor_total: valorTotalEfetivo },
+      itens: linhas,
+    } as Extracao
+    setExtracao(extracaoComFallback)
+    setValorTotalManualInput(valorTotalEfetivo != null ? toBRLInput(valorTotalEfetivo) : '')
     setDiferencaAceita(false)
+    setExistingDocConflict(null)
     // Pré-preenche cond. pagamento com a default do fornecedor (se cadastrado),
     // ou da extração (raro NFs trazerem essa info, mas se a IA extraiu, respeita).
-    setCondPagamento(fornCadastrado?.cond_pagamento ?? '')
+    setCondPagamento(fornCadastrado?.cond_pagamento_padrao ?? '')
     if (fornCadastrado) {
       toast.info(`Fornecedor reconhecido pelo CNPJ: ${fornCadastrado.nome}`)
     }
     if (!currentCompany) return
+    // Dedup: se a NF traz chave_acesso (44 dígitos), pergunta ao banco se já foi aplicada
+    // nesta company. Em caso afirmativo, abre dialog "excluir e refazer".
+    const chave = (extracaoAjustada.documento.chave_acesso ?? '').replace(/\D/g, '')
+    if (chave.length === 44) {
+      setChecandoDedup(true)
+      try {
+        const { data: existente, error } = await supabase
+          .rpc('recepcao_doc_por_chave', { p_company_id: currentCompany.id, p_chave_acesso: chave })
+          .maybeSingle<ExistingDocConflict>()
+        if (error) {
+          console.warn('Falha ao checar duplicidade de NF:', error)
+        } else if (existente) {
+          setExistingDocConflict(existente)
+          toast.warning(`Esta NF já foi aplicada em ${existente.applied_at ? new Date(existente.applied_at).toLocaleString('pt-BR') : '?'} — confira o painel no topo.`)
+        }
+      } finally {
+        setChecandoDedup(false)
+      }
+    }
     // Garante que itens novos/alterados estejam indexados antes de buscar matches
     // (no-op se já está tudo indexado; custa ~R$0,001 por item novo)
     try {
@@ -663,481 +722,126 @@ export default function RecepcaoPage() {
     })
   }
 
-  const aplicar = async () => {
+  /**
+   * Aplica a NF chamando a RPC atômica `aplicar_recepcao_nf(payload jsonb)`.
+   *
+   * Antes (até 2026-05-15) este fluxo eram ~12 operações Supabase sequenciais no
+   * client — sem envelope transacional. Falha no meio (ex: insert de
+   * recepcao_consumos) deixava NF "meio aplicada" sem como reverter.
+   *
+   * Agora a RPC envelopa tudo (insert doc → consumo FIFO → cria âncora →
+   * snapshot+regenera parcelas → log → matches) numa única transação.
+   * Erro em qualquer passo = rollback completo (DB volta ao estado anterior).
+   *
+   * Também resolve o "consumo fantasma": a RPC rejeita NFs com chave_acesso
+   * já existente, a menos que o operador autorize substituição
+   * (force_replace_doc_id) — caso em que o doc antigo é deletado primeiro
+   * (devolve qtd_recebida, restaura snapshots) e a nova versão é aplicada.
+   */
+  const aplicar = async (opts?: { forceReplaceDocId?: string }) => {
     if (!extracao || !currentCompany) return
     setAplicando(true)
     try {
-      // 1) Resolve fornecedor (acha por CNPJ ou nome, ou cria)
-      let fornId: string | null = null
-      if (extracao.fornecedor.cnpj) {
-        const cnpjClean = extracao.fornecedor.cnpj.replace(/\D/g, '')
-        const f = (fornecedores as any[]).find(x => x.cnpj && x.cnpj.replace(/\D/g, '') === cnpjClean)
-        fornId = f?.id ?? null
-      }
-      if (!fornId && extracao.fornecedor.nome) {
-        const f = (fornecedores as any[]).find(x => x.nome.toLowerCase() === extracao.fornecedor.nome!.toLowerCase())
-        fornId = f?.id ?? null
-      }
-      if (!fornId && extracao.fornecedor.nome) {
-        const { data: novoForn } = await supabase.from('fornecedores').insert({
-          company_id: currentCompany.id,
+
+      // Monta o payload em jsonb para a RPC atômica.
+      const payload = {
+        company_id: currentCompany.id,
+        force_replace_doc_id: opts?.forceReplaceDocId ?? null,
+        cond_pagamento: condPagamento.trim() || null,
+        fornecedor: {
           nome: extracao.fornecedor.nome,
           cnpj: extracao.fornecedor.cnpj?.replace(/\D/g, '') ?? null,
-        }).select('id').single()
-        fornId = novoForn?.id ?? null
-      }
-
-      // 2) Cria registro recepcao_docs
-      const { data: docRow, error: docErr } = await supabase.from('recepcao_docs').insert({
-        company_id: currentCompany.id,
-        origem: extracao.origem,
-        fornecedor_nome: extracao.fornecedor.nome,
-        fornecedor_cnpj: extracao.fornecedor.cnpj?.replace(/\D/g, '') ?? null,
-        numero_doc: extracao.documento.numero,
-        serie: extracao.documento.serie,
-        data_emissao: extracao.documento.data_emissao,
-        valor_total: extracao.documento.valor_total,
-        valor_frete: valorFrete,
-        raw_extracao: extracao as any,
-        modelo_ia: extracao.modelo ?? null,
-        custo_ia_cents: extracao.custo_cents ?? 0,
-        fornecedor_id: fornId,
-        status: 'aplicado',
-        applied_at: new Date().toISOString(),
-      }).select('id').single()
-      if (docErr) throw docErr
-      // Defensa: se RLS bloqueia SELECT pós-INSERT, o supabase-js retorna
-      // `data: null, error: null`. Sem o ID do doc, todo o resto da função
-      // grava `nf_origem_id = null` e `recepcao_consumos.doc_id = null` —
-      // resultando em pedidos âncora órfãos, impossíveis de reverter.
-      if (!docRow?.id) throw new Error('INSERT em recepcao_docs retornou sem ID. Verifique RLS/permissões.')
-
-      // 3) LÓGICA DE CONSUMO (PR 3 + PR 3.5):
-      //
-      // - Ação 'substituir_pedido' = CONSUMIR: busca TODOS os pedido_itens
-      //   planejados desse item_compra_id (match SÓ POR ITEM, ignorando
-      //   fornecedor), distribui a qtd da NF em FIFO (mais antigo primeiro)
-      //   incrementando qtd_recebida em cada um. Triggers SQL atualizam o
-      //   status do pedido. Se sobrar qtd da NF além do que cabe nos planejados,
-      //   a sobra entra como pedido_item no pedido âncora da NF.
-      //
-      // - Ação 'criar_pedido' = CRIAR NOVO: vai direto como pedido_item do
-      //   pedido âncora da NF.
-      //
-      // - PR 3.5: o PEDIDO ÂNCORA é SEMPRE criado (mesmo se 100% das linhas
-      //   forem consumidas), pra carregar o frete + as parcelas configuradas
-      //   pelo operador no header. Quando não há itensParaPedidoNovo, o âncora
-      //   é criado sem `pedido_itens`.
-      //
-      // - PR 3.5: as parcelas do âncora SUBSTITUEM as parcelas FUTURAS (não
-      //   pagas / não conciliadas) dos pedidos consumidos. As parcelas pagas
-      //   ou já conciliadas em movimentação bancária são PRESERVADAS, e o
-      //   operador é avisado da duplicidade pra agir manualmente.
-
-      // Linhas elegíveis pra processamento (não 'ignorar', não 'criar_item' puro)
-      const linhasElegiveis = extracao.itens.filter(
-        l => l.acao && l.acao !== 'ignorar' && l.item_compra_id
-      )
-
-      // 3a) CONSUMO: distribui qtd entre pedido_itens planejados de cada item
-      // Carrega TODOS os pedido_itens planejados envolvidos numa só query
-      const itemIdsAConsumir = Array.from(new Set(
-        linhasElegiveis.filter(l => l.acao === 'substituir_pedido').map(l => l.item_compra_id!)
-      ))
-      const sobraParaPedidoNovo: Array<{ item_compra_id: string; qtd: number; vu: number; vt: number; descricao: string }> = []
-      const pedidoItensConsumidos: Array<{ pedidoId: string; pedidoItemId: string }> = []
-      /** Log: cada delta de consumo aplicado por esta NF — alimenta recepcao_consumos
-       *  para permitir reversão exata ao excluir a NF (B do plano anti-fantasma). */
-      const consumoLog: Array<{ pedido_item_id: string; delta_qtd_recebida: number }> = []
-      /** Valor financeiro consumido pela NF em cada pedido (qtd consumida × valor unitário da NF).
-       *  Usado em 3d.1 pra calcular o SALDO do pedido consumido = valor_total_real − consumido
-       *  e regerar parcelas pro saldo (em vez de apagar tudo). */
-      const valorConsumidoPorPedido = new Map<string, number>()
-      /** Info dos pedidos consumidos pra usar na regeneração de parcelas (valor_total_real,
-       *  cond_pagamento, data_entrega_prevista). */
-      const pedidoInfo = new Map<string, { valor_total_real: number; cond_pagamento: string | null; data_entrega_prevista: string | null }>()
-      /** IDs das parcelas que geramos no pedido consumido pra cobrir o saldo após NF.
-       *  Vão pra recepcao_consumos.parcelas_regeradas_ids — o trigger BEFORE DELETE
-       *  apaga essas parcelas ao reverter a NF (evita duplicação com snapshot restaurado). */
-      const parcelasRegeradasPorPedido = new Map<string, string[]>()
-
-      if (itemIdsAConsumir.length > 0) {
-        const { data: itensPlanRaw } = await supabase
-          .from('pedido_itens')
-          .select('id, pedido_id, item_compra_id, qtd, qtd_recebida, pedidos!inner(id, status, nf_origem_id, created_at, company_id, valor_total_real, cond_pagamento, data_entrega_prevista)')
-          .in('item_compra_id', itemIdsAConsumir)
-          .eq('pedidos.company_id', currentCompany.id)
-          .in('pedidos.status', ['planejado', 'pedido_enviado', 'parcialmente_entregue'])
-        const itensPlanejadosPorItem = new Map<string, Array<any>>()
-        for (const pi of (itensPlanRaw ?? []) as any[]) {
-          const arr = itensPlanejadosPorItem.get(pi.item_compra_id) ?? []
-          arr.push(pi)
-          itensPlanejadosPorItem.set(pi.item_compra_id, arr)
-        }
-        // FIFO: ordena cada lista por created_at do pedido pai
-        for (const arr of itensPlanejadosPorItem.values()) {
-          arr.sort((a, b) => String(a.pedidos.created_at ?? '').localeCompare(String(b.pedidos.created_at ?? '')))
-        }
-
-        // Distribui qtd das linhas 'substituir_pedido' entre os planejados
-        for (const l of linhasElegiveis.filter(l => l.acao === 'substituir_pedido')) {
-          let restante = Number(l.quantidade ?? 0)
-          const vu = Number(l.valor_unitario ?? 0)
-          const candidatos = itensPlanejadosPorItem.get(l.item_compra_id!) ?? []
-          for (const pi of candidatos) {
-            if (restante <= 0.001) break
-            const disponivel = Math.max(Number(pi.qtd ?? 0) - Number(pi.qtd_recebida ?? 0), 0)
-            if (disponivel <= 0.001) continue
-            const consumir = Math.min(restante, disponivel)
-            const novaQtdRec = Number(pi.qtd_recebida ?? 0) + consumir
-            const { error: upPiErr } = await supabase
-              .from('pedido_itens')
-              .update({ qtd_recebida: novaQtdRec })
-              .eq('id', pi.id)
-            if (upPiErr) throw upPiErr
-            // Vincula a NF ao pedido pai se ainda não tem origem
-            if (!pi.pedidos.nf_origem_id) {
-              await supabase.from('pedidos').update({
-                nf_origem_id: docRow!.id,
-                data_entrega_real: extracao.documento.data_emissao ?? null,
-              }).eq('id', pi.pedido_id)
-            }
-            pedidoItensConsumidos.push({ pedidoId: pi.pedido_id, pedidoItemId: pi.id })
-            consumoLog.push({ pedido_item_id: pi.id, delta_qtd_recebida: consumir })
-            // Acumula valor financeiro consumido (qtd × valor unitário da NF).
-            // Usado em 3d.1 pra regerar parcelas com o saldo restante do pedido.
-            const valorConsumido = consumir * vu
-            valorConsumidoPorPedido.set(
-              pi.pedido_id,
-              (valorConsumidoPorPedido.get(pi.pedido_id) ?? 0) + valorConsumido
-            )
-            if (!pedidoInfo.has(pi.pedido_id)) {
-              pedidoInfo.set(pi.pedido_id, {
-                valor_total_real: Number(pi.pedidos.valor_total_real ?? 0),
-                cond_pagamento: pi.pedidos.cond_pagamento ?? null,
-                data_entrega_prevista: pi.pedidos.data_entrega_prevista ?? null,
-              })
-            }
-            restante -= consumir
-          }
-          // Sobra: vai pro pedido novo
-          if (restante > 0.001) {
-            sobraParaPedidoNovo.push({
-              item_compra_id: l.item_compra_id!,
-              qtd: restante,
-              vu,
-              vt: restante * vu,
-              descricao: l.descricao,
-            })
-          }
-        }
-      }
-
-      // 3b) CRIAR: linhas com acao='criar_pedido' vão pro pedido novo
-      const itensParaPedidoNovo = [
-        ...linhasElegiveis.filter(l => l.acao === 'criar_pedido').map(l => ({
-          item_compra_id: l.item_compra_id!,
-          qtd: Number(l.quantidade ?? 1),
-          vu: Number(l.valor_unitario ?? 0),
-          vt: Number(l.valor_total ?? ((l.quantidade ?? 1) * (l.valor_unitario ?? 0))),
-          descricao: l.descricao,
-        })),
-        ...sobraParaPedidoNovo,
-      ]
-
-      // 3c) Cria o PEDIDO ÂNCORA da NF — sempre, mesmo se 100% das linhas
-      // forem consumidas. Ele carrega o frete + as parcelas configuradas pelo
-      // operador, e é o único ponto de vinculação financeira da NF. Quando
-      // houver itensParaPedidoNovo, eles entram como pedido_itens dele.
-      //
-      // O pedido_itens é opcional: se 100% foi consumido (sem sobra e sem
-      // 'criar_pedido'), o âncora fica com 0 itens e `valor_total_real = 0`,
-      // representando apenas o documento financeiro da NF (frete + parcelas).
-      let novoPedidoId: string | null = null
-      let totalItensCriadosNovoPedido = 0
-      let pedidoAncoraSemItens = false
-
-      // `item_compra_id` é coluna legacy no header — precisa de algum valor não-nulo.
-      // Prioridade: primeira linha do pedido novo → primeira linha elegível qualquer.
-      const itemAncoraId =
-        itensParaPedidoNovo[0]?.item_compra_id ??
-        linhasElegiveis[0]?.item_compra_id ??
-        null
-
-      // Só cria âncora se há algo pra ele (itens novos, consumo, ou frete/parcelas).
-      // Senão (tudo 'ignorar' / 'criar_item' puro), não há nada pra ancorar.
-      const houveAlgumConsumo = pedidoItensConsumidos.length > 0
-      const temFreteOuParcelas = valorFrete > 0 || editableParcelas.length > 0
-      const precisaAncora = itensParaPedidoNovo.length > 0 || (houveAlgumConsumo && temFreteOuParcelas) || temFreteOuParcelas
-
-      if (precisaAncora && itemAncoraId) {
-        const primeira = itensParaPedidoNovo[0]
-        pedidoAncoraSemItens = itensParaPedidoNovo.length === 0
-        const obsAncora = pedidoAncoraSemItens
-          ? `NF ${extracao.documento.numero ?? ''} · ${extracao.fornecedor.nome ?? 'fornecedor sem nome'} · âncora financeiro (toda NF consumida)`
-          : `NF ${extracao.documento.numero ?? ''} · ${extracao.fornecedor.nome ?? 'fornecedor sem nome'}`
-
-        const { data: novoPedido, error: pedErr } = await supabase.from('pedidos').insert({
-          company_id: currentCompany.id,
-          fornecedor_id: fornId,
-          item_compra_id: itemAncoraId,
-          casas_lote: null,
-          qtd_lote: primeira?.qtd ?? 0,
-          valor_unitario_real: primeira?.vu ?? 0,
-          valor_total_real: 0,
+        },
+        doc: {
+          origem: extracao.origem,
+          numero: extracao.documento.numero,
+          serie: extracao.documento.serie,
+          data_emissao: extracao.documento.data_emissao,
+          valor_total: extracao.documento.valor_total,
           valor_frete: valorFrete,
-          cond_pagamento: condPagamento.trim() || null,
-          data_entrega_prevista: extracao.documento.data_emissao ?? null,
-          data_entrega_real: extracao.documento.data_emissao ?? null,
-          status: 'planejado' as const,
-          observacoes: obsAncora,
-          nf_origem_id: docRow!.id,
-        }).select('id').single()
-        if (pedErr) throw pedErr
-        novoPedidoId = novoPedido!.id
-
-        if (itensParaPedidoNovo.length > 0) {
-          const itensPayload = itensParaPedidoNovo.map((l, idx) => ({
-            pedido_id: novoPedidoId!,
-            item_compra_id: l.item_compra_id,
-            qtd: l.qtd,
-            valor_unitario_real: l.vu,
-            valor_total_real: l.vt,
-            qtd_recebida: l.qtd,
-            ordem: idx + 1,
-          }))
-          const { error: itensErr } = await supabase.from('pedido_itens').insert(itensPayload)
-          if (itensErr) throw itensErr
-          totalItensCriadosNovoPedido = itensPayload.length
-        }
+          chave_acesso: extracao.documento.chave_acesso ?? null,
+          modelo_ia: extracao.modelo ?? null,
+          custo_ia_cents: extracao.custo_cents ?? 0,
+          raw_extracao: extracao,
+        },
+        linhas: extracao.itens.map((l, idx) => ({
+          ordem: l.ordem ?? idx,
+          descricao: l.descricao,
+          ncm: l.ncm,
+          unidade: l.unidade,
+          quantidade: l.quantidade,
+          valor_unitario: l.valor_unitario,
+          valor_total: l.valor_total,
+          acao: l.acao ?? 'ignorar',
+          item_compra_id: l.item_compra_id ?? null,
+          pedido_substituido_id: l.pedido_substituido_id ?? null,
+          sugestoes: l.sugestoesItens ?? null,
+          observacao: l.observacao ?? null,
+        })),
+        parcelas: editableParcelas.map(ep => ({
+          numero_parcela: ep.numero_parcela,
+          valor: parseBRL(ep.valor),
+          data_vencimento: ep.data_vencimento,
+          descricao: ep.descricao || null,
+        })),
       }
 
-      // 3d) PARCELAS — as configuradas pelo operador SUBSTITUEM as parcelas
-      // futuras dos pedidos consumidos. Parcelas pagas/conciliadas são preservadas
-      // (não dá pra mexer sem quebrar histórico financeiro). Se houver protegidas,
-      // o operador é avisado pra resolver o overlap manualmente.
-      let parcelasPreservadasComAviso = 0
-      /** Snapshot das parcelas APAGADAS — vai pra recepcao_consumos.parcelas_snapshot
-       *  pra que o trigger BEFORE DELETE restaure tudo se a NF for excluída. */
-      let parcelasApagadasSnapshot: any[] = []
-      if (novoPedidoId) {
-        // 3d.1) Apaga parcelas pendentes dos pedidos consumidos E regenera com o SALDO.
-        //
-        // Regra (PR pós-fix 2026-05-14): se a NF consome parcialmente um pedido,
-        // o pedido consumido fica com parcelas correspondentes ao SALDO restante
-        //   saldo = valor_total_real − valor_consumido_pela_nf − valor_já_pago_em_parcelas_protegidas
-        // Se saldo > 0: apaga as pendentes E regera com gerarParcelas(saldo).
-        // Se saldo ≈ 0: comportamento antigo (só apaga, âncora cobre tudo).
-        // Parcelas pagas / conciliadas são SEMPRE preservadas.
-        const pedidoIdsConsumidos = Array.from(new Set(pedidoItensConsumidos.map(c => c.pedidoId)))
-        if (pedidoIdsConsumidos.length > 0) {
-          const { data: parcelasExistentes } = await supabase
-            .from('parcelas')
-            .select('*')
-            .in('pedido_id', pedidoIdsConsumidos)
+      const { data: rpcResult, error: rpcErr } = await supabase
+        .rpc('aplicar_recepcao_nf', { payload })
 
-          const allIds = (parcelasExistentes ?? []).map((p: any) => p.id)
-          const { data: links } = allIds.length > 0
-            ? await supabase.from('conciliacao_parcelas').select('parcela_id').in('parcela_id', allIds)
-            : { data: [] as any[] }
-          const idsComLink = new Set((links ?? []).map((l: any) => l.parcela_id))
-
-          const protegidasGlobal = (parcelasExistentes ?? []).filter((p: any) =>
-            p.status === 'paga' || p.status === 'parcialmente_paga' ||
-            Number(p.valor_pago || 0) > 0 || idsComLink.has(p.id)
-          )
-          parcelasPreservadasComAviso = protegidasGlobal.length
-
-          // Processa pedido a pedido pra calcular saldo individualmente.
-          for (const pedId of pedidoIdsConsumidos) {
-            const parcelasDoPed = (parcelasExistentes ?? []).filter((p: any) => p.pedido_id === pedId)
-            const protegidasDoPed = parcelasDoPed.filter((p: any) => protegidasGlobal.find((pg: any) => pg.id === p.id))
-            const deletaveisDoPed = parcelasDoPed.filter((p: any) => !protegidasDoPed.find((pp: any) => pp.id === p.id))
-
-            // Snapshot pra reversão na exclusão da NF
-            for (const p of deletaveisDoPed) {
-              parcelasApagadasSnapshot.push({
-                id: p.id,
-                company_id: p.company_id,
-                pedido_id: p.pedido_id,
-                numero_parcela: p.numero_parcela,
-                valor: p.valor,
-                data_vencimento: p.data_vencimento,
-                status: p.status,
-                descricao: p.descricao,
-                tipo: p.tipo,
-                created_at: p.created_at,
-              })
-            }
-
-            // Apaga as deletáveis deste pedido
-            if (deletaveisDoPed.length > 0) {
-              const delIds = deletaveisDoPed.map((p: any) => p.id)
-              await supabase.from('movimentacoes_bancarias').update({ parcela_id: null }).in('parcela_id', delIds)
-              const { error: delErr } = await supabase.from('parcelas').delete().in('id', delIds)
-              if (delErr) {
-                console.warn('Falha ao apagar parcelas dos pedidos consumidos:', delErr)
-                throw delErr
-              }
-            }
-
-            // Regera parcelas com o SALDO restante (se houver).
-            const info = pedidoInfo.get(pedId)
-            const consumidoPelaNF = valorConsumidoPorPedido.get(pedId) ?? 0
-            const valorJaPago = protegidasDoPed.reduce((s: number, p: any) => s + Number(p.valor_pago ?? p.valor ?? 0), 0)
-            if (info && info.valor_total_real > 0) {
-              const saldo = Math.round((info.valor_total_real - consumidoPelaNF - valorJaPago) * 100) / 100
-              if (saldo > 0.01) {
-                const baseEntrega = info.data_entrega_prevista
-                  ? localDate(info.data_entrega_prevista)
-                  : new Date()
-                const novas = gerarParcelas({
-                  pedidoId: pedId,
-                  companyId: currentCompany.id,
-                  valorTotal: saldo,
-                  condPagamento: info.cond_pagamento || 'à vista',
-                  dataEntrega: baseEntrega,
-                })
-                if (novas.length > 0) {
-                  // Offset numero_parcela pra não colidir com as protegidas que ficaram
-                  const offset = protegidasDoPed.length
-                  const payload = novas.map(p => ({
-                    ...p,
-                    numero_parcela: p.numero_parcela + offset,
-                    descricao: `Saldo após consumo NF ${extracao.documento.numero ?? ''}`.trim(),
-                  }))
-                  const { data: parcsInseridas, error: insErr } = await supabase
-                    .from('parcelas').insert(payload).select('id')
-                  if (insErr) {
-                    console.warn('Falha ao regerar parcelas de saldo do pedido consumido:', insErr)
-                    throw insErr
-                  }
-                  // Rastreia IDs pra reversão (trigger BEFORE DELETE apaga essas
-                  // antes de restaurar o snapshot — senão fica dobra de parcelas).
-                  const novosIds = (parcsInseridas ?? []).map((r: any) => r.id as string)
-                  if (novosIds.length > 0) {
-                    const acc = parcelasRegeradasPorPedido.get(pedId) ?? []
-                    parcelasRegeradasPorPedido.set(pedId, [...acc, ...novosIds])
-                  }
-                }
-              }
-            }
+      // Se a RPC rejeitou por duplicidade (chave_acesso já existe), o HINT carrega o doc_id
+      // existente e o front pode dispor o dialog "Excluir e refazer".
+      if (rpcErr) {
+        const hint = (rpcErr as any).hint as string | undefined
+        const code = (rpcErr as any).code as string | undefined
+        if (code === '23505' && hint && !opts?.forceReplaceDocId) {
+          // Carrega info do doc existente pra mostrar diálogo
+          const { data: existente } = await supabase
+            .from('recepcao_docs')
+            .select('id, numero_doc, fornecedor_nome, valor_total, data_emissao, applied_at')
+            .eq('id', hint)
+            .maybeSingle()
+          if (existente) {
+            setExistingDocConflict(existente as ExistingDocConflict)
+            toast.warning('Esta NF já foi aplicada. Confira o painel no topo pra excluir e refazer.')
+            return
           }
         }
-
-        // 3d.2) Insere as parcelas configuradas no header, vinculadas ao âncora.
-        if (editableParcelas.length > 0) {
-          const parcelasPayload = editableParcelas.map(ep => ({
-            company_id: currentCompany.id,
-            pedido_id: novoPedidoId!,
-            numero_parcela: ep.numero_parcela,
-            valor: parseBRL(ep.valor),
-            data_vencimento: ep.data_vencimento,
-            status: 'futura' as const,
-            descricao: ep.descricao || null,
-          }))
-          const { error: parcErr } = await supabase.from('parcelas').insert(parcelasPayload)
-          if (parcErr) {
-            console.warn('Falha ao inserir parcelas do âncora:', parcErr)
-            throw parcErr
-          }
-        }
+        throw rpcErr
       }
 
-      // Compat com toast final: total que entrou em algum pedido (consumido + novo)
-      const totalLinhasProcessadas = pedidoItensConsumidos.length + totalItensCriadosNovoPedido
-
-      // 4b) Log de consumo: alimenta recepcao_consumos pra permitir reversão
-      // exata se a NF for excluída depois. Inclui (a) deltas em planejados
-      // existentes e (b) o pedido novo criado pela NF.
-      //
-      // IMPORTANTE: todas as linhas precisam ter EXATAMENTE as mesmas chaves.
-      // O PostgREST em bulk insert pega a união das chaves de todas as linhas
-      // e manda NULL para as chaves ausentes em cada linha — o que viola
-      // `delta_qtd_recebida NOT NULL` na linha do pedido âncora se não passarmos 0.
-      // (Bug 2026-05-14: NF BRUNO MARKLEWSKI 000.003.003 deixou estado corrompido.)
-      const consumoRows: Array<{
-        doc_id: string;
-        company_id: string;
-        pedido_item_id: string | null;
-        delta_qtd_recebida: number;
-        created_pedido_id: string | null;
-        parcelas_snapshot: any[] | null;
-        parcelas_regeradas_ids: string[] | null;
-      }> = []
-      for (const c of consumoLog) {
-        consumoRows.push({
-          doc_id: docRow!.id,
-          company_id: currentCompany.id,
-          pedido_item_id: c.pedido_item_id,
-          delta_qtd_recebida: c.delta_qtd_recebida,
-          created_pedido_id: null,
-          parcelas_snapshot: null,
-          parcelas_regeradas_ids: null,
-        })
-      }
-      if (novoPedidoId) {
-        // Consolida na linha do âncora todos os IDs de parcelas regeradas nos
-        // pedidos consumidos (trigger BEFORE DELETE faz `unnest` em todos os
-        // recepcao_consumos.doc_id = X, então tanto faz qual linha carrega).
-        const todosIdsRegerados = Array.from(parcelasRegeradasPorPedido.values()).flat()
-        consumoRows.push({
-          doc_id: docRow!.id,
-          company_id: currentCompany.id,
-          pedido_item_id: null,
-          delta_qtd_recebida: 0,
-          created_pedido_id: novoPedidoId,
-          parcelas_snapshot: parcelasApagadasSnapshot.length > 0 ? parcelasApagadasSnapshot : null,
-          parcelas_regeradas_ids: todosIdsRegerados.length > 0 ? todosIdsRegerados : null,
-        })
-      }
-      if (consumoRows.length > 0) {
-        const { error: logErr } = await supabase.from('recepcao_consumos').insert(consumoRows)
-        // Antes era console.warn. Mas sem o log, a reversão (excluir NF) deixa
-        // o pedido âncora órfão no banco — exatamente o bug que vimos no PR 3.5.
-        // Melhor falhar e o operador reaplicar do que silenciosamente quebrar.
-        if (logErr) throw logErr
+      const result = (rpcResult ?? {}) as {
+        doc_id?: string
+        novo_pedido_id?: string | null
+        pedidos_consumidos_count?: number
+        itens_novos_count?: number
+        linhas_ignoradas_count?: number
+        parcelas_preservadas_count?: number
+        pedido_ancora_sem_itens?: boolean
+        replaced_doc_id?: string | null
+        warnings?: string[]
       }
 
-      // 5) Auditoria em recepcao_matches — todos os matches apontam pro mesmo
-      // pedido novo (pois agora é 1 pedido por NF).
-      const linhasMatch = extracao.itens.map((l, idx) => ({
-        doc_id: docRow!.id,
-        ordem: l.ordem ?? idx,
-        descricao_original: l.descricao,
-        ncm: l.ncm,
-        unidade: l.unidade,
-        quantidade: l.quantidade,
-        valor_unitario: l.valor_unitario,
-        valor_total: l.valor_total,
-        sugestoes: l.sugestoesItens ?? null,
-        acao: l.acao ?? 'ignorar',
-        item_compra_id: l.item_compra_id ?? null,
-        pedido_substituido_id: l.pedido_substituido_id ?? null,
-        pedido_criado_id: novoPedidoId,
-        observacao: l.observacao ?? null,
-      }))
-      if (linhasMatch.length > 0) {
-        await supabase.from('recepcao_matches').insert(linhasMatch)
-      }
-
-      // Toast resumido: quantos pedidos planejados foram CONSUMIDOS (não cancelados),
-      // quantos itens entraram em pedido novo, e quantas linhas foram ignoradas.
-      const pedidosConsumidosUnicos = new Set(pedidoItensConsumidos.map(c => c.pedidoId)).size
-      const totalIgnoradosOuItem = extracao.itens.length - totalLinhasProcessadas
+      // Toast resumido com base no que a RPC reportou
       const partes: string[] = []
-      if (pedidosConsumidosUnicos > 0) partes.push(`${pedidosConsumidosUnicos} previsão(ões) consumida(s)`)
-      if (novoPedidoId) {
-        const sufixo = pedidoAncoraSemItens ? ' (âncora financeiro)' : ` com ${totalItensCriadosNovoPedido} ite${totalItensCriadosNovoPedido === 1 ? 'm' : 'ns'}`
+      if ((result.pedidos_consumidos_count ?? 0) > 0) partes.push(`${result.pedidos_consumidos_count} previsão(ões) consumida(s)`)
+      if (result.novo_pedido_id) {
+        const sufixo = result.pedido_ancora_sem_itens ? ' (âncora financeiro)' : ` com ${result.itens_novos_count ?? 0} item(s)`
         partes.push(`1 pedido novo${sufixo}`)
       }
       if (valorFrete > 0) partes.push(`frete ${formatCurrency(valorFrete)}`)
       if (editableParcelas.length > 0) partes.push(`${editableParcelas.length} parcela(s)`)
-      if (totalIgnoradosOuItem > 0) partes.push(`${totalIgnoradosOuItem} linha(s) ignorada(s)`)
+      if ((result.linhas_ignoradas_count ?? 0) > 0) partes.push(`${result.linhas_ignoradas_count} linha(s) ignorada(s)`)
+      if (result.replaced_doc_id) partes.unshift('NF anterior substituída')
       toast.success(`NF aplicada · ${partes.join(' · ') || 'nada a aplicar'}`)
-      if (parcelasPreservadasComAviso > 0) {
-        toast.warning(`${parcelasPreservadasComAviso} parcela(s) dos pedidos consumidos foram preservada(s) porque já têm baixa/conciliação. Revise manualmente em Compras pra evitar duplicidade.`)
-      }
+      for (const w of (result.warnings ?? [])) toast.warning(w)
+
+      // Invalida queries que a UI consome (pedidos, parcelas, recepcao_docs aplicadas)
+      qc.invalidateQueries({ queryKey: ['recepcao_docs_aplicadas'] })
+      qc.invalidateQueries({ queryKey: ['pedidos'] })
+      qc.invalidateQueries({ queryKey: ['pedido_itens'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+
       setExtracao(null)
       setTextoColado('')
       setDiferencaAceita(false)
@@ -1145,6 +849,8 @@ export default function RecepcaoPage() {
       setValorFreteInput('')
       setEditableParcelas([])
       setParcelasManuallyEdited(false)
+      setValorTotalManualInput('')
+      setExistingDocConflict(null)
     } catch (err) {
       // Extrai mensagem útil de qualquer formato de erro (Error nativo, PostgrestError, etc.)
       const e: any = err
@@ -1501,6 +1207,63 @@ export default function RecepcaoPage() {
       {/* TELA DE REVISÃO */}
       {extracao && (
         <div className="space-y-3">
+          {/* Banner: NF JÁ APLICADA (chave_acesso já existe nesta company).
+              Mostra detalhes do doc anterior e botão "Excluir e refazer", que dispara a RPC
+              com force_replace_doc_id — o trigger BEFORE DELETE reverte tudo do doc antigo
+              (devolve qtd_recebida, restaura snapshots, apaga âncora) e aplica a nova versão
+              numa única transação. Resolve o "consumo fantasma" da NF reaplicada. */}
+          {existingDocConflict && (
+            <div className="rounded-xl border-2 border-red-500/50 bg-red-500/5 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-xs">
+                    <p className="font-bold text-red-700 text-sm">Esta NF já foi aplicada anteriormente</p>
+                    <p className="mt-1 text-foreground">
+                      NF <strong>#{existingDocConflict.numero_doc ?? '?'}</strong>
+                      {existingDocConflict.fornecedor_nome ? <> · {existingDocConflict.fornecedor_nome}</> : null}
+                      {existingDocConflict.applied_at && <> · aplicada em {new Date(existingDocConflict.applied_at).toLocaleString('pt-BR')}</>}
+                      {existingDocConflict.valor_total != null && <> · {formatCurrency(Number(existingDocConflict.valor_total))}</>}
+                    </p>
+                    <p className="mt-1 text-muted-foreground">
+                      Se quiser reaplicar (ex: a anterior estava com dados errados),
+                      o sistema vai <strong>reverter completamente</strong> a aplicação anterior
+                      (devolve saldo dos planejados consumidos, apaga pedido âncora, restaura parcelas)
+                      e aplicar esta versão. Tudo numa única transação.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1 flex-shrink-0">
+                  <button
+                    onClick={() => {
+                      setExistingDocConflict(null)
+                      aplicar({ forceReplaceDocId: existingDocConflict.id })
+                    }}
+                    disabled={aplicando}
+                    className="inline-flex items-center gap-1.5 rounded bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 text-[11px] font-bold whitespace-nowrap"
+                    title="Reverte a NF anterior e aplica esta numa única transação atômica"
+                  >
+                    {aplicando ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                    Excluir anterior e aplicar esta
+                  </button>
+                  <button
+                    onClick={() => {
+                      setExistingDocConflict(null)
+                      setExtracao(null)
+                    }}
+                    className="rounded border px-3 py-1 text-[10px] hover:bg-muted whitespace-nowrap"
+                  >
+                    Cancelar importação
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {checandoDedup && !existingDocConflict && (
+            <div className="rounded-md border bg-muted/30 px-3 py-1.5 text-[11px] text-muted-foreground inline-flex items-center gap-1.5">
+              <Loader2 className="h-3 w-3 animate-spin" /> Verificando se esta NF já foi aplicada…
+            </div>
+          )}
           {/* Header */}
           <div className="rounded-xl border bg-card p-4">
             <div className="flex items-start justify-between mb-3">
@@ -1539,8 +1302,29 @@ export default function RecepcaoPage() {
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
               <div>
-                <p className="text-[10px] uppercase text-muted-foreground">Valor da NF</p>
-                <p className="font-bold text-sm">{formatCurrency(extracao.documento.valor_total ?? 0)}</p>
+                <label className="text-[10px] uppercase text-muted-foreground">Valor da NF</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={valorTotalManualInput}
+                  onChange={e => {
+                    const raw = e.target.value
+                    setValorTotalManualInput(raw)
+                    const parsed = parseBRL(raw)
+                    setExtracao(prev => prev ? {
+                      ...prev,
+                      documento: { ...prev.documento, valor_total: raw.trim() === '' ? null : parsed },
+                    } : prev)
+                  }}
+                  onBlur={() => {
+                    // Reformata pro padrão BR ao sair do foco (1234.5 → "1.234,50")
+                    const v = extracao.documento.valor_total
+                    if (v != null) setValorTotalManualInput(toBRLInput(v))
+                  }}
+                  placeholder="0,00"
+                  title="Valor total da NF — XML/OCR pode falhar em extrair (NFC-e, foto baixa qualidade). Edite aqui pra corrigir."
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-sm font-bold font-mono text-right"
+                />
               </div>
               <div>
                 <p className="text-[10px] uppercase text-muted-foreground">Itens + frete</p>
@@ -1984,6 +1768,21 @@ export default function RecepcaoPage() {
                           <option value="criar_item">Criar item novo (manual)</option>
                           <option value="ignorar">Ignorar</option>
                         </select>
+                        {/* Dica quando a opção "Consumir previsão" está desabilitada:
+                            o gate é `linha.item_compra_id` setado E existir pedido planejado com
+                            saldo pra esse item. Sem item ligado, a opção fica disabled silenciosamente —
+                            o operador precisa SABER que tem que ligar um item primeiro. */}
+                        {!podeConsumir && !linha.item_compra_id && (
+                          <p className="mt-1 text-[9px] text-amber-700" title="A opção 'Consumir previsão' só aparece habilitada quando uma linha está ligada a um item do orçamento que tem pedido planejado com saldo aberto.">
+                            <AlertTriangle className="inline h-2.5 w-2.5 mr-0.5" />
+                            Ligue um item do orçamento (acima) pra consumir previsão.
+                          </p>
+                        )}
+                        {!podeConsumir && linha.item_compra_id && (
+                          <p className="mt-1 text-[9px] text-muted-foreground" title="Não há pedido planejado com saldo aberto pra este item — só restam as opções 'Criar pedido novo' ou 'Criar item novo'.">
+                            Sem previsão planejada com saldo pra este item.
+                          </p>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-center">
                         <button
@@ -2022,7 +1821,7 @@ export default function RecepcaoPage() {
             )}
             <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false); setCondPagamento(''); setValorFreteInput(''); setEditableParcelas([]); setParcelasManuallyEdited(false) }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
             <button
-              onClick={aplicar}
+              onClick={() => aplicar()}
               disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia || (editableParcelas.length > 0 && !parcelasOk)}
               title={
                 linhasAConfirmar > 0 ? 'Há linhas com match de média confiança que precisam ser confirmadas'
