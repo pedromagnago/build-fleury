@@ -78,6 +78,11 @@ export interface PedidoItem {
   casas_lote: number | null
   ordem: number
   observacoes: string | null
+  /** true quando criado como SOBRA de "Consumir previsão" via NF com setting
+   * companies.config.permitir_estouro_orcamento=true. Existe pra qtd/parcelas
+   * baterem com a NF, mas é EXCLUÍDO dos cálculos de "comprometido" — não
+   * representa orçamento adicional, é efeito de unidade diferente. */
+  fora_orcamento?: boolean
   created_at?: string
   updated_at?: string
   // Joined (opcional)
@@ -331,7 +336,7 @@ export function usePedidos() {
           fornecedores(nome),
           pedido_itens(
             id, pedido_id, item_compra_id, qtd, valor_unitario_real, valor_total_real,
-            qtd_recebida, casas_lote, ordem, observacoes,
+            qtd_recebida, casas_lote, ordem, observacoes, fora_orcamento,
             itens_compra(descricao, codigo, etapa_id, etapas(nome))
           )
         `)
@@ -353,6 +358,7 @@ export function usePedidos() {
             casas_lote: pi.casas_lote != null ? Number(pi.casas_lote) : null,
             ordem: pi.ordem,
             observacoes: pi.observacoes ?? null,
+            fora_orcamento: pi.fora_orcamento === true,
             item_descricao: pi.itens_compra?.descricao,
             item_codigo: pi.itens_compra?.codigo,
             etapa_id: pi.itens_compra?.etapa_id,

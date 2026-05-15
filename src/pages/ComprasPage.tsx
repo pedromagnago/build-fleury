@@ -194,9 +194,13 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
       const qtd = Number(pi.qtd ?? 0)
       const qtdRec = Number(pi.qtd_recebida ?? 0)
       const vu = Number(pi.valor_unitario_real ?? 0)
+      // fora_orcamento: pedido_itens criados como SOBRA de "Consumir previsão" com
+      // estouro permitido. Contam pra qtd_recebida (cosmético) e valor_recebido
+      // (pagamento real via NF), mas NÃO inflam o valor_comprometido do item orçado.
+      const foraOrcamento = (pi as { fora_orcamento?: boolean }).fora_orcamento === true
       entry.qtd_recebida += qtdRec
-      entry.qtd_planejada += Math.max(qtd - qtdRec, 0)
-      entry.valor_comprometido += Number(pi.valor_total_real ?? 0)
+      if (!foraOrcamento) entry.qtd_planejada += Math.max(qtd - qtdRec, 0)
+      if (!foraOrcamento) entry.valor_comprometido += Number(pi.valor_total_real ?? 0)
       entry.valor_recebido += qtdRec * vu
       entry.ocorrencias += 1
       map.set(k, entry)

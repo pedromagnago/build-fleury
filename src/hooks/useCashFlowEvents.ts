@@ -541,6 +541,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           const valTotal = Number(p.valor_total_real ?? 0)
           const valSaldo = (p.itens && p.itens.length > 0)
             ? p.itens.reduce((s, pi) => {
+                // fora_orcamento: sobra criada por NF com estouro permitido. Não
+                // tem "saldo a receber" — já está integralmente recebido na NF.
+                if ((pi as { fora_orcamento?: boolean }).fora_orcamento === true) return s
                 const q = Number(pi.qtd || 0)
                 if (q <= 0) return s
                 const fracRestante = Math.max(0, 1 - Number(pi.qtd_recebida || 0) / q)

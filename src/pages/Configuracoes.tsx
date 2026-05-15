@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { PageHeader } from '@/components/ui/PageHeader'
 import {
   Settings, Save, Building2, MapPin, Home, DollarSign,
-  Users, ArrowRight,
+  Users, ArrowRight, Sliders,
 } from 'lucide-react'
 import { useUserRole } from '@/hooks/useUserRole'
 import { toast } from 'sonner'
@@ -40,6 +40,7 @@ export default function Configuracoes() {
     faturamento_contrato: '',
     custo_total_contrato: '',
     prazo_recebimento_dias: '',
+    permitir_estouro_orcamento: false,
   })
 
   useEffect(() => {
@@ -57,19 +58,27 @@ export default function Configuracoes() {
         faturamento_contrato: currentCompany.faturamento_contrato?.toString() ?? '',
         custo_total_contrato: currentCompany.custo_total_contrato?.toString() ?? '',
         prazo_recebimento_dias: currentCompany.prazo_recebimento_dias?.toString() ?? '30',
+        permitir_estouro_orcamento: Boolean((currentCompany.config as Record<string, unknown> | null)?.permitir_estouro_orcamento),
       })
     }
   }, [currentCompany])
 
 
 
-  const updateField = (field: string, value: string) => {
+  const updateField = (field: string, value: string | boolean) => {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
   const handleSave = async () => {
     if (!currentCompany) return
     setSaving(true)
+
+    // Mantém o resto do config intacto (caso surjam outras keys no futuro)
+    const configAtual = (currentCompany.config as Record<string, unknown> | null) ?? {}
+    const novoConfig = {
+      ...configAtual,
+      permitir_estouro_orcamento: form.permitir_estouro_orcamento,
+    }
 
     const { error } = await supabase
       .from('companies')
@@ -86,6 +95,7 @@ export default function Configuracoes() {
         faturamento_contrato: form.faturamento_contrato ? parseFloat(form.faturamento_contrato) : 0,
         custo_total_contrato: form.custo_total_contrato ? parseFloat(form.custo_total_contrato) : 0,
         prazo_recebimento_dias: form.prazo_recebimento_dias ? parseInt(form.prazo_recebimento_dias) : 30,
+        config: novoConfig,
       })
       .eq('id', currentCompany.id)
 
@@ -215,6 +225,37 @@ export default function Configuracoes() {
               <label className="mb-1.5 block text-xs font-medium text-muted-foreground" title="Dias entre a data fim da medição e o recebimento efetivo. Aplicado em todas as medições e no fluxo de caixa.">Prazo Recebimento Medições (dias)</label>
               <input type="number" min="0" value={form.prazo_recebimento_dias} onChange={(e) => updateField('prazo_recebimento_dias', e.target.value)} disabled={!isAdmin} className={inputCls} />
             </div>
+          </div>
+        </div>
+
+        {/* Configurações Operacionais — toggles de comportamento do sistema */}
+        <div className="rounded-xl border bg-card p-6">
+          <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold">
+            <Sliders className="h-4 w-4 text-primary" />
+            Configurações Operacionais
+          </h3>
+          <div className="space-y-4">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.permitir_estouro_orcamento}
+                onChange={(e) => updateField('permitir_estouro_orcamento', e.target.checked)}
+                disabled={!isAdmin}
+                className="mt-0.5 h-4 w-4 rounded border-input text-primary focus:ring-2 focus:ring-primary disabled:opacity-50"
+              />
+              <div className="flex-1">
+                <div className="text-sm font-medium">Permitir estourar orçamento ao aplicar NF</div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Quando ligado: a opção "Consumir previsão" aceita NFs com qtd ou valor maior
+                  que o saldo dos pedidos planejados. A sobra é registrada sem inflar o
+                  "comprometido" do item (marcada como "fora do orçamento"). O operador vê um
+                  aviso amarelo antes de aplicar.
+                  <br />
+                  Quando desligado (padrão): o sistema bloqueia o estouro e exige ajuste do
+                  pedido em Compras ou troca da ação para "Criar pedido novo".
+                </p>
+              </div>
+            </label>
           </div>
         </div>
 

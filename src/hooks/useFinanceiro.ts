@@ -868,7 +868,9 @@ export function useOrcamentoRealizado() {
         if (!ped || ped.status === 'cancelado') continue
         const linha = porItem.get(pi.item_compra_id)
         if (!linha) continue
-        linha.comprometido += Number(pi.valor_total_real ?? 0)
+        // fora_orcamento: sobra de "Consumir previsão" com estouro permitido. Não infla comprometido.
+        const foraOrcamento = (pi as { fora_orcamento?: boolean }).fora_orcamento === true
+        if (!foraOrcamento) linha.comprometido += Number(pi.valor_total_real ?? 0)
         const qtdRec = Number(pi.qtd_recebida ?? 0)
         const vu = Number(pi.valor_unitario_real ?? 0)
         linha.recebido += qtdRec * vu

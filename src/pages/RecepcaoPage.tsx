@@ -205,6 +205,12 @@ interface ExistingDocConflict {
 
 export default function RecepcaoPage() {
   const { currentCompany } = useProject()
+  // Setting que governa se o operador pode aplicar NF que estoura qtd/valor
+  // dos pedidos planejados. Default OFF. Quando ON: banner amarelo + Aplicar
+  // libera + RPC marca a sobra como fora_orcamento=true (não infla comprometido).
+  const permitirEstouroOrcamento = Boolean(
+    (currentCompany?.config as Record<string, unknown> | null | undefined)?.permitir_estouro_orcamento
+  )
   const { data: itens = [] } = useItensCompra()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: pedidos = [] } = usePedidos()
@@ -1581,15 +1587,19 @@ export default function RecepcaoPage() {
                 </div>
               </details>
             )}
-            {/* Banner BLOQUEIO: estouros AGRUPADOS por item_compra_id. Várias linhas
+            {/* Banner BLOQUEIO/AVISO: estouros AGRUPADOS por item_compra_id. Várias linhas
                 da NF apontando pro mesmo item são somadas — se a soma excede o saldo
-                agregado dos pedidos planejados, bloqueia. Sem tolerância: operador
-                precisa ajustar o pedido em Compras OU trocar a ação de alguma linha. */}
+                agregado dos pedidos planejados, mostra alerta.
+                Vermelho (bloqueio) quando setting permitirEstouroOrcamento = false.
+                Amarelo (aviso, mas libera Aplicar) quando setting = true — sobra vira
+                pedido_item com fora_orcamento=true (não infla comprometido). */}
             {estourosPorItem.size > 0 && (
-              <div className="mt-2 rounded-md border-2 border-red-500/50 bg-red-500/5 p-3 text-[11px]">
-                <p className="font-bold text-red-700 mb-1 flex items-center gap-1.5">
+              <div className={`mt-2 rounded-md border-2 p-3 text-[11px] ${permitirEstouroOrcamento ? 'border-amber-500/50 bg-amber-500/5' : 'border-red-500/50 bg-red-500/5'}`}>
+                <p className={`font-bold mb-1 flex items-center gap-1.5 ${permitirEstouroOrcamento ? 'text-amber-700' : 'text-red-700'}`}>
                   <AlertTriangle className="h-4 w-4" />
-                  {estourosPorItem.size} item(s) com soma da NF excedendo saldo do pedido planejado:
+                  {permitirEstouroOrcamento
+                    ? `${estourosPorItem.size} item(s) terão estouro de orçamento (a sobra será registrada SEM inflar o comprometido):`
+                    : `${estourosPorItem.size} item(s) com soma da NF excedendo saldo do pedido planejado:`}
                 </p>
                 <ul className="mt-1.5 space-y-1.5">
                   {Array.from(estourosPorItem.values()).map(e => (
@@ -1601,12 +1611,12 @@ export default function RecepcaoPage() {
                           Linha(s) da NF: <strong>{e.ordens.join(', ')}</strong>
                         </div>
                         {e.excQtd > 0.001 && (
-                          <div className="text-red-700">
+                          <div className={permitirEstouroOrcamento ? 'text-amber-700' : 'text-red-700'}>
                             · Soma qtd NF <strong>{e.qtdTotal.toLocaleString('pt-BR')}</strong> &gt; saldo total {e.saldoQtd.toLocaleString('pt-BR')} (excesso <strong>{e.excQtd.toLocaleString('pt-BR')}</strong>)
                           </div>
                         )}
                         {e.excValor > 0.01 && (
-                          <div className="text-red-700">
+                          <div className={permitirEstouroOrcamento ? 'text-amber-700' : 'text-red-700'}>
                             · Soma valor NF <strong>{formatCurrency(e.valorTotal)}</strong> &gt; saldo total {formatCurrency(e.saldoValor)} (excesso <strong>{formatCurrency(e.excValor)}</strong>)
                           </div>
                         )}
@@ -1614,15 +1624,22 @@ export default function RecepcaoPage() {
                     </li>
                   ))}
                 </ul>
-                <p className="mt-2 text-muted-foreground">
-                  Para aplicar, escolha uma das opções:
-                  <br />
-                  <strong>a)</strong> Ajuste a qtd/valor do pedido em <strong>Compras &gt; Pedidos</strong> para comportar a NF; ou
-                  <br />
-                  <strong>b)</strong> Troque a ação de alguma das linhas listadas para <strong>"Criar pedido novo"</strong> ou <strong>"Criar item novo"</strong>; ou
-                  <br />
-                  <strong>c)</strong> Se as linhas da NF não pertencem a este item de orçamento, ligue cada uma a itens corretos diferentes.
-                </p>
+                {permitirEstouroOrcamento ? (
+                  <p className="mt-2 text-muted-foreground">
+                    Setting "Permitir estourar orçamento" está <strong>ligado</strong> em Configurações.
+                    A sobra será registrada como <strong>fora do orçamento</strong> (qtd e parcelas batem com a NF, mas o comprometido do item não infla).
+                  </p>
+                ) : (
+                  <p className="mt-2 text-muted-foreground">
+                    Para aplicar, escolha uma das opções:
+                    <br />
+                    <strong>a)</strong> Ajuste a qtd/valor do pedido em <strong>Compras &gt; Pedidos</strong> para comportar a NF; ou
+                    <br />
+                    <strong>b)</strong> Troque a ação de alguma das linhas listadas para <strong>"Criar pedido novo"</strong> ou <strong>"Criar item novo"</strong>; ou
+                    <br />
+                    <strong>c)</strong> Habilite <strong>"Permitir estourar orçamento"</strong> em <strong>Configurações</strong> (se as linhas pertencem a este item de orçamento mas a NF tem qtd/valor maior por motivo legítimo).
+                  </p>
+                )}
               </div>
             )}
             {extracao.modelo && (
@@ -1950,7 +1967,7 @@ export default function RecepcaoPage() {
                 Soma das parcelas ≠ total a parcelar (diferença {formatCurrency(parcelasDiff)}).
               </span>
             )}
-            {estourosPorItem.size > 0 && (
+            {estourosPorItem.size > 0 && !permitirEstouroOrcamento && (
               <span className="text-[11px] text-red-700 mr-2 font-medium">
                 {estourosPorItem.size} item(s) com soma da NF excedendo saldo (veja banner acima).
               </span>
@@ -1958,12 +1975,12 @@ export default function RecepcaoPage() {
             <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false); setCondPagamento(''); setValorFreteInput(''); setEditableParcelas([]); setParcelasManuallyEdited(false) }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
             <button
               onClick={() => aplicar()}
-              disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia || (editableParcelas.length > 0 && !parcelasOk) || estourosPorItem.size > 0}
+              disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia || (editableParcelas.length > 0 && !parcelasOk) || (!permitirEstouroOrcamento && estourosPorItem.size > 0)}
               title={
                 linhasAConfirmar > 0 ? 'Há linhas com match de média confiança que precisam ser confirmadas'
                 : divergenciaBloqueia ? 'Soma das linhas difere do total da NF — aceite a diferença pra liberar'
                 : (editableParcelas.length > 0 && !parcelasOk) ? 'Soma das parcelas precisa bater com o total a parcelar'
-                : estourosPorItem.size > 0 ? `${estourosPorItem.size} item(s) com soma da NF excedendo saldo — ajuste o pedido ou troque a ação`
+                : (!permitirEstouroOrcamento && estourosPorItem.size > 0) ? `${estourosPorItem.size} item(s) com soma da NF excedendo saldo — ajuste o pedido, troque a ação ou habilite "Permitir estourar orçamento" em Configurações`
                 : ''
               }
               className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
