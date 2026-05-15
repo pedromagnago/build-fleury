@@ -251,7 +251,13 @@ BEGIN
       INNER JOIN pedidos p ON p.id = pi.pedido_id
       WHERE pi.item_compra_id = rec_linha.item_compra_id
         AND p.company_id = v_company_id
-        AND p.status IN ('planejado','pedido_enviado','parcialmente_entregue')
+        -- Status ativos pra fins de consumo: TODOS exceto 'cancelado'.
+        -- Inclui 'pago'/'parcialmente_pago' porque é comum pagar antes
+        -- de receber a NF (operador deu baixa financeira no banco e agora
+        -- recebe a NF que comprova a entrega). O gate "qtd > qtd_recebida"
+        -- já filtra quem realmente esgotou saldo.
+        AND p.status IN ('planejado','pedido_enviado','parcialmente_entregue',
+                         'entregue','parcialmente_pago','pago')
       ORDER BY p.created_at ASC, p.id ASC
     LOOP
       EXIT WHEN v_restante <= 0.001;

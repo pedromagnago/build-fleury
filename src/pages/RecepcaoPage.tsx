@@ -5,8 +5,17 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useDropzone } from 'react-dropzone'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useProject } from '@/contexts/ProjectContext'
-import { useFornecedores, usePedidos } from '@/hooks/useCompras'
+import { useFornecedores, usePedidos, STATUS_PEDIDO_ATIVO } from '@/hooks/useCompras'
 import { useItensCompra } from '@/hooks/useCompras'
+
+/** Pedidos elegíveis pra consumo via NF: TODOS os status ativos (não-cancelado).
+ *  Inclui pagos/parcialmente_pagos porque é comum pagar antes da NF chegar — e
+ *  quando a NF chega, ela precisa poder consumir o pedido pago pra dar baixa no
+ *  recebimento. O gate "qtd > qtd_recebida + 0.001" já filtra os que realmente
+ *  esgotaram saldo. (Bug 2026-05-15: antes era só ['planejado','pedido_enviado',
+ *  'parcialmente_entregue'] — operadores reportaram que 'Consumir previsão' não
+ *  aparecia em NFs cujos pedidos já tinham sido pagos no banco.) */
+const STATUS_ELEGIVEIS_CONSUMO: readonly string[] = STATUS_PEDIDO_ATIVO
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -527,7 +536,7 @@ export default function RecepcaoPage() {
             // do header é legado — temos que olhar dentro de `pedido.itens` (estrutura
             // nova) E só considerar quem ainda tem saldo (qtd > qtd_recebida).
             const pedidoExistente = pedidos.find(p =>
-              ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status)
+              STATUS_ELEGIVEIS_CONSUMO.includes(p.status)
               && (p.itens ?? []).some(pi =>
                 pi.item_compra_id === top.item_id
                 && Number(pi.qtd ?? 0) > Number(pi.qtd_recebida ?? 0) + 0.001
@@ -677,7 +686,7 @@ export default function RecepcaoPage() {
     // e considera apenas pedidos com saldo aberto.
     const pedidoExistente = novoItemId
       ? pedidos.find(p =>
-          ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status)
+          STATUS_ELEGIVEIS_CONSUMO.includes(p.status)
           && (p.itens ?? []).some(pi =>
             pi.item_compra_id === novoItemId
             && Number(pi.qtd ?? 0) > Number(pi.qtd_recebida ?? 0) + 0.001
@@ -1589,7 +1598,7 @@ export default function RecepcaoPage() {
                   // não tenha pré-selecionado um pedido (operador escolhe na hora).
                   const candidatoConsumo = !pedidoSel && linha.item_compra_id
                     ? pedidos.find(p =>
-                        ['planejado', 'pedido_enviado', 'parcialmente_entregue'].includes(p.status)
+                        STATUS_ELEGIVEIS_CONSUMO.includes(p.status)
                         && (p.itens ?? []).some(pi =>
                           pi.item_compra_id === linha.item_compra_id
                           && Number(pi.qtd ?? 0) > Number(pi.qtd_recebida ?? 0) + 0.001
