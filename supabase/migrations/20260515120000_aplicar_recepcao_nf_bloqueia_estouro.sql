@@ -1,0 +1,41 @@
+-- ============================================================================
+-- Decisão 2026-05-15: "Consumir previsão" NÃO tolera estouro.
+--
+-- Antes (versão 20260515110000): se a NF tinha qtd maior que saldo dos pedidos
+-- planejados, a "sobra" virava pedido_item no âncora amarrado ao mesmo
+-- item_compra_id — INFLANDO o "comprometido" do item (o valor da sobra
+-- aparecia duplicado: dentro do pedido planejado original + na sobra).
+--
+-- Agora: pré-valida ANTES de tocar em recepcao_docs. Se qtd OU valor da linha
+-- excede o saldo agregado dos pedidos planejados elegíveis, RAISE EXCEPTION
+-- e a transação é abortada inteira (nada é gravado). Operador precisa:
+--   a) ajustar a qtd/valor do pedido planejado em Compras, ou
+--   b) trocar a ação da linha para "Criar pedido novo" / "Criar item novo".
+--
+-- A pré-validação roda ANTES do INSERT em recepcao_docs, evitando deixar doc
+-- órfão em caso de rollback. O FIFO em si simplifica: não há mais
+-- 'sobra_p_ancora' como estado — qualquer sobra é bug e aborta.
+-- ============================================================================
+
+-- Conteúdo full da RPC está no projeto Supabase (aplicado via MCP em 2026-05-15).
+-- Esta migration documenta a mudança; o snapshot completo está no commit.
+-- A função foi recriada via CREATE OR REPLACE.
+
+-- Esquema da pré-validação (resumo):
+--
+--   FOR cada linha 'substituir_pedido':
+--     SELECT SUM(qtd-qtd_recebida), SUM((qtd-qtd_recebida) * valor_unitario_real)
+--     FROM pedido_itens JOIN pedidos
+--     WHERE item_compra_id = linha.item_compra_id
+--       AND status IN (status ativos)
+--
+--     IF linha.qtd > saldo_qtd THEN RAISE EXCEPTION 'qtd excede';
+--     IF linha.qtd × linha.vu > saldo_valor THEN RAISE EXCEPTION 'valor excede';
+--   END FOR
+--
+--   -- Só agora insere recepcao_docs e segue com FIFO normal.
+--
+-- O front (RecepcaoPage.tsx) faz a mesma pré-checagem pra UX:
+-- mostra banner vermelho com linha-a-linha e desabilita o botão Aplicar.
+
+SELECT 1; -- placeholder pra migration não-vazia

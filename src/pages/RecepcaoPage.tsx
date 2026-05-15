@@ -660,6 +660,55 @@ export default function RecepcaoPage() {
     })
     return Array.from(map.values())
   }, [extracao, pedidos, itens])
+
+  /**
+   * Estouros por linha "Consumir previsão": quando a qtd OU valor da NF excede o
+   * saldo agregado dos pedidos planejados elegíveis daquele item_compra_id.
+   *
+   * Regra (decidida 2026-05-15): "Consumir previsão" não tolera estouro.
+   * Operador precisa ou (a) ajustar a qtd/valor do pedido em Compras pra
+   * acomodar, ou (b) trocar a ação da linha para "Criar pedido novo".
+   *
+   * O cálculo respeita a mesma lista de status que o consumo FIFO usa
+   * (STATUS_ELEGIVEIS_CONSUMO) — qualquer pedido ativo (não-cancelado).
+   */
+  const estourosPorLinha = useMemo(() => {
+    const out = new Map<number, {
+      qtdLinha: number; valorLinha: number;
+      saldoQtd: number; saldoValor: number;
+      excQtd: number; excValor: number;
+    }>()
+    if (!extracao) return out
+    extracao.itens.forEach((linha, idx) => {
+      if (linha.acao !== 'substituir_pedido' || !linha.item_compra_id) return
+      let saldoQtd = 0
+      let saldoValor = 0
+      for (const p of pedidos) {
+        if (!STATUS_ELEGIVEIS_CONSUMO.includes(p.status)) continue
+        for (const pi of (p.itens ?? [])) {
+          if (pi.item_compra_id !== linha.item_compra_id) continue
+          const dispQtd = Math.max(Number(pi.qtd ?? 0) - Number(pi.qtd_recebida ?? 0), 0)
+          if (dispQtd <= 0.001) continue
+          saldoQtd += dispQtd
+          saldoValor += dispQtd * Number(pi.valor_unitario_real ?? 0)
+        }
+      }
+      const qtdLinha = Number(linha.quantidade ?? 0)
+      const valorLinha = Number(linha.valor_total ?? (qtdLinha * Number(linha.valor_unitario ?? 0)))
+      const excQtd = qtdLinha - saldoQtd
+      const excValor = valorLinha - saldoValor
+      // Tolerância: 0,001 unidade e 1 centavo.
+      if (excQtd > 0.001 || excValor > 0.01) {
+        out.set(idx, {
+          qtdLinha, valorLinha, saldoQtd, saldoValor,
+          excQtd: Math.max(excQtd, 0),
+          excValor: Math.max(excValor, 0),
+        })
+      }
+    })
+    return out
+  }, [extracao, pedidos])
+
   // F2.1: lista visível preserva o índice original pra handlers continuarem funcionando
   const linhasVisiveis = (extracao?.itens ?? [])
     .map((l, idx) => ({ l, idx }))
@@ -1503,6 +1552,47 @@ export default function RecepcaoPage() {
                 </div>
               </details>
             )}
+            {/* Banner BLOQUEIO: linhas "Consumir previsão" cuja qtd OU valor estoura
+                o saldo dos pedidos planejados elegíveis. Sem tolerância — operador
+                precisa ajustar o pedido em Compras OU trocar a ação da linha. */}
+            {estourosPorLinha.size > 0 && (
+              <div className="mt-2 rounded-md border-2 border-red-500/50 bg-red-500/5 p-3 text-[11px]">
+                <p className="font-bold text-red-700 mb-1 flex items-center gap-1.5">
+                  <AlertTriangle className="h-4 w-4" />
+                  {estourosPorLinha.size} linha(s) "Consumir previsão" excedem o saldo do pedido planejado:
+                </p>
+                <ul className="mt-1.5 space-y-1">
+                  {Array.from(estourosPorLinha.entries()).map(([idx, e]) => {
+                    const l = extracao.itens[idx]
+                    return (
+                      <li key={idx} className="flex items-start gap-1.5">
+                        <span className="font-mono text-muted-foreground shrink-0">Linha {idx + 1}:</span>
+                        <span className="flex-1">
+                          <span className="text-foreground/80">{l?.descricao}</span>
+                          {e.excQtd > 0.001 && (
+                            <span className="block text-red-700">
+                              · Qtd NF <strong>{e.qtdLinha.toLocaleString('pt-BR')}</strong> &gt; saldo {e.saldoQtd.toLocaleString('pt-BR')} (excesso <strong>{e.excQtd.toLocaleString('pt-BR')}</strong>)
+                            </span>
+                          )}
+                          {e.excValor > 0.01 && (
+                            <span className="block text-red-700">
+                              · Valor NF <strong>{formatCurrency(e.valorLinha)}</strong> &gt; saldo {formatCurrency(e.saldoValor)} (excesso <strong>{formatCurrency(e.excValor)}</strong>)
+                            </span>
+                          )}
+                        </span>
+                      </li>
+                    )
+                  })}
+                </ul>
+                <p className="mt-2 text-muted-foreground">
+                  Para aplicar, escolha uma das opções:
+                  <br />
+                  <strong>a)</strong> Ajuste a qtd/valor do pedido em <strong>Compras &gt; Pedidos</strong> para comportar a NF; ou
+                  <br />
+                  <strong>b)</strong> Troque a ação da(s) linha(s) acima para <strong>"Criar pedido novo"</strong> ou <strong>"Criar item novo"</strong>.
+                </p>
+              </div>
+            )}
             {extracao.modelo && (
               <p className="mt-2 text-[10px] text-muted-foreground">Extraído por {extracao.modelo} · custo R$ {((extracao.custo_cents ?? 0) / 100).toFixed(4)}</p>
             )}
@@ -1828,14 +1918,20 @@ export default function RecepcaoPage() {
                 Soma das parcelas ≠ total a parcelar (diferença {formatCurrency(parcelasDiff)}).
               </span>
             )}
+            {estourosPorLinha.size > 0 && (
+              <span className="text-[11px] text-red-700 mr-2 font-medium">
+                {estourosPorLinha.size} linha(s) excedendo saldo de pedido (veja banner acima).
+              </span>
+            )}
             <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false); setCondPagamento(''); setValorFreteInput(''); setEditableParcelas([]); setParcelasManuallyEdited(false) }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
             <button
               onClick={() => aplicar()}
-              disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia || (editableParcelas.length > 0 && !parcelasOk)}
+              disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia || (editableParcelas.length > 0 && !parcelasOk) || estourosPorLinha.size > 0}
               title={
                 linhasAConfirmar > 0 ? 'Há linhas com match de média confiança que precisam ser confirmadas'
                 : divergenciaBloqueia ? 'Soma das linhas difere do total da NF — aceite a diferença pra liberar'
                 : (editableParcelas.length > 0 && !parcelasOk) ? 'Soma das parcelas precisa bater com o total a parcelar'
+                : estourosPorLinha.size > 0 ? `${estourosPorLinha.size} linha(s) "Consumir previsão" excedem saldo do pedido — ajuste o pedido ou troque a ação`
                 : ''
               }
               className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
