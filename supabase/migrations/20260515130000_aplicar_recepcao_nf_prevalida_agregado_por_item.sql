@@ -1,0 +1,36 @@
+-- ============================================================================
+-- Bug 2026-05-15 v3: pré-validação agregada por item_compra_id
+--
+-- Antes (20260515120000): a pré-validação verificava cada linha 'substituir_pedido'
+-- INDIVIDUALMENTE contra o saldo agregado dos pedidos elegíveis. Se MÚLTIPLAS
+-- linhas da NF apontavam pro mesmo item de orçamento, cada uma podia passar
+-- isoladamente (5 ≤ 5, 1 ≤ 5), mas a SOMA delas (6) excedia o saldo (5). O FIFO
+-- esgotava saldo no meio e abortava com a mensagem confusa de "Inconsistência
+-- ao consumir linha X: sobrou Y unidade(s)".
+--
+-- Cenário real (5/2026): NF da TIGRE com 9 linhas (LUVA, JOELHO, TUBO, BUCHA,
+-- MANGUEIRA, ...) todas ligadas ao mesmo item DIMARCK-FERRO. Cada linha cabia
+-- no saldo individualmente, mas a soma excedia.
+--
+-- Fix: agrega por item_compra_id antes de validar. Erro lista as ordens das
+-- linhas envolvidas pra operador identificar o conjunto.
+-- ============================================================================
+
+-- Conteúdo full da RPC está no projeto Supabase (aplicado via MCP em 2026-05-15).
+-- A função foi recriada via CREATE OR REPLACE no projeto pbqweliufnpxsyewhdmc.
+--
+-- Esquema da nova pré-validação (resumo):
+--
+--   FOR cada item_compra_id IN (SELECT DISTINCT item_compra_id, SUM(qtd), SUM(valor)
+--                               FROM _linhas WHERE acao_in='substituir_pedido'
+--                               GROUP BY item_compra_id):
+--     v_saldo_qtd, v_saldo_valor := SUM saldo dos pedido_itens elegíveis do item
+--     IF SUM(qtd_linhas) > saldo_qtd THEN RAISE 'Linha(s) X,Y,Z apontam pro mesmo item';
+--     IF SUM(valor_linhas) > saldo_valor THEN RAISE idem;
+--   END FOR
+--
+-- O front (RecepcaoPage.tsx) faz a mesma agregação pra UX (estourosPorItem):
+-- banner vermelho com "N item(s) com soma da NF excedendo saldo" e lista
+-- linha-a-linha por item.
+
+SELECT 1; -- placeholder
