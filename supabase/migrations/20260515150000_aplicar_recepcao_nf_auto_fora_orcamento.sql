@@ -1,0 +1,34 @@
+-- ============================================================================
+-- v5: auto-detecção de fora_orcamento por saldo do item (2026-05-15)
+--
+-- Antes (v4): só a SOBRA de "Consumir previsão" virava fora_orcamento=true.
+-- "Criar pedido novo" sempre criava com fora_orcamento=false, mesmo quando
+-- o item de orçamento já estava totalmente comprometido — inflando o
+-- comprometido sem aviso.
+--
+-- Cenário real: NF da MULTIPLEX (59 unid × R$ 111,46 = R$ 6.576) trouxe
+-- material ligado ao item DIMARCK-FERRO. O item já estava saturado (R$ 512k
+-- orçados, R$ 512k em pedidos planejados). Operador escolheu "Criar pedido
+-- novo" (sem opção de consumir). Sistema criou pedido_item com fora_orcamento=
+-- false → comprometido virou R$ 518.576 (saldo -6.576).
+--
+-- Agora a RPC calcula, no momento de inserir cada pedido_item criado pela NF,
+-- o saldo orçamentário REAL do item (valor_total_orcado menos SUM dos
+-- pedido_itens ativos com fora_orcamento=false). Se a nova linha excede,
+-- marca fora_orcamento=true automaticamente — independente da ação ter sido
+-- "substituir_pedido" (sobra) ou "criar_pedido" (excedente direto).
+--
+-- Aplicável quando setting permitir_estouro_orcamento=ON. Quando OFF, a
+-- pré-validação ainda bloqueia antes de chegar aqui.
+-- ============================================================================
+
+-- A RPC aplicar_recepcao_nf foi recriada via CREATE OR REPLACE no projeto
+-- pbqweliufnpxsyewhdmc. A mudança principal está no INSERT de pedido_itens
+-- no pedido âncora — coluna fora_orcamento é calculada por SUBQUERY que
+-- compara valor_total_real da nova linha com o saldo orçamentário do item.
+--
+-- Backfill: o pedido_item 3a235148 (MULTIPLEX, R$ 6.576,14, DIMARCK-FERRO)
+-- foi marcado fora_orcamento=true via UPDATE direto na revisão de
+-- 2026-05-15, pois foi criado antes desta v5.
+
+SELECT 1; -- placeholder
