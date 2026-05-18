@@ -397,7 +397,7 @@ export function usePedidoItens() {
         .select(`
           id, pedido_id, item_compra_id, qtd, valor_unitario_real, valor_total_real,
           qtd_recebida, casas_lote, ordem, observacoes, fora_orcamento, created_at,
-          pedidos!inner(company_id, status, nf_origem_id, fornecedor_id, numero_pedido, is_previsao_orcamento, valor_coberto_por_realizacao, fornecedores(nome)),
+          pedidos!inner(company_id, status, nf_origem_id, fornecedor_id, numero_pedido, is_previsao_orcamento, valor_coberto_por_realizacao, fornecedores(nome), parcelas(valor_pago)),
           itens_compra(descricao, codigo, etapa_id, etapas(nome))
         `)
         .eq('pedidos.company_id', companyId)

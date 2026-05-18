@@ -466,8 +466,9 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
         const totRecebido = ativas.reduce((s, pi: any) => s + Number(pi.qtd_recebida ?? 0) * Number(pi.valor_unitario_real ?? 0), 0)
         // Cobertura de previsão: pedidos is_previsao_orcamento=true ganham
         // valor_coberto_por_realizacao quando NFs externas abatem o saldo
-        // financeiro. Somamos só uma vez por pedido (campo está no header,
-        // mas a query traz repetido por pedido_item).
+        // financeiro. Pago vem da soma de parcelas.valor_pago.
+        // Em ambos os casos somamos só uma vez por pedido (a query traz
+        // repetido por pedido_item).
         const pedidosVistos = new Set<string>()
         const totCoberto = ativas.reduce((s, pi: any) => {
           const pid = pi.pedido_id
@@ -475,6 +476,14 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
           pedidosVistos.add(pid)
           if (pi.pedidos?.is_previsao_orcamento !== true) return s
           return s + Number(pi.pedidos?.valor_coberto_por_realizacao ?? 0)
+        }, 0)
+        const pedidosVistosPago = new Set<string>()
+        const totPago = ativas.reduce((s, pi: any) => {
+          const pid = pi.pedido_id
+          if (!pid || pedidosVistosPago.has(pid)) return s
+          pedidosVistosPago.add(pid)
+          const parcelas = (pi.pedidos?.parcelas ?? []) as Array<{ valor_pago: number | null }>
+          return s + parcelas.reduce((acc, p) => acc + Number(p.valor_pago ?? 0), 0)
         }, 0)
         const qtdOrc = item.qtd_total ?? 0
         // Só conta como duplicação se qtd recebida (consumo físico) excede orçada.
@@ -540,18 +549,23 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                     </div>
                   </div>
                 )}
-                {/* Resumo financeiro do item — mostra coberto por NFs externas e saldo efetivo
-                    a pagar (total - pago - coberto). Aparece quando há pelo menos 1 previsão. */}
+                {/* Resumo financeiro do item — mostra total contratado, já pago, coberto por
+                    NFs externas e saldo efetivo a pagar (total - pago - coberto).
+                    Aparece quando há pelo menos 1 previsão com cobertura. */}
                 {totCoberto > 0 && (
                   <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
                     <div className="flex items-center gap-1.5 mb-1.5 font-bold text-amber-800">
                       <AlertTriangle className="h-3.5 w-3.5" />
                       Previsões financeiras com cobertura por NFs externas
                     </div>
-                    <div className="grid grid-cols-3 gap-2 text-[11px]">
+                    <div className="grid grid-cols-4 gap-2 text-[11px]">
                       <div>
                         <p className="text-[9px] uppercase text-muted-foreground">Total contratado</p>
                         <p className="font-mono font-bold">{formatCurrency(totValor)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[9px] uppercase text-muted-foreground">Já pago</p>
+                        <p className="font-mono font-bold text-blue-700">−{formatCurrency(totPago)}</p>
                       </div>
                       <div>
                         <p className="text-[9px] uppercase text-muted-foreground">Coberto por NFs</p>
@@ -559,11 +573,11 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                       </div>
                       <div>
                         <p className="text-[9px] uppercase text-muted-foreground">Saldo efetivo a pagar</p>
-                        <p className="font-mono font-bold text-emerald-700">{formatCurrency(Math.max(totValor - totCoberto, 0))}</p>
+                        <p className="font-mono font-bold text-emerald-700">{formatCurrency(Math.max(totValor - totPago - totCoberto, 0))}</p>
                       </div>
                     </div>
                     <p className="mt-1.5 text-[10px] text-muted-foreground">
-                      Parcelas individuais não foram alteradas pra preservar conciliações. O saldo efetivo desconta a cobertura.
+                      Parcelas individuais não foram alteradas pra preservar conciliações. O saldo efetivo desconta pagamentos já realizados e cobertura por NFs externas.
                     </p>
                   </div>
                 )}
