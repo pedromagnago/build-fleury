@@ -744,6 +744,59 @@ export default function RecepcaoPage() {
     return out
   }, [extracao, pedidos, itens])
 
+  /**
+   * F2.a — DUPLICAÇÃO POTENCIAL: linhas que vão criar pedido novo mas o item já
+   * tem pedido planejado com saldo. É EXATAMENTE o cenário que gera os
+   * pedidos-fantasma (caso #538 DIMARCK vs #652-#655 EGX): a NF chega com um
+   * fornecedor diferente do pedido, ou a IA não casou o item, ou o operador
+   * escolheu "Criar pedido novo" sem perceber que tinha previsão pra consumir.
+   *
+   * Em vez de só desabilitar a opção "Consumir previsão" silenciosamente (como
+   * hoje), agora MOSTRAMOS proativamente: "linha X da NF tem item ligado ao
+   * pedido planejado #N (saldo Y) que NÃO será consumido — clique pra vincular".
+   *
+   * Não bloqueia (operador pode preferir mesmo criar pedido novo, ex: pedido
+   * original é doutra obra), só avisa + oferece 1 clique pra resolver.
+   */
+  const pedidosOrfaosMesmoItem = useMemo(() => {
+    const out: Array<{
+      linhaIdx: number
+      linhaDescricao: string
+      pedidoId: string
+      pedidoNumero: number | null
+      fornecedorNomePedido: string | null
+      itemDescricao: string
+      saldoQtd: number
+      saldoValor: number
+    }> = []
+    if (!extracao) return out
+    extracao.itens.forEach((linha, idx) => {
+      // Só linhas que vão CRIAR pedido (não estão consumindo). 'criar_item' não
+      // tem item_compra_id ainda, então não entra (cai no else).
+      if (linha.acao !== 'criar_pedido') return
+      if (!linha.item_compra_id) return
+      for (const ped of pedidos) {
+        if (!STATUS_ELEGIVEIS_CONSUMO.includes(ped.status)) continue
+        for (const pi of (ped.itens ?? [])) {
+          if (pi.item_compra_id !== linha.item_compra_id) continue
+          const saldoQtd = Math.max(Number(pi.qtd ?? 0) - Number(pi.qtd_recebida ?? 0), 0)
+          if (saldoQtd <= 0.001) continue
+          out.push({
+            linhaIdx: idx,
+            linhaDescricao: linha.descricao,
+            pedidoId: ped.id,
+            pedidoNumero: ped.numero_pedido,
+            fornecedorNomePedido: ped.fornecedor_nome ?? null,
+            itemDescricao: itens.find(i => i.id === linha.item_compra_id)?.descricao ?? linha.descricao,
+            saldoQtd,
+            saldoValor: saldoQtd * Number(pi.valor_unitario_real ?? 0),
+          })
+        }
+      }
+    })
+    return out
+  }, [extracao, pedidos, itens])
+
   // F2.1: lista visível preserva o índice original pra handlers continuarem funcionando
   const linhasVisiveis = (extracao?.itens ?? [])
     .map((l, idx) => ({ l, idx }))
@@ -784,6 +837,22 @@ export default function RecepcaoPage() {
         item_compra_id: novoItemId,
         pedido_substituido_id: pedidoExistente?.id ?? null,
         acao: pedidoExistente ? 'substituir_pedido' : (l.acao === 'substituir_pedido' ? 'criar_pedido' : (l.acao ?? 'criar_pedido')),
+        confirmado: true,
+        precisaConfirmar: false,
+      } : l)
+    } : prev)
+  }
+
+  /** F2.a — vincula uma linha da NF a um pedido planejado existente com 1 clique.
+   * Usado pelo banner "pedidos planejados ignorados". Troca a ação pra
+   * 'substituir_pedido' e seta o pedido_substituido_id alvo. */
+  const vincularLinhaAPedido = (idx: number, pedidoId: string) => {
+    setExtracao(prev => prev ? {
+      ...prev,
+      itens: prev.itens.map((l, i) => i === idx ? {
+        ...l,
+        acao: 'substituir_pedido',
+        pedido_substituido_id: pedidoId,
         confirmado: true,
         precisaConfirmar: false,
       } : l)
@@ -1642,6 +1711,49 @@ export default function RecepcaoPage() {
                 )}
               </div>
             )}
+            {/* F2.a: Banner DUPLICAÇÃO POTENCIAL — linhas que vão criar pedido novo,
+                mas existe pedido planejado com saldo do mesmo item. É o cenário que
+                gerou os pedidos-fantasma #652–#655 (EGX) duplicando o #538 (DIMARCK):
+                fornecedor diferente fez o operador não consumir a previsão.
+                Não bloqueia — só avisa + 1 clique pra vincular. */}
+            {pedidosOrfaosMesmoItem.length > 0 && (
+              <div className="mt-2 rounded-md border-2 border-amber-500/50 bg-amber-500/5 p-3 text-[11px]">
+                <p className="font-bold mb-1 text-amber-800 flex items-center gap-1.5">
+                  <AlertTriangle className="h-4 w-4" />
+                  {pedidosOrfaosMesmoItem.length} pedido(s) planejado(s) do mesmo item NÃO serão consumidos
+                </p>
+                <p className="text-muted-foreground mb-2">
+                  As linhas abaixo vão <strong>criar pedido novo</strong>, mas existe pedido planejado com saldo do <strong>mesmo item de orçamento</strong>.
+                  Aplicar assim duplica a previsão financeira. Clique em <strong>Vincular</strong> pra consumir o pedido existente — o sistema vai logar a divergência de fornecedor (se houver).
+                </p>
+                <ul className="space-y-1">
+                  {pedidosOrfaosMesmoItem.map((o, i) => (
+                    <li key={i} className="flex items-center justify-between gap-2 rounded bg-amber-500/10 px-2 py-1.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-foreground/90">
+                          Pedido <span className="font-mono">#{o.pedidoNumero ?? '?'}</span>
+                          {' · '}{o.fornecedorNomePedido ?? 'fornecedor não informado'}
+                          {' · saldo '}
+                          <span className="font-mono">{o.saldoQtd.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          {' un = '}
+                          <span className="font-mono">{formatCurrency(o.saldoValor)}</span>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">
+                          Linha {o.linhaIdx + 1} da NF: <em>{o.linhaDescricao}</em> · item: {o.itemDescricao}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => vincularLinhaAPedido(o.linhaIdx, o.pedidoId)}
+                        className="inline-flex items-center gap-1 rounded bg-amber-600 hover:bg-amber-700 text-white px-2 py-1 text-[10px] font-bold whitespace-nowrap"
+                        title={`Trocar ação da linha pra "Consumir previsão" e vincular ao pedido #${o.pedidoNumero ?? '?'}`}
+                      >
+                        <Check className="h-3 w-3" /> Vincular
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {extracao.modelo && (
               <p className="mt-2 text-[10px] text-muted-foreground">Extraído por {extracao.modelo} · custo R$ {((extracao.custo_cents ?? 0) / 100).toFixed(4)}</p>
             )}
@@ -1827,6 +1939,36 @@ export default function RecepcaoPage() {
                                   )}
                                   {pedidoSel && <span className="rounded bg-blue-500/15 text-blue-700 px-1" title="Consume previsão FIFO entre os pedidos planejados deste item (não só este)">→ consome previsão</span>}
                                 </div>
+                                {(() => {
+                                  // F2.b — Aviso de fornecedor divergente entre a NF e o pedido vinculado.
+                                  // NÃO bloqueia: o consumo vai acontecer e a divergência fica registrada
+                                  // pra relatório. Caso clássico: pedido #538 era DIMARCK, NF chegou da EGX.
+                                  if (!pedidoSel) return null
+                                  const cnpjNF = extracao.fornecedor.cnpj?.replace(/\D/g, '') ?? ''
+                                  const nomeNF = (extracao.fornecedor.nome ?? '').trim()
+                                  let fornNFId: string | null = null
+                                  if (cnpjNF) {
+                                    fornNFId = (fornecedores as any[]).find(f => (f.cnpj ?? '').replace(/\D/g, '') === cnpjNF)?.id ?? null
+                                  }
+                                  if (!fornNFId && nomeNF) {
+                                    fornNFId = (fornecedores as any[]).find(f => (f.nome ?? '').toLowerCase() === nomeNF.toLowerCase())?.id ?? null
+                                  }
+                                  if (pedidoSel.fornecedor_id && fornNFId && pedidoSel.fornecedor_id === fornNFId) return null
+                                  const nomePed = (pedidoSel.fornecedor_nome ?? '').trim()
+                                  if (nomePed && nomeNF && nomePed.toLowerCase() === nomeNF.toLowerCase()) return null
+                                  // Sem nome em nenhum lado = não há o que comparar
+                                  if (!nomePed && !nomeNF) return null
+                                  return (
+                                    <div className="flex gap-1 flex-wrap">
+                                      <span
+                                        className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 text-amber-700 px-1 text-[9px]"
+                                        title={`Pedido planejado é do fornecedor "${nomePed || '?'}", mas a NF é de "${nomeNF || '?'}". O consumo segue normal e a divergência fica registrada pra relatório.`}
+                                      >
+                                        <AlertTriangle className="h-2.5 w-2.5" /> Fornecedor diverge: {nomePed || '?'} → {nomeNF || '?'}
+                                      </span>
+                                    </div>
+                                  )
+                                })()}
                                 {(() => {
                                   const avisos = calcularAvisos(linha, itemSelecionado)
                                   if (avisos.length === 0) return null
