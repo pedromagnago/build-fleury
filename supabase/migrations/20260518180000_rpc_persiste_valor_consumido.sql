@@ -158,11 +158,17 @@ BEGIN
     is_previsao boolean
   ) ON COMMIT DROP;
 
+  -- Aceita linhas com qtd > 0 (consumo fisico) OU valor_total > 0 (servicos
+  -- que cobrem so' previsao). Servicos sem qtd entram aqui mas o FIFO de qtd
+  -- pula naturalmente (v_restante=0).
   FOR rec_linha IN
-    SELECT * FROM _linhas WHERE acao_in = 'substituir_pedido' AND quantidade > 0 ORDER BY ordem
+    SELECT * FROM _linhas
+    WHERE acao_in = 'substituir_pedido'
+      AND (quantidade > 0 OR COALESCE(valor_total, 0) > 0)
+    ORDER BY ordem
   LOOP
-    v_restante := rec_linha.quantidade;
-    v_valor_restante := COALESCE(rec_linha.valor_total, rec_linha.quantidade * rec_linha.valor_unitario);
+    v_restante := COALESCE(rec_linha.quantidade, 0);
+    v_valor_restante := COALESCE(rec_linha.valor_total, rec_linha.quantidade * rec_linha.valor_unitario, 0);
     v_is_previsao := false;
     v_pedido_previsao_id := NULL;
 
@@ -259,8 +265,15 @@ BEGIN
       v_valor_restante := v_valor_restante - (v_consumir * rec_linha.valor_unitario);
     END LOOP;
 
+    -- sobra: usa qtd_restante quando ha quantidade real; senao marca como
+    -- consumido_total (servicos sem qtd que foram totalmente cobertos por
+    -- previsao). Se servico tem valor remanescente sem cobertura, vai pra
+    -- ancora com qtd=0 (so' parcelas, sem pedido_item).
     IF v_restante > 0.001 THEN
       UPDATE _linhas SET acao_out = 'sobra_p_ancora', qtd_restante = v_restante
+      WHERE ordem = rec_linha.ordem AND item_compra_id = rec_linha.item_compra_id;
+    ELSIF v_valor_restante > 0.01 AND COALESCE(rec_linha.quantidade, 0) = 0 THEN
+      UPDATE _linhas SET acao_out = 'sobra_p_ancora', qtd_restante = 0
       WHERE ordem = rec_linha.ordem AND item_compra_id = rec_linha.item_compra_id;
     ELSE
       UPDATE _linhas SET acao_out = 'consumido_total', qtd_restante = 0
@@ -309,6 +322,8 @@ BEGIN
     ) RETURNING id INTO v_novo_pedido_id;
 
     IF NOT v_pedido_ancora_sem_itens THEN
+      -- Filtra linhas com qtd > 0 (CHECK pedido_itens). Servicos sem qtd
+      -- nao geram pedido_item — so' ficam no ancora pra carregar parcelas.
       INSERT INTO pedido_itens (
         pedido_id, item_compra_id, qtd, valor_unitario_real,
         valor_total_real, qtd_recebida, ordem
@@ -320,7 +335,9 @@ BEGIN
              ELSE COALESCE(l.valor_total, l.quantidade * l.valor_unitario) END,
         CASE WHEN l.acao_out = 'sobra_p_ancora' THEN l.qtd_restante ELSE l.quantidade END,
         (ROW_NUMBER() OVER (ORDER BY l.ordem))::int
-      FROM _linhas l WHERE l.acao_out IN ('criar_pedido','sobra_p_ancora');
+      FROM _linhas l
+      WHERE l.acao_out IN ('criar_pedido','sobra_p_ancora')
+        AND (CASE WHEN l.acao_out = 'sobra_p_ancora' THEN l.qtd_restante ELSE l.quantidade END) > 0;
       GET DIAGNOSTICS v_itens_novos_count = ROW_COUNT;
     END IF;
   END IF;
