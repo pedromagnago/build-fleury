@@ -642,10 +642,11 @@ export default function RecepcaoPage() {
   const linhasAConfirmar = extracao?.itens.filter(l => l.precisaConfirmar && !l.confirmado).length ?? 0
   const linhasAutoOk = extracao?.itens.filter(l => l.confirmado && l.acao && l.acao !== 'ignorar' && (l.acao === 'criar_pedido' || l.acao === 'substituir_pedido')).length ?? 0
   const linhasCriarItem = extracao?.itens.filter(l => l.acao === 'criar_item').length ?? 0
-  // Pedidos planejados que vão ser cancelados ao aplicar — IDs únicos pra mostrar lista.
+  // Pedidos que vão ser consumidos/cobertos ao aplicar — IDs únicos pra mostrar lista.
+  // isPrevisao=true significa cobertura financeira (não consumo de quantidade).
   const previsoesACancelar = useMemo(() => {
-    if (!extracao) return [] as { pedidoId: string; numero: number | null; itemDescricao: string; valor: number; linhasNF: number[] }[]
-    const map = new Map<string, { pedidoId: string; numero: number | null; itemDescricao: string; valor: number; linhasNF: number[] }>()
+    if (!extracao) return [] as { pedidoId: string; numero: number | null; itemDescricao: string; valor: number; linhasNF: number[]; isPrevisao: boolean }[]
+    const map = new Map<string, { pedidoId: string; numero: number | null; itemDescricao: string; valor: number; linhasNF: number[]; isPrevisao: boolean }>()
     extracao.itens.forEach((l, idx) => {
       if (l.acao !== 'substituir_pedido' || !l.pedido_substituido_id) return
       const ped = pedidos.find(p => p.id === l.pedido_substituido_id)
@@ -661,6 +662,7 @@ export default function RecepcaoPage() {
           itemDescricao: itemInfo?.descricao ?? ped.item_descricao ?? '—',
           valor: Number(ped.valor_total_real ?? 0),
           linhasNF: [idx + 1],
+          isPrevisao: (ped as any).is_previsao_orcamento === true,
         })
       }
     })
@@ -709,12 +711,27 @@ export default function RecepcaoPage() {
       cur.descricoes.add(linha.descricao)
       agg.set(key, cur)
     })
-    // 2) Pra cada item agregado, calcula saldo dos pedidos elegíveis e compara
+    // 2) Pra cada item agregado, calcula saldo dos pedidos elegíveis e compara.
+    //    Pedidos com is_previsao_orcamento=true contribuem só pra saldoValor
+    //    (consumo por VALOR, qtd é fictícia). Pedidos normais contribuem pros 2.
     for (const [itemId, ag] of agg.entries()) {
       let saldoQtd = 0
       let saldoValor = 0
       for (const p of pedidos) {
         if (!STATUS_ELEGIVEIS_CONSUMO.includes(p.status)) continue
+        const isPrevisao = (p as any).is_previsao_orcamento === true
+        if (isPrevisao) {
+          // Saldo financeiro disponível da previsão (aproximação cliente-side:
+          // valor_total - valor_coberto_por_realizacao; o front não tem o
+          // SUM(parcelas.valor_pago) facilmente; a RPC recalcula exato).
+          const piMatch = (p.itens ?? []).find(pi => pi.item_compra_id === itemId)
+          if (!piMatch) continue
+          const valorTotal = Number(p.valor_total_real ?? 0)
+          const coberto = Number((p as any).valor_coberto_por_realizacao ?? 0)
+          saldoValor += Math.max(valorTotal - coberto, 0)
+          // NÃO incrementa saldoQtd: previsão não consome qtd
+          continue
+        }
         for (const pi of (p.itens ?? [])) {
           if (pi.item_compra_id !== itemId) continue
           const dispQtd = Math.max(Number(pi.qtd ?? 0) - Number(pi.qtd_recebida ?? 0), 0)
@@ -723,9 +740,11 @@ export default function RecepcaoPage() {
           saldoValor += dispQtd * Number(pi.valor_unitario_real ?? 0)
         }
       }
-      const excQtd = ag.qtdTotal - saldoQtd
+      // Pra estouro de QTD: só conta se ag.qtdTotal > saldoQtd E há pelo menos
+      // saldoQtd > 0 (i.e., existe pedido NORMAL pra esse item). Se o item só
+      // tem previsões, qtd não estoura — a NF cobre por valor.
+      const excQtd = saldoQtd > 0 ? (ag.qtdTotal - saldoQtd) : 0
       const excValor = ag.valorTotal - saldoValor
-      // Tolerância: 0,001 unidade e 1 centavo.
       if (excQtd > 0.001 || excValor > 0.01) {
         const itemBd = itens.find(i => i.id === itemId)
         const itemDescricao = itemBd?.descricao ?? Array.from(ag.descricoes).join(' / ')
@@ -1661,31 +1680,42 @@ export default function RecepcaoPage() {
                 os pedidos planejados do mesmo item — esta lista é apenas o MATCH explícito
                 da UI (linha N da NF aponta pra pedido X). Pedidos extras com saldo ainda
                 podem ser consumidos automaticamente durante o aplicar(). */}
-            {previsoesACancelar.length > 0 && (
-              <details className="mt-2 rounded-md border border-blue-500/40 bg-blue-500/5 text-[11px]">
-                <summary className="cursor-pointer px-2 py-1.5 flex items-center gap-1.5 text-blue-800 hover:bg-blue-500/10">
-                  <Check className="h-3.5 w-3.5" />
-                  <strong>{previsoesACancelar.length}</strong> previsão(ões) com match explícito serão <strong>consumidas</strong> ao aplicar.
-                  <span className="text-muted-foreground ml-1">(distribuição FIFO automática entre planejados do mesmo item)</span>
-                </summary>
-                <div className="border-t border-blue-500/30 divide-y divide-blue-500/20 max-h-48 overflow-y-auto">
-                  {previsoesACancelar.map(p => (
-                    <div key={p.pedidoId} className="px-2 py-1.5 flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <span className="font-mono text-[10px] text-muted-foreground">#{p.numero ?? '?'}</span>{' '}
-                        <span>{p.itemDescricao}</span>
-                        <span className="text-[10px] text-muted-foreground ml-1">· linha(s) {p.linhasNF.join(', ')} da NF</span>
+            {previsoesACancelar.length > 0 && (() => {
+              const totalPrev = previsoesACancelar.filter(p => p.isPrevisao).length
+              const totalNorm = previsoesACancelar.length - totalPrev
+              return (
+                <details className="mt-2 rounded-md border border-blue-500/40 bg-blue-500/5 text-[11px]">
+                  <summary className="cursor-pointer px-2 py-1.5 flex items-center gap-1.5 text-blue-800 hover:bg-blue-500/10">
+                    <Check className="h-3.5 w-3.5" />
+                    {totalNorm > 0 && (
+                      <span><strong>{totalNorm}</strong> pedido(s) planejado(s) serão <strong>consumidos</strong> (por quantidade)</span>
+                    )}
+                    {totalNorm > 0 && totalPrev > 0 && <span className="text-muted-foreground">·</span>}
+                    {totalPrev > 0 && (
+                      <span><strong>{totalPrev}</strong> previsão(ões) financeira(s) serão <strong>cobertas</strong> (por valor)</span>
+                    )}
+                    <span className="text-muted-foreground ml-1">ao aplicar.</span>
+                  </summary>
+                  <div className="border-t border-blue-500/30 divide-y divide-blue-500/20 max-h-48 overflow-y-auto">
+                    {previsoesACancelar.map(p => (
+                      <div key={p.pedidoId} className="px-2 py-1.5 flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono text-[10px] text-muted-foreground">#{p.numero ?? '?'}</span>
+                          {p.isPrevisao && (
+                            <span className="text-[9px] rounded bg-amber-500/20 text-amber-800 px-1 font-semibold whitespace-nowrap">
+                              PREVISÃO · cobre por valor
+                            </span>
+                          )}
+                          <span>{p.itemDescricao}</span>
+                          <span className="text-[10px] text-muted-foreground">· linha(s) {p.linhasNF.join(', ')} da NF</span>
+                        </div>
+                        <span className="font-mono whitespace-nowrap">{formatCurrency(p.valor)}</span>
                       </div>
-                      <span className="font-mono whitespace-nowrap">{formatCurrency(p.valor)}</span>
-                    </div>
-                  ))}
-                  <div className="px-2 py-1.5 bg-blue-500/10 font-bold flex items-center justify-between">
-                    <span>Total dos planejados em match explícito</span>
-                    <span className="font-mono">{formatCurrency(previsoesACancelar.reduce((s, p) => s + p.valor, 0))}</span>
+                    ))}
                   </div>
-                </div>
-              </details>
-            )}
+                </details>
+              )
+            })()}
             {/* Banner BLOQUEIO/AVISO: estouros AGRUPADOS por item_compra_id. Várias linhas
                 da NF apontando pro mesmo item são somadas — se a soma excede o saldo
                 agregado dos pedidos planejados, mostra alerta.
@@ -1982,7 +2012,17 @@ export default function RecepcaoPage() {
                                       <Check className="h-2.5 w-2.5" /> ok
                                     </span>
                                   )}
-                                  {pedidoSel && <span className="rounded bg-blue-500/15 text-blue-700 px-1" title="Consume previsão FIFO entre os pedidos planejados deste item (não só este)">→ consome previsão</span>}
+                                  {pedidoSel && (
+                                    (pedidoSel as any).is_previsao_orcamento === true ? (
+                                      <span className="rounded bg-amber-500/15 text-amber-800 px-1 font-semibold" title="Pedido previsão financeira — a NF vai cobrir o saldo a pagar do pedido sem mexer em qtd nem em parcelas já pagas">
+                                        → cobre previsão financeira
+                                      </span>
+                                    ) : (
+                                      <span className="rounded bg-blue-500/15 text-blue-700 px-1" title="Consume previsão FIFO entre os pedidos planejados deste item (não só este)">
+                                        → consome previsão
+                                      </span>
+                                    )
+                                  )}
                                 </div>
                                 {(() => {
                                   // F2.b — Aviso de fornecedor divergente entre a NF e o pedido vinculado.
