@@ -270,6 +270,8 @@ export default function RecepcaoPage() {
     item_descricao: string | null
     delta_qtd_recebida: number | string | null
     valor_coberto_previsao: number | string | null
+    vu_pedido: number | string | null
+    vu_nf: number | string | null
     valor_efeito: number | string | null
   }>>({
     queryKey: ['recepcao_rastreio', rastreioDoc?.id],
@@ -1307,6 +1309,11 @@ export default function RecepcaoPage() {
                   )
                 }
                 if (r.tipo === 'consumo_fisico') {
+                  const vuNF = r.vu_nf != null ? Number(r.vu_nf) : null
+                  const vuPed = r.vu_pedido != null ? Number(r.vu_pedido) : null
+                  const temDifPreco = vuNF != null && vuPed != null && Math.abs(vuNF - vuPed) > 0.01
+                  const deltaUnit = (vuNF ?? 0) - (vuPed ?? 0)
+                  const deltaPct = vuPed && vuPed > 0 ? (deltaUnit / vuPed) * 100 : 0
                   return (
                     <div key={r.consumo_id} className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2.5">
                       <div className="flex items-center gap-2 mb-0.5 flex-wrap">
@@ -1317,11 +1324,19 @@ export default function RecepcaoPage() {
                       </div>
                       <p className="text-[11px]">
                         Consumiu <span className="font-mono font-bold text-emerald-700">{qtd.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> un
-                        {valor > 0 && <> (≈ <span className="font-mono">{formatCurrency(valor)}</span>)</>}
+                        {valor > 0 && <> = <span className="font-mono">{formatCurrency(valor)}</span></>}
                         {r.item_codigo && <> · <span className="font-mono text-muted-foreground">{r.item_codigo}</span></>}
                       </p>
                       {r.item_descricao && (
                         <p className="text-[10px] text-muted-foreground mt-0.5 truncate">{r.item_descricao}</p>
+                      )}
+                      {temDifPreco && (
+                        <p className={`text-[10px] mt-1 ${deltaUnit > 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+                          Preço NF: <span className="font-mono">{formatCurrency(vuNF!)}</span>/un
+                          {' '}vs orçado <span className="font-mono">{formatCurrency(vuPed!)}</span>
+                          {' · '}<strong>{deltaUnit > 0 ? '+' : ''}{formatCurrency(deltaUnit * qtd)}</strong>
+                          {' '}({deltaPct > 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
+                        </p>
                       )}
                     </div>
                   )
