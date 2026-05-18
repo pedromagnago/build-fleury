@@ -27,7 +27,7 @@ import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
 // (server-side), pra evitar o bug "value of readableStream" do pdfjs v5 no Vite.
 import { ItemPickerCombobox } from '@/components/recepcao/ItemPickerCombobox'
 import { gerarParcelas, localDate } from '@/lib/parcelas'
-import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle } from 'lucide-react'
+import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle, History } from 'lucide-react'
 import { useEtapas } from '@/hooks/useEtapas'
 
 type Acao = 'substituir_pedido' | 'criar_pedido' | 'criar_item' | 'ignorar'
@@ -257,6 +257,34 @@ export default function RecepcaoPage() {
   // C: lista de NFs aplicadas + exclusão (com reversão via trigger no banco)
   const qc = useQueryClient()
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<{ id: string; numero: string | null; fornecedor: string | null } | null>(null)
+  // Rastreio: mostra em modal os efeitos que a NF gerou (consumo físico,
+  // cobertura de previsão, pedido criado). Lê de v_recepcao_rastreio.
+  const [rastreioDoc, setRastreioDoc] = useState<{ id: string; numero: string | null; fornecedor: string | null } | null>(null)
+  const { data: rastreioRows = [], isFetching: rastreioLoading } = useQuery<Array<{
+    consumo_id: string
+    tipo: 'pedido_criado' | 'cobertura_previsao' | 'consumo_fisico' | 'outro'
+    pedido_numero: number | null
+    fornecedor_nome: string | null
+    is_previsao: boolean
+    item_codigo: string | null
+    item_descricao: string | null
+    delta_qtd_recebida: number | string | null
+    valor_coberto_previsao: number | string | null
+    valor_efeito: number | string | null
+  }>>({
+    queryKey: ['recepcao_rastreio', rastreioDoc?.id],
+    enabled: !!rastreioDoc,
+    queryFn: async () => {
+      if (!rastreioDoc) return []
+      const { data, error } = await supabase
+        .from('v_recepcao_rastreio')
+        .select('*')
+        .eq('doc_id', rastreioDoc.id)
+        .order('created_at')
+      if (error) throw error
+      return (data ?? []) as any[]
+    },
+  })
   const { data: docsAplicadas = [] } = useQuery<Array<{
     id: string; numero_doc: string | null; fornecedor_nome: string | null;
     valor_total: number | string | null; data_emissao: string | null; applied_at: string | null;
@@ -1168,7 +1196,7 @@ export default function RecepcaoPage() {
                       <th className="py-1.5 text-left">Aplicada em</th>
                       <th className="py-1.5 text-right">Valor</th>
                       <th className="py-1.5 text-center">Impacto</th>
-                      <th className="py-1.5 text-center w-16">Ações</th>
+                      <th className="py-1.5 text-center w-24">Ações</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/40">
@@ -1185,13 +1213,22 @@ export default function RecepcaoPage() {
                           {d.qtdConsumos === 0 && <span className="text-amber-700">sem log</span>}
                         </td>
                         <td className="py-1.5 text-center">
-                          <button
-                            onClick={() => setConfirmDeleteDoc({ id: d.id, numero: d.numero_doc, fornecedor: d.fornecedor_nome })}
-                            className="rounded p-1 hover:bg-destructive/10 text-destructive"
-                            title="Excluir NF (reverte o consumo nos pedidos)"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <div className="inline-flex items-center gap-0.5">
+                            <button
+                              onClick={() => setRastreioDoc({ id: d.id, numero: d.numero_doc, fornecedor: d.fornecedor_nome })}
+                              className="rounded p-1 hover:bg-blue-500/10 text-blue-600"
+                              title="Ver rastreio (o que essa NF consumiu, cobriu ou criou)"
+                            >
+                              <History className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={() => setConfirmDeleteDoc({ id: d.id, numero: d.numero_doc, fornecedor: d.fornecedor_nome })}
+                              className="rounded p-1 hover:bg-destructive/10 text-destructive"
+                              title="Excluir NF (reverte o consumo nos pedidos)"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1201,6 +1238,115 @@ export default function RecepcaoPage() {
             </div>
           )}
         </>
+      )}
+
+      {/* Dialog: Rastreio da NF (efeitos gerados) */}
+      {rastreioDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setRastreioDoc(null)}>
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl border bg-card shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="sticky top-0 bg-card border-b px-5 py-3 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold flex items-center gap-2">
+                  <History className="h-4 w-4 text-blue-600" /> Rastreio da NF #{rastreioDoc.numero ?? '?'}
+                </h3>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {rastreioDoc.fornecedor ?? '—'} · efeitos gerados ao aplicar esta nota
+                </p>
+              </div>
+              <button onClick={() => setRastreioDoc(null)} className="rounded-md p-1 hover:bg-accent">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-2 text-xs">
+              {rastreioLoading && (
+                <div className="flex items-center gap-2 text-muted-foreground py-4 justify-center">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Carregando rastreio…
+                </div>
+              )}
+              {!rastreioLoading && rastreioRows.length === 0 && (
+                <p className="text-muted-foreground italic text-center py-4">
+                  Sem registros de consumo pra essa NF.
+                </p>
+              )}
+              {!rastreioLoading && rastreioRows.map(r => {
+                const valor = r.valor_efeito != null ? Number(r.valor_efeito) : 0
+                const qtd = r.delta_qtd_recebida != null ? Number(r.delta_qtd_recebida) : 0
+                if (r.tipo === 'pedido_criado') {
+                  return (
+                    <div key={r.consumo_id} className="rounded-md border border-blue-500/30 bg-blue-500/5 p-2.5">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="text-[10px] rounded bg-blue-500/15 text-blue-700 px-1.5 py-0.5 font-bold uppercase">pedido novo</span>
+                        <span className="font-mono font-bold">#{r.pedido_numero ?? '?'}</span>
+                        <span className="text-muted-foreground">·</span>
+                        <span className="font-medium">{r.fornecedor_nome ?? 'sem fornecedor'}</span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Pedido criado a partir desta NF (ancora financeiro pras parcelas da NF).
+                      </p>
+                    </div>
+                  )
+                }
+                if (r.tipo === 'cobertura_previsao') {
+                  return (
+                    <div key={r.consumo_id} className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5">
+                      <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                        <span className="text-[10px] rounded bg-amber-500/20 text-amber-800 px-1.5 py-0.5 font-bold uppercase">cobertura financeira</span>
+                        <span className="font-mono font-bold">#{r.pedido_numero ?? '?'}</span>
+                        <span className="text-muted-foreground">·</span>
+                        <span className="font-medium">{r.fornecedor_nome ?? '—'}</span>
+                        <span className="text-[10px] rounded bg-amber-500/15 text-amber-800 px-1 font-semibold">PREVISÃO</span>
+                      </div>
+                      <p className="text-[11px]">
+                        Cobriu <span className="font-mono font-bold text-amber-700">{formatCurrency(valor)}</span> do saldo financeiro da previsão
+                        {r.item_codigo && <> · item <span className="font-mono text-muted-foreground">{r.item_codigo}</span></>}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        A parcela futura mais distante do pedido foi reduzida nesse valor (sem mexer em parcelas pagas/conciliadas).
+                      </p>
+                    </div>
+                  )
+                }
+                if (r.tipo === 'consumo_fisico') {
+                  return (
+                    <div key={r.consumo_id} className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2.5">
+                      <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                        <span className="text-[10px] rounded bg-emerald-500/15 text-emerald-700 px-1.5 py-0.5 font-bold uppercase">consumo</span>
+                        <span className="font-mono font-bold">#{r.pedido_numero ?? '?'}</span>
+                        <span className="text-muted-foreground">·</span>
+                        <span className="font-medium">{r.fornecedor_nome ?? '—'}</span>
+                      </div>
+                      <p className="text-[11px]">
+                        Consumiu <span className="font-mono font-bold text-emerald-700">{qtd.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> un
+                        {valor > 0 && <> (≈ <span className="font-mono">{formatCurrency(valor)}</span>)</>}
+                        {r.item_codigo && <> · <span className="font-mono text-muted-foreground">{r.item_codigo}</span></>}
+                      </p>
+                      {r.item_descricao && (
+                        <p className="text-[10px] text-muted-foreground mt-0.5 truncate">{r.item_descricao}</p>
+                      )}
+                    </div>
+                  )
+                }
+                return (
+                  <div key={r.consumo_id} className="rounded-md border bg-muted/10 p-2 text-[11px] text-muted-foreground">
+                    Registro sem efeito identificado (consumo_id <span className="font-mono">{r.consumo_id.slice(0,8)}</span>)
+                  </div>
+                )
+              })}
+              {!rastreioLoading && rastreioRows.length > 0 && (() => {
+                const totConsumido = rastreioRows.filter(r => r.tipo === 'consumo_fisico').reduce((s, r) => s + Number(r.valor_efeito ?? 0), 0)
+                const totCoberto = rastreioRows.filter(r => r.tipo === 'cobertura_previsao').reduce((s, r) => s + Number(r.valor_efeito ?? 0), 0)
+                const totPedidosNovos = rastreioRows.filter(r => r.tipo === 'pedido_criado').length
+                return (
+                  <div className="mt-3 pt-3 border-t text-[10px] text-muted-foreground space-y-0.5">
+                    {totConsumido > 0 && <div>Consumido (físico): <span className="font-mono">{formatCurrency(totConsumido)}</span></div>}
+                    {totCoberto > 0 && <div>Coberto (previsões): <span className="font-mono">{formatCurrency(totCoberto)}</span></div>}
+                    {totPedidosNovos > 0 && <div>Pedidos novos: <span className="font-mono">{totPedidosNovos}</span></div>}
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Confirm dialog: Excluir NF */}
