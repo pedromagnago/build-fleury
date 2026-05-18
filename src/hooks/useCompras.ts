@@ -114,6 +114,12 @@ export interface Pedido {
   observacoes: string | null
   /** FK pra recepcao_docs: NF que originou este pedido. NULL se manual. */
   nf_origem_id: string | null
+  /** Opt-in: true = pedido placeholder de previsão financeira por item (qtd
+   *  fictícia). NFs do mesmo item consomem por VALOR (não por qtd). */
+  is_previsao_orcamento?: boolean
+  /** Acumulado de NFs externas que realizaram parte deste pedido previsão.
+   *  Reduz o saldo efetivo a pagar sem mexer em parcelas. */
+  valor_coberto_por_realizacao?: number
   created_at: string
   // Joined
   item_descricao?: string

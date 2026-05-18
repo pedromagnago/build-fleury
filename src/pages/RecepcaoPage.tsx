@@ -768,6 +768,7 @@ export default function RecepcaoPage() {
       itemDescricao: string
       saldoQtd: number
       saldoValor: number
+      isPrevisao: boolean
     }> = []
     if (!extracao) return out
     extracao.itens.forEach((linha, idx) => {
@@ -777,6 +778,34 @@ export default function RecepcaoPage() {
       if (!linha.item_compra_id) return
       for (const ped of pedidos) {
         if (!STATUS_ELEGIVEIS_CONSUMO.includes(ped.status)) continue
+        const isPrevisao = (ped as any).is_previsao_orcamento === true
+        if (isPrevisao) {
+          // Previsão de orçamento: oferece consumo por VALOR. Saldo efetivo =
+          // valor_total - parcelas pagas - valor_coberto_por_realizacao.
+          // Como o front não tem o SUM(valor_pago) facilmente acessível por pedido
+          // aqui, usamos uma aproximação conservadora: valor_total - coberto.
+          // O backend RPC recalcula com precisão e nunca excede o saldo real.
+          const valorTotal = Number(ped.valor_total_real ?? 0)
+          const coberto = Number((ped as any).valor_coberto_por_realizacao ?? 0)
+          const saldoFinanceiroAprox = Math.max(valorTotal - coberto, 0)
+          if (saldoFinanceiroAprox <= 0.01) continue
+          // Verifica se algum pedido_item do pedido bate o item_compra_id da linha
+          const piMatch = (ped.itens ?? []).find(pi => pi.item_compra_id === linha.item_compra_id)
+          if (!piMatch) continue
+          out.push({
+            linhaIdx: idx,
+            linhaDescricao: linha.descricao,
+            pedidoId: ped.id,
+            pedidoNumero: ped.numero_pedido,
+            fornecedorNomePedido: ped.fornecedor_nome ?? null,
+            itemDescricao: itens.find(i => i.id === linha.item_compra_id)?.descricao ?? linha.descricao,
+            saldoQtd: 0,                       // previsão não tem qtd real
+            saldoValor: saldoFinanceiroAprox,  // saldo financeiro
+            isPrevisao: true,
+          })
+          continue
+        }
+        // Pedidos normais: oferece consumo por QTD
         for (const pi of (ped.itens ?? [])) {
           if (pi.item_compra_id !== linha.item_compra_id) continue
           const saldoQtd = Math.max(Number(pi.qtd ?? 0) - Number(pi.qtd_recebida ?? 0), 0)
@@ -790,6 +819,7 @@ export default function RecepcaoPage() {
             itemDescricao: itens.find(i => i.id === linha.item_compra_id)?.descricao ?? linha.descricao,
             saldoQtd,
             saldoValor: saldoQtd * Number(pi.valor_unitario_real ?? 0),
+            isPrevisao: false,
           })
         }
       }
@@ -1730,22 +1760,37 @@ export default function RecepcaoPage() {
                   {pedidosOrfaosMesmoItem.map((o, i) => (
                     <li key={i} className="flex items-center justify-between gap-2 rounded bg-amber-500/10 px-2 py-1.5">
                       <div className="min-w-0 flex-1">
-                        <div className="font-medium text-foreground/90">
-                          Pedido <span className="font-mono">#{o.pedidoNumero ?? '?'}</span>
-                          {' · '}{o.fornecedorNomePedido ?? 'fornecedor não informado'}
-                          {' · saldo '}
-                          <span className="font-mono">{o.saldoQtd.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                          {' un = '}
-                          <span className="font-mono">{formatCurrency(o.saldoValor)}</span>
+                        <div className="font-medium text-foreground/90 flex items-center gap-1.5 flex-wrap">
+                          <span>Pedido <span className="font-mono">#{o.pedidoNumero ?? '?'}</span></span>
+                          {o.isPrevisao && (
+                            <span className="text-[9px] rounded bg-amber-500/20 text-amber-800 px-1 py-0.5 font-semibold">
+                              PREVISÃO FINANCEIRA
+                            </span>
+                          )}
+                          <span>· {o.fornecedorNomePedido ?? 'fornecedor não informado'}</span>
+                          <span>
+                            · saldo {o.isPrevisao ? (
+                              <span className="font-mono">{formatCurrency(o.saldoValor)} (financeiro)</span>
+                            ) : (
+                              <>
+                                <span className="font-mono">{o.saldoQtd.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                {' un = '}
+                                <span className="font-mono">{formatCurrency(o.saldoValor)}</span>
+                              </>
+                            )}
+                          </span>
                         </div>
                         <div className="text-[10px] text-muted-foreground">
                           Linha {o.linhaIdx + 1} da NF: <em>{o.linhaDescricao}</em> · item: {o.itemDescricao}
+                          {o.isPrevisao && ' · NF vai abater saldo financeiro, sem mexer em qtd nem em parcelas pagas'}
                         </div>
                       </div>
                       <button
                         onClick={() => vincularLinhaAPedido(o.linhaIdx, o.pedidoId)}
                         className="inline-flex items-center gap-1 rounded bg-amber-600 hover:bg-amber-700 text-white px-2 py-1 text-[10px] font-bold whitespace-nowrap"
-                        title={`Trocar ação da linha pra "Consumir previsão" e vincular ao pedido #${o.pedidoNumero ?? '?'}`}
+                        title={o.isPrevisao
+                          ? `Vincular linha ao pedido previsão #${o.pedidoNumero} — NF abate saldo financeiro`
+                          : `Vincular linha ao pedido #${o.pedidoNumero} — NF consome quantidade`}
                       >
                         <Check className="h-3 w-3" /> Vincular
                       </button>

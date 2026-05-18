@@ -638,7 +638,7 @@ function PedidosTab({ search }: { search: string }) {
   const [filtroFornecedor, setFiltroFornecedor] = useState<string>('')
   const [filtroOrigem, setFiltroOrigem] = useState<'todos' | 'nf' | 'manual'>('todos')
 
-  const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'], observacoes: '' }
+  const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'], observacoes: '', is_previsao_orcamento: false }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
   const [condFromForn, setCondFromForn] = useState(false)
 
@@ -859,6 +859,7 @@ function PedidosTab({ search }: { search: string }) {
       data_entrega_prevista: p.data_entrega_prevista ?? '',
       status: p.status,
       observacoes: p.observacoes ?? '',
+      is_previsao_orcamento: p.is_previsao_orcamento === true,
     })
     // Pós-migration split_pedidos_header_e_itens: pedido pode ter N linhas em
     // pedido_itens. Se vieram via JOIN do usePedidos (p.itens populado), monta
@@ -928,6 +929,7 @@ function PedidosTab({ search }: { search: string }) {
       data_entrega_prevista: '',
       status: 'planejado',
       observacoes: '',
+      is_previsao_orcamento: p.is_previsao_orcamento === true,
     })
     setLoteItems([{
       id: crypto.randomUUID(),
@@ -971,6 +973,7 @@ function PedidosTab({ search }: { search: string }) {
         data_entrega_prevista: globalForm.data_entrega_prevista || null,
         status: globalForm.status,
         observacoes: globalForm.observacoes || null,
+        is_previsao_orcamento: globalForm.is_previsao_orcamento === true,
       }
       await updatePedido.mutateAsync({ id: editingPedido.id, ...payload })
 
@@ -1103,6 +1106,7 @@ function PedidosTab({ search }: { search: string }) {
           cond_pagamento: finalCond,
           data_entrega_prevista: finalDate,
           status: globalForm.status,
+          is_previsao_orcamento: globalForm.is_previsao_orcamento === true,
         }
       })
 
@@ -1459,6 +1463,28 @@ function PedidosTab({ search }: { search: string }) {
                   </div>
                 </div>
               )}
+              {/* Toggle: pedido só de previsão financeira (qtd fictícia, NFs consomem por VALOR).
+                  Use quando o pedido é placeholder pra fluxo de caixa (contrato/lote completo
+                  registrado como qtd=1 + valor alto) e NFs reais do mesmo item devem abater o
+                  saldo financeiro sem mexer na "quantidade entregue". */}
+              <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={globalForm.is_previsao_orcamento === true}
+                    onChange={(e) => setGlobalForm(p => ({ ...p, is_previsao_orcamento: e.target.checked }))}
+                    className="mt-0.5 h-4 w-4 accent-amber-600"
+                  />
+                  <div className="text-[11px]">
+                    <div className="font-semibold text-amber-800">Pedido só de previsão financeira</div>
+                    <div className="text-muted-foreground mt-0.5">
+                      Marque quando este pedido é apenas <strong>placeholder de fluxo de caixa</strong> (contrato/lote
+                      registrado como qtd=1 + valor alto). NFs reais do mesmo item vão abater do <strong>saldo financeiro</strong> em
+                      vez de consumir a quantidade fictícia. Não toca em parcelas já pagas/conciliadas.
+                    </div>
+                  </div>
+                </label>
+              </div>
             </div>
 
             {/* ── STEP 1: Etapa selector + Item checkboxes ── */}
