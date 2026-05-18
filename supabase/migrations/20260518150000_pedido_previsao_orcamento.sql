@@ -123,6 +123,8 @@ DECLARE
   v_pedido_previsao_id uuid;
   v_saldo_previsao_disp numeric;
   v_valor_cobrir numeric;
+  v_pi_previsao_id uuid;  -- pi alvo da cobertura (variavel dedicada,
+                           -- nao rec_pi.pi_id que e' record nao-atribuido → erro 55000)
 BEGIN
   IF v_company_id IS NULL THEN RAISE EXCEPTION 'company_id é obrigatório no payload'; END IF;
   IF NOT public.user_can_access_company(auth.uid(), v_company_id) THEN
@@ -253,13 +255,17 @@ BEGIN
         SET valor_coberto_por_realizacao = COALESCE(valor_coberto_por_realizacao, 0) + v_valor_cobrir
         WHERE id = v_pedido_previsao_id;
 
-        -- Log do consumo de previsão (pedido_item_id pode ser NULL — não é consumo físico)
-        SELECT id INTO rec_pi.pi_id FROM pedido_itens
+        -- Log do consumo de previsão. Usa variavel dedicada v_pi_previsao_id
+        -- em vez de rec_pi.pi_id — rec_pi e' record nao-atribuido aqui
+        -- (so' recebe valor dentro do FOR loop de FIFO abaixo), e SELECT INTO
+        -- num record nao-atribuido dispara erro 55000 "tuple structure of a
+        -- not-yet-assigned record is indeterminate".
+        SELECT id INTO v_pi_previsao_id FROM pedido_itens
         WHERE pedido_id = v_pedido_previsao_id AND item_compra_id = rec_linha.item_compra_id
         ORDER BY ordem LIMIT 1;
 
         INSERT INTO _consumo_log (pedido_item_id, pedido_id, delta_qtd_recebida, valor_consumido, valor_coberto_previsao)
-        VALUES (rec_pi.pi_id, v_pedido_previsao_id, 0, v_valor_cobrir, v_valor_cobrir);
+        VALUES (v_pi_previsao_id, v_pedido_previsao_id, 0, v_valor_cobrir, v_valor_cobrir);
 
         v_previsoes_cobertas_count := v_previsoes_cobertas_count + 1;
         v_houve_consumo := true;
