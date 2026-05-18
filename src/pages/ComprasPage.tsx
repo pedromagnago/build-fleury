@@ -464,8 +464,27 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
         const totQtdRec = ativas.reduce((s, pi: any) => s + Number(pi.qtd_recebida ?? 0), 0)
         const totValor = ativas.reduce((s, pi: any) => s + Number(pi.valor_total_real ?? 0), 0)
         const totRecebido = ativas.reduce((s, pi: any) => s + Number(pi.qtd_recebida ?? 0) * Number(pi.valor_unitario_real ?? 0), 0)
+        // Cobertura de previsão: pedidos is_previsao_orcamento=true ganham
+        // valor_coberto_por_realizacao quando NFs externas abatem o saldo
+        // financeiro. Somamos só uma vez por pedido (campo está no header,
+        // mas a query traz repetido por pedido_item).
+        const pedidosVistos = new Set<string>()
+        const totCoberto = ativas.reduce((s, pi: any) => {
+          const pid = pi.pedido_id
+          if (!pid || pedidosVistos.has(pid)) return s
+          pedidosVistos.add(pid)
+          if (pi.pedidos?.is_previsao_orcamento !== true) return s
+          return s + Number(pi.pedidos?.valor_coberto_por_realizacao ?? 0)
+        }, 0)
         const qtdOrc = item.qtd_total ?? 0
-        const excedeOrcamento = qtdOrc > 0 && totQtdRec > qtdOrc + 0.001
+        // Só conta como duplicação se qtd recebida (consumo físico) excede orçada.
+        // Previsões com qtd=1 fictícia não disparam esse alerta — qtd fictícia + qtd real
+        // somariam falso positivo. Ignora qtd dos pedidos previsão na soma.
+        const totQtdRecFisico = ativas.reduce((s, pi: any) => {
+          if (pi.pedidos?.is_previsao_orcamento === true) return s
+          return s + Number(pi.qtd_recebida ?? 0)
+        }, 0)
+        const excedeOrcamento = qtdOrc > 0 && totQtdRecFisico > qtdOrc + 0.001
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setDrillDownItemId(null)}>
             <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-xl border bg-card shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -516,9 +535,36 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                   <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-700 flex items-start gap-2">
                     <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
                     <div>
-                      <strong>Possível duplicação:</strong> a quantidade recebida ({formatNumber(totQtdRec, 2, 2)}) excede a orçada ({formatNumber(qtdOrc, 2, 2)}).
+                      <strong>Possível duplicação:</strong> a quantidade física recebida ({formatNumber(totQtdRecFisico, 2, 2)}) excede a orçada ({formatNumber(qtdOrc, 2, 2)}).
                       Verifique se alguma NF foi aplicada duas vezes ou se o orçamento precisa ser ajustado.
                     </div>
+                  </div>
+                )}
+                {/* Resumo financeiro do item — mostra coberto por NFs externas e saldo efetivo
+                    a pagar (total - pago - coberto). Aparece quando há pelo menos 1 previsão. */}
+                {totCoberto > 0 && (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+                    <div className="flex items-center gap-1.5 mb-1.5 font-bold text-amber-800">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      Previsões financeiras com cobertura por NFs externas
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-[11px]">
+                      <div>
+                        <p className="text-[9px] uppercase text-muted-foreground">Total contratado</p>
+                        <p className="font-mono font-bold">{formatCurrency(totValor)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[9px] uppercase text-muted-foreground">Coberto por NFs</p>
+                        <p className="font-mono font-bold text-amber-700">−{formatCurrency(totCoberto)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[9px] uppercase text-muted-foreground">Saldo efetivo a pagar</p>
+                        <p className="font-mono font-bold text-emerald-700">{formatCurrency(Math.max(totValor - totCoberto, 0))}</p>
+                      </div>
+                    </div>
+                    <p className="mt-1.5 text-[10px] text-muted-foreground">
+                      Parcelas individuais não foram alteradas pra preservar conciliações. O saldo efetivo desconta a cobertura.
+                    </p>
                   </div>
                 )}
 
@@ -543,9 +589,16 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                           const ped = pi.pedidos
                           const numero = ped?.numero_pedido ?? '?'
                           const isNF = !!ped?.nf_origem_id
+                          const isPrev = ped?.is_previsao_orcamento === true
+                          const coberto = isPrev ? Number(ped?.valor_coberto_por_realizacao ?? 0) : 0
                           return (
                             <tr key={pi.id} className="hover:bg-muted/20">
-                              <td className="px-2 py-1.5 font-mono">#{numero}</td>
+                              <td className="px-2 py-1.5 font-mono">
+                                #{numero}
+                                {isPrev && (
+                                  <span className="ml-1 text-[8px] rounded bg-amber-500/20 text-amber-800 px-1 py-0.5 font-semibold uppercase">prev</span>
+                                )}
+                              </td>
                               <td className="px-2 py-1.5 truncate max-w-[150px]">{ped?.fornecedores?.nome ?? '—'}</td>
                               <td className="px-2 py-1.5 text-center">
                                 <span className="rounded px-1 py-0.5 text-[9px] capitalize bg-muted">{(ped?.status ?? '').replace('_', ' ')}</span>
@@ -553,7 +606,14 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                               <td className="px-2 py-1.5 text-right font-mono">{formatNumber(Number(pi.qtd ?? 0), 2, 2)}</td>
                               <td className="px-2 py-1.5 text-right font-mono">{formatNumber(Number(pi.qtd_recebida ?? 0), 2, 2)}</td>
                               <td className="px-2 py-1.5 text-right font-mono">{formatCurrency(Number(pi.valor_unitario_real ?? 0))}</td>
-                              <td className="px-2 py-1.5 text-right font-mono font-medium">{formatCurrency(Number(pi.valor_total_real ?? 0))}</td>
+                              <td className="px-2 py-1.5 text-right font-mono font-medium">
+                                {formatCurrency(Number(pi.valor_total_real ?? 0))}
+                                {coberto > 0 && (
+                                  <div className="text-[9px] text-amber-700 font-normal" title="Valor coberto por NFs externas (saldo a pagar efetivo é total − pago − coberto)">
+                                    −{formatCurrency(coberto)} coberto
+                                  </div>
+                                )}
+                              </td>
                               <td className="px-2 py-1.5 text-[10px]">
                                 {isNF ? <span className="text-blue-600">via NF</span> : <span className="text-muted-foreground">manual</span>}
                               </td>

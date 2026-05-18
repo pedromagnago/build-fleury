@@ -99,6 +99,7 @@ DECLARE
   rec_linha record;
   rec_pi record;
   rec_ped record;
+  rec_parcela record;
 
   v_restante numeric;
   v_valor_restante numeric;
@@ -125,6 +126,8 @@ DECLARE
   v_valor_cobrir numeric;
   v_pi_previsao_id uuid;  -- pi alvo da cobertura (variavel dedicada,
                            -- nao rec_pi.pi_id que e' record nao-atribuido → erro 55000)
+  v_a_reduzir numeric;    -- valor restante a reduzir em parcelas futuras
+  v_reducao numeric;      -- valor da reducao na parcela atual do loop
 BEGIN
   IF v_company_id IS NULL THEN RAISE EXCEPTION 'company_id é obrigatório no payload'; END IF;
   IF NOT public.user_can_access_company(auth.uid(), v_company_id) THEN
@@ -266,6 +269,42 @@ BEGIN
 
         INSERT INTO _consumo_log (pedido_item_id, pedido_id, delta_qtd_recebida, valor_consumido, valor_coberto_previsao)
         VALUES (v_pi_previsao_id, v_pedido_previsao_id, 0, v_valor_cobrir, v_valor_cobrir);
+
+        -- Reduz parcelas FUTURAS nao-pagas nao-conciliadas do pedido previsao
+        -- ate cobrir v_valor_cobrir. Senao o fluxo de caixa duplica: parcelas
+        -- originais do pedido previsao + nova parcela da NF = total inflado.
+        -- Ordena DESC (mais distante primeiro) pra minimizar impacto no caixa
+        -- de curto prazo. Parcelas zeradas: DELETE (status 'cancelada' nao
+        -- existe no enum). Reducao parcial: UPDATE valor + anota descricao.
+        v_a_reduzir := v_valor_cobrir;
+        FOR rec_parcela IN
+          SELECT par.id, par.valor
+          FROM parcelas par
+          WHERE par.pedido_id = v_pedido_previsao_id
+            AND par.status NOT IN ('paga','parcialmente_paga')
+            AND COALESCE(par.valor_pago, 0) = 0
+            AND NOT EXISTS (SELECT 1 FROM conciliacao_parcelas cp WHERE cp.parcela_id = par.id)
+          ORDER BY par.data_vencimento DESC NULLS LAST, par.numero_parcela DESC
+        LOOP
+          EXIT WHEN v_a_reduzir <= 0.01;
+          v_reducao := LEAST(rec_parcela.valor, v_a_reduzir);
+          IF rec_parcela.valor - v_reducao <= 0.01 THEN
+            UPDATE movimentacoes_bancarias SET parcela_id = NULL WHERE parcela_id = rec_parcela.id;
+            DELETE FROM parcelas WHERE id = rec_parcela.id;
+          ELSE
+            UPDATE parcelas SET
+              valor = valor - v_reducao,
+              descricao = COALESCE(descricao,'') ||
+                format(' [reduzida em R$ %s por cobertura NF %s]', v_reducao::text, COALESCE(v_numero_doc,'?'))
+            WHERE id = rec_parcela.id;
+          END IF;
+          v_a_reduzir := v_a_reduzir - v_reducao;
+        END LOOP;
+        IF v_a_reduzir > 0.01 THEN
+          v_warnings := array_append(v_warnings,
+            format('Cobertura de R$ %s mas so foi possivel reduzir R$ %s em parcelas futuras (restante R$ %s nao impactou parcelas).',
+                   v_valor_cobrir::text, (v_valor_cobrir - v_a_reduzir)::text, v_a_reduzir::text));
+        END IF;
 
         v_previsoes_cobertas_count := v_previsoes_cobertas_count + 1;
         v_houve_consumo := true;
