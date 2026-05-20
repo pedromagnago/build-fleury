@@ -74,11 +74,33 @@ function limparDescricao(s: string): string {
 
 function parseDanfeItens(texto: string): { itens: DanfeItem[]; notas: string[] } {
   const notas: string[] = []
-  const inicio = texto.search(RE_INICIO_ITENS)
-  if (inicio === -1) return { itens: [], notas: ['seção "DADOS DOS PRODUTOS/SERVIÇOS" não encontrada'] }
-  let secao = texto.slice(inicio)
-  const fim = secao.search(RE_FIM_ITENS)
-  if (fim > 0) secao = secao.slice(0, fim)
+
+  // Multipágina: numa DANFE de N páginas, "DADOS DOS PRODUTOS/SERVIÇOS" aparece
+  // UMA VEZ POR PÁGINA. Cada bloco vai até "CÁLCULO DO ISSQN" / "DADOS ADICIONAIS"
+  // / "INFORMAÇÕES COMPLEMENTARES" (footer da própria página) OU até o próximo
+  // header (quando a página não tem footer porque foi cortada). Bug anterior:
+  // pegava só do PRIMEIRO header até o PRIMEIRO end-marker → perdia páginas 2+.
+  const reInicioGlobal = /DADOS\s+DOS\s+PRODUTOS\s*\/\s*SERVI[ÇC]OS/gi
+  const matchesInicio: number[] = []
+  let m: RegExpExecArray | null
+  while ((m = reInicioGlobal.exec(texto)) !== null) {
+    matchesInicio.push(m.index + m[0].length)
+  }
+  if (matchesInicio.length === 0) return { itens: [], notas: ['seção "DADOS DOS PRODUTOS/SERVIÇOS" não encontrada'] }
+
+  const blocosTexto: string[] = []
+  for (let i = 0; i < matchesInicio.length; i++) {
+    const start = matchesInicio[i]!
+    const proximoHeader = (i + 1 < matchesInicio.length) ? matchesInicio[i + 1]! : texto.length
+    let bloco = texto.slice(start, proximoHeader)
+    const fim = bloco.search(RE_FIM_ITENS)
+    if (fim > 0) bloco = bloco.slice(0, fim)
+    blocosTexto.push(bloco)
+  }
+  if (matchesInicio.length > 1) {
+    notas.push(`DANFE multipágina: ${matchesInicio.length} blocos de itens detectados`)
+  }
+  const secao = blocosTexto.join('\n')
 
   const linhas = secao.split(/\n/).map(l => l.trim()).filter(l => l.length > 0)
   const blocos: string[] = []
