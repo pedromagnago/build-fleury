@@ -20,9 +20,10 @@ import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
 import { parseNfeXml } from '@/lib/recepcao/xmlNfeParser'
-import { extrairDoc, searchItensCompra, fileToBase64, carregarAliasesFornecedor, aplicarBoostHistorico, resolverFornecedorLocal, parsearPdf, type ItemMatchSugerido, type AliasMap, type PagamentoExtraido } from '@/lib/recepcao/api'
+import { extrairDoc, extrairDocImagens, searchItensCompra, fileToBase64, carregarAliasesFornecedor, aplicarBoostHistorico, resolverFornecedorLocal, parsearPdf, type ItemMatchSugerido, type AliasMap, type PagamentoExtraido } from '@/lib/recepcao/api'
 import { indexarEmbeddingsPendentes, embedQuery } from '@/lib/recepcao/indexador'
 import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
+import { processImageForVision, compressBase64Images } from '@/lib/recepcao/imageProcess'
 // Nota: pdfFileToText e parseDanfe foram movidos pra edge function recepcao-pdf-parse
 // (server-side), pra evitar o bug "value of readableStream" do pdfjs v5 no Vite.
 import { ItemPickerCombobox } from '@/components/recepcao/ItemPickerCombobox'
@@ -392,9 +393,16 @@ export default function RecepcaoPage() {
             pagamento: r.pagamento ?? null,
           })
         }
-      } else if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
-        const b64 = await fileToBase64(file)
-        const r = await extrairDoc({ kind: 'imagem', content: b64 })
+      } else if (['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'].includes(ext)) {
+        // Compressão + HEIC→JPEG client-side ANTES do upload. Resolve dois bugs:
+        //   1) foto de celular > 5 MB estourava payload da edge function (erro genérico)
+        //   2) HEIC do iPhone não era aceito pela Vision API (e nem o browser decodifica nativo)
+        const processed = await processImageForVision(file)
+        if (processed.comprimida) {
+          const ratio = (processed.finalBytes / processed.originalBytes * 100).toFixed(0)
+          toast.info(`Imagem otimizada: ${(processed.originalBytes / 1024).toFixed(0)} KB → ${(processed.finalBytes / 1024).toFixed(0)} KB (${ratio}%)`)
+        }
+        const r = await extrairDoc({ kind: 'imagem', content: processed.base64 })
         await iniciarRevisao({
           fornecedor: r.fornecedor,
           documento: r.documento,
@@ -445,36 +453,41 @@ export default function RecepcaoPage() {
             pagamento: r.pagamento ?? null,
           })
         } else {
-          // PDF escaneado ou erro do servidor → rasteriza no client e manda pra Vision
+          // PDF escaneado ou erro do servidor → rasteriza no client e manda pra Vision.
+          //
+          // ANTES: N chamadas independentes (uma por página) + merge manual no client.
+          // A IA via cada página cega ao todo, duplicava fornecedor/totais e às vezes
+          // perdia continuação de tabela entre páginas.
+          //
+          // AGORA: 1 chamada com TODAS as páginas via kind='imagens'. A IA vê o doc
+          // inteiro, extrai fornecedor/totais uma vez só e a tabela flui entre páginas.
+          // Mais barato em pós-processamento, ~igual em tokens de imagem.
           const motivo = resp.kind === 'erro' ? `erro do servidor: ${resp.erro}` : 'PDF sem texto extraível (escaneado)'
           toast.info(`${motivo} — convertendo em imagens pra IA Vision…`)
-          const paginas = await pdfFileToImages(file)
-          if (paginas.length === 0) {
+          const paginasRaw = await pdfFileToImages(file)
+          if (paginasRaw.length === 0) {
             toast.error('PDF sem páginas')
             return
           }
-          toast.info(`Extraindo ${paginas.length} página(s) com IA Vision…`)
-          const resultados = await Promise.all(paginas.map(p => extrairDoc({
-            kind: 'imagem',
-            content: p.base64,
-            prompt_extra: paginas.length > 1 ? `Esta eh a pagina ${p.pagina} de ${paginas.length} de uma NF.` : undefined,
-          })))
-          const r0 = resultados[0]!
-          const itensConsolidados = resultados.flatMap((r, idx) =>
-            (r.itens ?? []).map((it, j) => ({ ...it, ordem: idx * 1000 + (it.ordem ?? j + 1) }))
-          )
-          const custoTotalCents = resultados.reduce((s, r) => s + (r._meta?.custo_cents ?? 0), 0)
-          // Pega o primeiro bloco pagamento não-nulo (boleto/PIX geralmente está em uma página só)
-          const pagamentoPrimeiro = resultados.find(r => r.pagamento && r.pagamento.forma !== null)?.pagamento ?? null
+          // Comprime cada página (canvas em 2x pode gerar JPEGs grandes em PDFs A4)
+          const paginas = await compressBase64Images(paginasRaw)
+          const totalKb = Math.round(paginas.reduce((s, p) => s + p.finalBytes, 0) / 1024)
+          toast.info(`Extraindo ${paginas.length} página(s) em 1 chamada Vision (${totalKb} KB)…`)
+          const r = await extrairDocImagens({
+            images: paginas.map(p => ({ base64: p.base64, mime: p.mime })),
+            prompt_extra: paginas.length > 1
+              ? `Documento de ${paginas.length} páginas. Trate como UM único documento — fornecedor e totais aparecem UMA VEZ. A tabela de itens pode continuar entre páginas.`
+              : undefined,
+          })
           await iniciarRevisao({
-            fornecedor: r0.fornecedor,
-            documento: r0.documento,
-            itens: itensConsolidados,
-            observacoes: r0.observacoes,
+            fornecedor: r.fornecedor,
+            documento: r.documento,
+            itens: r.itens,
+            observacoes: r.observacoes,
             origem: 'imagem',
-            modelo: r0._meta?.modelo,
-            custo_cents: custoTotalCents,
-            pagamento: pagamentoPrimeiro,
+            modelo: r._meta?.modelo,
+            custo_cents: r._meta?.custo_cents,
+            pagamento: r.pagamento ?? null,
           })
         }
       } else {
@@ -496,7 +509,7 @@ export default function RecepcaoPage() {
             pagamento: r.pagamento ?? null,
           })
         } catch {
-          toast.error(`Formato nao suportado (${ext}). Use XML, PDF, JPG, PNG ou WEBP.`)
+          toast.error(`Formato nao suportado (${ext}). Use XML, PDF, JPG, PNG, WEBP ou HEIC.`)
         }
       }
     } catch (err) {
@@ -1172,6 +1185,9 @@ export default function RecepcaoPage() {
       'text/plain': ['.xml', '.txt'],
       'application/pdf': ['.pdf'],
       'image/*': ['.jpg', '.jpeg', '.png', '.webp'],
+      // HEIC/HEIF do iPhone — convertidos client-side em processImageForVision
+      'image/heic': ['.heic'],
+      'image/heif': ['.heif'],
     },
     maxFiles: 1,
   })
@@ -1212,8 +1228,8 @@ export default function RecepcaoPage() {
                   <ImageIcon className="h-8 w-8 text-muted-foreground" />
                 </div>
                 <p className="text-sm font-semibold">Arraste o XML da NF-e, PDF ou foto da nota</p>
-                <p className="text-xs text-muted-foreground">Formatos: .xml (deterministico) · .pdf (multi-pagina) · .jpg/.png/.webp (IA Vision)</p>
-                <p className="text-[10px] text-muted-foreground">PDFs com varias paginas geram 1 chamada de IA por pagina (paralelo).</p>
+                <p className="text-xs text-muted-foreground">Formatos: .xml (NF-e/NFSe/CTe) · .pdf (multi-pagina) · .jpg/.png/.webp/.heic (IA Vision)</p>
+                <p className="text-[10px] text-muted-foreground">PDFs multi-pagina viram 1 chamada Vision unificada. Imagens grandes/HEIC sao otimizadas automaticamente antes do upload.</p>
               </div>
             )}
           </div>

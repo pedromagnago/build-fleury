@@ -191,9 +191,20 @@ const CORS = {
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
-    const { kind, content, prompt_extra } = await req.json()
-    if (!kind || !content) {
-      return new Response(JSON.stringify({ error: 'missing kind/content' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
+    const body = await req.json()
+    const { kind, content, prompt_extra } = body
+    // kind='imagens' aceita { images: [{ base64, mime? }, ...] } pra mandar todas as
+    // páginas de um PDF (ou múltiplas fotos do mesmo doc) numa única chamada Vision.
+    // Evita N calls cegas e elimina o pós-merge frágil de fornecedor/itens.
+    const images: Array<{ base64: string; mime?: string }> | undefined = body.images
+    if (!kind) {
+      return new Response(JSON.stringify({ error: 'missing kind' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
+    }
+    if (kind !== 'imagens' && !content) {
+      return new Response(JSON.stringify({ error: 'missing content' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
+    }
+    if (kind === 'imagens' && (!Array.isArray(images) || images.length === 0)) {
+      return new Response(JSON.stringify({ error: 'kind=imagens requer body.images: non-empty array' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
     }
 
     let messages: any[]
@@ -210,13 +221,32 @@ serve(async (req) => {
           ],
         },
       ]
+    } else if (kind === 'imagens') {
+      // Múltiplas páginas / faces do MESMO documento — IA vê tudo junto, não duplica
+      // fornecedor/totais e enxerga continuação de tabela entre páginas.
+      const userContent: any[] = [
+        { type: 'text', text:
+          `Estas ${images!.length} imagens são as páginas/faces do MESMO documento (ex.: NF de 2 páginas, frente+verso de boleto). ` +
+          'Trate como UM documento único: extraia fornecedor/totais/pagamento UMA VEZ. ' +
+          'A tabela de itens pode continuar entre páginas — NÃO duplique linhas que já aparecem em uma página anterior. ' +
+          'Páginas com apenas observações/cabeçalho repetido não geram itens novos.' },
+      ]
+      images!.forEach((im, idx) => {
+        const mime = im.mime ?? 'image/jpeg'
+        userContent.push({ type: 'text', text: `=== Página ${idx + 1} de ${images!.length} ===` })
+        userContent.push({ type: 'image_url', image_url: { url: `data:${mime};base64,${im.base64}`, detail: 'high' } })
+      })
+      messages = [
+        { role: 'system', content: SYSTEM_PROMPT + (prompt_extra ? `\n\nContexto extra: ${prompt_extra}` : '') },
+        { role: 'user', content: userContent },
+      ]
     } else if (kind === 'texto') {
       messages = [
         { role: 'system', content: SYSTEM_PROMPT + (prompt_extra ? `\n\nContexto extra: ${prompt_extra}` : '') },
         { role: 'user', content: `Extraia os dados estruturados do seguinte documento (texto extraído nativo do PDF — pode ter quebras de linha e ordem de leitura imperfeita; reconstrua a tabela mentalmente identificando colunas pela posição/conteúdo):\n\n${content}` },
       ]
     } else {
-      return new Response(JSON.stringify({ error: 'kind invalido (use imagem|pdf|texto)' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify({ error: 'kind invalido (use imagem|imagens|pdf|texto)' }), { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } })
     }
 
     const { json, usage } = await callOpenAI(messages)

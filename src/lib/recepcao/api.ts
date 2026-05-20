@@ -55,6 +55,22 @@ export async function extrairDoc(input: {
   return data as ExtracaoResult
 }
 
+/** Extrai dados de UM documento composto por MÚLTIPLAS imagens (PDF multipágina,
+ *  frente+verso de boleto, fotos de partes diferentes da mesma nota).
+ *  IA recebe todas as imagens numa única chamada e devolve uma extração consolidada
+ *  — evita N calls cegas que duplicavam fornecedor/itens. */
+export async function extrairDocImagens(input: {
+  images: Array<{ base64: string; mime?: string }>
+  prompt_extra?: string
+}): Promise<ExtracaoResult> {
+  const { data, error } = await supabase.functions.invoke('recepcao-extrair', {
+    body: { kind: 'imagens', images: input.images, prompt_extra: input.prompt_extra },
+  })
+  if (error) throw error
+  if ((data as any)?.error) throw new Error((data as any).error)
+  return data as ExtracaoResult
+}
+
 /** Extrai PDF no servidor (Deno + unpdf) — bypass do bug pdfjs/Vite no client.
  * Retorna estrutura DANFE pronta se for nota fiscal, ou texto cru pra fallback IA. */
 export interface PdfParseResult {
