@@ -414,21 +414,54 @@ export default function RecepcaoPage() {
           pagamento: r.pagamento ?? null,
         })
       } else if (ext === 'pdf') {
-        // PDF: extração 100% server-side (Deno + unpdf). O client antes tentava
-        // pdfjs-dist no browser e batia em bug recorrente "value of readableStream"
-        // do Vite + pdfjs v5. Server-side elimina toda a camada de bundling.
-        toast.info('Enviando PDF pro servidor…')
-        const b64 = await fileToBase64(file)
-        let resp: Awaited<ReturnType<typeof parsearPdf>>
-        try {
-          resp = await parsearPdf(b64)
-        } catch (err) {
-          console.warn('Falha ao chamar recepcao-pdf-parse, indo pra Vision:', err)
-          resp = { kind: 'erro', erro: err instanceof Error ? err.message : String(err) }
+        // PDF — política de roteamento (2026-05):
+        //   1. file.size > 3 MB           → skip recepcao-pdf-parse (estoura body
+        //                                    da edge function 6MB com base64+JSON).
+        //                                    Rasteriza no client → 1 call Vision.
+        //   2. PDF de 1 página            → tenta recepcao-pdf-parse:
+        //                                    - DANFE-padrão → usa direto (custo 0)
+        //                                    - texto → IA via kind=texto
+        //                                    - erro/escaneado → rasteriza
+        //   3. PDF de 2+ páginas          → tenta recepcao-pdf-parse SÓ pra ver se
+        //                                    é DANFE-padrão com qualidade alta;
+        //                                    caso contrário rasteriza tudo e
+        //                                    manda em 1 call Vision com kind=imagens.
+        //                                    Razão: o parser de texto coord-based
+        //                                    do unpdf perde itens entre páginas e a
+        //                                    IA com texto puro de 2+ pgs vinha
+        //                                    devolvendo só p1.
+        const t0 = performance.now()
+        const sizeMb = (file.size / 1_048_576).toFixed(2)
+        console.log(`[recepcao] PDF: ${file.name} · ${sizeMb} MB`)
+
+        const SKIP_SERVER_MB = 3
+        const skipServer = file.size > SKIP_SERVER_MB * 1_048_576
+
+        let resp: Awaited<ReturnType<typeof parsearPdf>> | null = null
+        if (skipServer) {
+          toast.info(`PDF grande (${sizeMb} MB) — pulando server parser, indo direto pra IA Vision…`)
+          console.log(`[recepcao] PDF > ${SKIP_SERVER_MB} MB — skip recepcao-pdf-parse`)
+        } else {
+          toast.info('Enviando PDF pro servidor…')
+          const b64 = await fileToBase64(file)
+          const tParseStart = performance.now()
+          try {
+            resp = await parsearPdf(b64)
+            console.log(`[recepcao] recepcao-pdf-parse: ${Math.round(performance.now() - tParseStart)}ms · kind=${resp.kind} · paginas=${resp.paginas ?? '?'}`)
+          } catch (err) {
+            console.warn(`[recepcao] recepcao-pdf-parse FAIL em ${Math.round(performance.now() - tParseStart)}ms:`, err)
+            resp = { kind: 'erro', erro: err instanceof Error ? err.message : String(err) }
+          }
         }
-        if (resp.kind === 'danfe' && resp.danfe && resp.danfe.itens.length >= 1) {
-          // Caminho ouro: parser DANFE no server retornou estrutura pronta
-          toast.success(`DANFE parseada: ${resp.danfe.itens.length} itens, ${Math.round(resp.danfe.qualidade * 100)}% de validação. Sem IA, custo zero.`)
+
+        const paginasServer = resp?.paginas ?? 0
+        const ehMultipagina = paginasServer > 1
+
+        // Caminho ouro: DANFE-padrão (server entregou estrutura pronta) — confia
+        // mesmo em multipágina, porque o parser deterministico exige qualidade ≥ 0.5.
+        if (resp?.kind === 'danfe' && resp.danfe && resp.danfe.itens.length >= 1) {
+          toast.success(`DANFE parseada: ${resp.danfe.itens.length} itens, ${Math.round(resp.danfe.qualidade * 100)}% validação. Sem IA, custo zero.`)
+          console.log(`[recepcao] DANFE-padrão · total ${Math.round(performance.now() - t0)}ms`)
           await iniciarRevisao({
             fornecedor: resp.danfe.fornecedor,
             documento: resp.danfe.documento,
@@ -438,10 +471,14 @@ export default function RecepcaoPage() {
             modelo: 'parser_danfe_server',
             custo_cents: 0,
           })
-        } else if (resp.kind === 'texto' && resp.texto) {
-          // Servidor extraiu texto mas não casou DANFE-padrão — manda texto pra IA
-          toast.info(`Texto extraído do PDF (${(resp.total_chars ?? 0).toLocaleString('pt-BR')} chars) — extraindo via IA (não é DANFE-padrão).`)
+        } else if (resp?.kind === 'texto' && resp.texto && !ehMultipagina) {
+          // PDF de 1 página com texto extraível mas não-DANFE-padrão → IA via texto.
+          // Multipágina NÃO entra aqui (cai pro raster) — parser de texto perde itens
+          // entre páginas e a IA com texto truncado devolvia só fornecedor da p1.
+          toast.info(`Texto extraído do PDF (${(resp.total_chars ?? 0).toLocaleString('pt-BR')} chars) — extraindo via IA…`)
+          const tIaStart = performance.now()
           const r = await extrairDoc({ kind: 'texto', content: resp.texto })
+          console.log(`[recepcao] IA texto: ${Math.round(performance.now() - tIaStart)}ms · total ${Math.round(performance.now() - t0)}ms`)
           await iniciarRevisao({
             fornecedor: r.fornecedor,
             documento: r.documento,
@@ -453,32 +490,52 @@ export default function RecepcaoPage() {
             pagamento: r.pagamento ?? null,
           })
         } else {
-          // PDF escaneado ou erro do servidor → rasteriza no client e manda pra Vision.
+          // Caminho universal pra qualquer PDF problemático:
+          //   - skipServer=true (PDF grande)
+          //   - resp.kind='erro' (escaneado ou falha na edge function)
+          //   - multipágina sem DANFE-padrão (mais confiável rasterizar)
           //
-          // ANTES: N chamadas independentes (uma por página) + merge manual no client.
-          // A IA via cada página cega ao todo, duplicava fornecedor/totais e às vezes
-          // perdia continuação de tabela entre páginas.
-          //
-          // AGORA: 1 chamada com TODAS as páginas via kind='imagens'. A IA vê o doc
-          // inteiro, extrai fornecedor/totais uma vez só e a tabela flui entre páginas.
-          // Mais barato em pós-processamento, ~igual em tokens de imagem.
-          const motivo = resp.kind === 'erro' ? `erro do servidor: ${resp.erro}` : 'PDF sem texto extraível (escaneado)'
+          // Rasteriza no client com pdfjs legacy, comprime cada página (max 2000px,
+          // JPEG q=0.85) e manda TODAS as páginas em UMA call Vision via kind='imagens'.
+          // A IA vê o doc inteiro, fornecedor/totais saem uma vez, itens fluem.
+          const motivo = skipServer ? `PDF grande (${sizeMb} MB)`
+                       : resp?.kind === 'erro' ? `erro do servidor: ${resp.erro}`
+                       : ehMultipagina ? `${paginasServer} páginas — rasterizando pra IA ver junto`
+                       : 'PDF sem texto extraível (escaneado)'
           toast.info(`${motivo} — convertendo em imagens pra IA Vision…`)
-          const paginasRaw = await pdfFileToImages(file)
+          const tRasterStart = performance.now()
+          let paginasRaw: Awaited<ReturnType<typeof pdfFileToImages>>
+          try {
+            paginasRaw = await pdfFileToImages(file)
+          } catch (err) {
+            console.error('[recepcao] pdfFileToImages FAIL:', err)
+            toast.error('Falha ao abrir PDF no navegador: ' + (err instanceof Error ? err.message : String(err)))
+            return
+          }
+          console.log(`[recepcao] raster: ${paginasRaw.length} págs em ${Math.round(performance.now() - tRasterStart)}ms`)
           if (paginasRaw.length === 0) {
             toast.error('PDF sem páginas')
             return
           }
-          // Comprime cada página (canvas em 2x pode gerar JPEGs grandes em PDFs A4)
           const paginas = await compressBase64Images(paginasRaw)
           const totalKb = Math.round(paginas.reduce((s, p) => s + p.finalBytes, 0) / 1024)
+          console.log(`[recepcao] payload final Vision: ${totalKb} KB`)
           toast.info(`Extraindo ${paginas.length} página(s) em 1 chamada Vision (${totalKb} KB)…`)
-          const r = await extrairDocImagens({
-            images: paginas.map(p => ({ base64: p.base64, mime: p.mime })),
-            prompt_extra: paginas.length > 1
-              ? `Documento de ${paginas.length} páginas. Trate como UM único documento — fornecedor e totais aparecem UMA VEZ. A tabela de itens pode continuar entre páginas.`
-              : undefined,
-          })
+          const tVisionStart = performance.now()
+          let r: Awaited<ReturnType<typeof extrairDocImagens>>
+          try {
+            r = await extrairDocImagens({
+              images: paginas.map(p => ({ base64: p.base64, mime: p.mime })),
+              prompt_extra: paginas.length > 1
+                ? `Documento de ${paginas.length} páginas. Trate como UM único documento — fornecedor e totais aparecem UMA VEZ. A tabela de itens pode continuar entre páginas.`
+                : undefined,
+            })
+          } catch (err) {
+            console.error(`[recepcao] Vision FAIL em ${Math.round(performance.now() - tVisionStart)}ms:`, err)
+            toast.error('Falha na extração via IA Vision: ' + (err instanceof Error ? err.message : String(err)))
+            return
+          }
+          console.log(`[recepcao] Vision: ${Math.round(performance.now() - tVisionStart)}ms · total ${Math.round(performance.now() - t0)}ms`)
           await iniciarRevisao({
             fornecedor: r.fornecedor,
             documento: r.documento,
