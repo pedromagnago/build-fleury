@@ -9,6 +9,10 @@ import { useProject } from '@/contexts/ProjectContext'
 import { toast } from 'sonner'
 import { parseStatement, readFileAsText, type StandardTransaction, type ParseResult } from '@/lib/ofxParser'
 import { reconcile, type PayableReceivable, type ReconciliationResult, type ReconciliationConfig } from '@/lib/reconciliationEngine'
+import {
+  exportConciliacaoXlsx,
+  type RealizadoRow, type AbertoRow, type NaoConciliadaRow, type ExtratoRow,
+} from '@/lib/exportConciliacaoXlsx'
 
 // ─── Re-exports ─────────────────────────────────────────────
 export type { StandardTransaction, ParseResult, PayableReceivable, ReconciliationResult }
@@ -49,7 +53,7 @@ export function useConciliacoes() {
       if (!currentCompany) return []
       const { data, error } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, mutuo_id, valor_aplicado, observacao)')
+        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, mutuo_id, valor_aplicado, valor_juros, valor_multa, valor_desconto, observacao)')
         .eq('company_id', currentCompany.id)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -60,6 +64,9 @@ export function useConciliacoes() {
           mutuo_parcela_id: string | null
           mutuo_id: string | null
           valor_aplicado: number
+          valor_juros: number
+          valor_multa: number
+          valor_desconto: number
           observacao: string | null
         }[]
       })[]
@@ -643,6 +650,12 @@ export interface VinculoPayload {
   origem: VinculoOrigem
   origem_id: string
   valor_aplicado: number
+  /** Juros sobre atraso. Não infla valor_pago da origem (trigger soma só valor_aplicado). */
+  valor_juros?: number
+  /** Multa sobre atraso. Idem juros. */
+  valor_multa?: number
+  /** Desconto por antecipação. Idem. */
+  valor_desconto?: number
   observacao?: string | null
 }
 
@@ -749,6 +762,9 @@ function buildLinkRow(conciliacaoId: string, v: VinculoPayload) {
   const base: any = {
     conciliacao_id: conciliacaoId,
     valor_aplicado: v.valor_aplicado,
+    valor_juros: v.valor_juros ?? 0,
+    valor_multa: v.valor_multa ?? 0,
+    valor_desconto: v.valor_desconto ?? 0,
     observacao: v.observacao || null,
   }
   if (v.origem === 'parcela') base.parcela_id = v.origem_id
@@ -792,12 +808,25 @@ async function expandirVinculoParcelaFifo(
 
   let restante = round2(Number(v.valor_aplicado))
   const out: VinculoPayload[] = []
+  // Encargos vão no PRIMEIRO link do FIFO (vínculo original); transbordos recebem 0.
+  let encargosRestantes = {
+    juros: Number(v.valor_juros ?? 0),
+    multa: Number(v.valor_multa ?? 0),
+    desconto: Number(v.valor_desconto ?? 0),
+  }
   for (const par of ordenadas) {
     if (restante <= 0.005) break
     const saldo = round2(Number(par.valor) - Number(par.valor_pago ?? 0))
     if (saldo <= 0.005) continue
     const aplicar = Math.min(saldo, restante)
-    out.push({ origem: 'parcela', origem_id: par.id, valor_aplicado: round2(aplicar), observacao: v.observacao ?? null })
+    out.push({
+      origem: 'parcela', origem_id: par.id, valor_aplicado: round2(aplicar),
+      valor_juros: encargosRestantes.juros,
+      valor_multa: encargosRestantes.multa,
+      valor_desconto: encargosRestantes.desconto,
+      observacao: v.observacao ?? null,
+    })
+    encargosRestantes = { juros: 0, multa: 0, desconto: 0 }
     restante = round2(restante - aplicar)
   }
 
@@ -817,7 +846,13 @@ async function expandirVinculoParcelaFifo(
       tipo: 'contratual',
     } as any).select('id').single()
     if (nova) {
-      out.push({ origem: 'parcela', origem_id: nova.id, valor_aplicado: round2(restante), observacao: v.observacao ?? null })
+      out.push({
+        origem: 'parcela', origem_id: nova.id, valor_aplicado: round2(restante),
+        valor_juros: encargosRestantes.juros,
+        valor_multa: encargosRestantes.multa,
+        valor_desconto: encargosRestantes.desconto,
+        observacao: v.observacao ?? null,
+      })
       const { data: ped } = await supabase.from('pedidos')
         .select('valor_total_real').eq('id', p.pedido_id).single()
       if (ped) {
@@ -1302,5 +1337,77 @@ export function useConciliacaoHistory() {
       return data ?? []
     },
     enabled: !!currentCompany,
+  })
+}
+
+// ─── Export XLSX (Realizado + Aberto + Movs sem conciliação) ─
+
+/**
+ * Exporta para XLSX as conciliações com seus vínculos polimórficos resolvidos,
+ * tudo que está em aberto (saldo > 0) e as movs bancárias sem conciliação.
+ * Lê das views `vw_conciliacao_realizado`, `vw_planejado_aberto` e
+ * `vw_movimentacoes_nao_conciliadas`.
+ */
+export function useExportConciliacao() {
+  const { currentCompany } = useProject()
+
+  return useMutation({
+    mutationFn: async () => {
+      if (!currentCompany) throw new Error('No company')
+
+      const [realizadoRes, abertoRes, ncRes, extratoRes] = await Promise.all([
+        supabase
+          .from('vw_conciliacao_realizado')
+          .select('*')
+          .eq('company_id', currentCompany.id)
+          .order('data_mov', { ascending: false }),
+        supabase
+          .from('vw_planejado_aberto')
+          .select('*')
+          .eq('company_id', currentCompany.id)
+          .order('data_prevista', { ascending: true, nullsFirst: false }),
+        supabase
+          .from('vw_movimentacoes_nao_conciliadas')
+          .select('*')
+          .eq('company_id', currentCompany.id)
+          .order('data_mov', { ascending: false }),
+        supabase
+          .from('vw_extrato_completo')
+          .select('*')
+          .eq('company_id', currentCompany.id)
+          .order('data_mov', { ascending: true }),
+      ])
+
+      if (realizadoRes.error) throw realizadoRes.error
+      if (abertoRes.error)    throw abertoRes.error
+      if (ncRes.error)        throw ncRes.error
+      if (extratoRes.error)   throw extratoRes.error
+
+      const realizado       = (realizadoRes.data ?? []) as unknown as RealizadoRow[]
+      const aberto          = (abertoRes.data ?? []) as unknown as AbertoRow[]
+      const naoConciliadas  = (ncRes.data ?? []) as unknown as NaoConciliadaRow[]
+      const extrato         = (extratoRes.data ?? []) as unknown as ExtratoRow[]
+
+      exportConciliacaoXlsx({
+        realizado,
+        aberto,
+        naoConciliadas,
+        extrato,
+        filename: `conciliacao_${currentCompany.id.slice(0, 8)}_${new Date().toISOString().slice(0, 10)}`,
+      })
+
+      return {
+        realizado: realizado.length,
+        aberto: aberto.length,
+        naoConciliadas: naoConciliadas.length,
+        extrato: extrato.length,
+      }
+    },
+    onSuccess: (r) => {
+      toast.success(
+        `Exportado: ${r.extrato} movs no extrato · ${r.realizado} vínculos · ${r.aberto} em aberto · ${r.naoConciliadas} sem conciliação`,
+      )
+    },
+    onError: (err: Error) => toast.error('Erro ao exportar: ' + err.message),
   })
 }

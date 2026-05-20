@@ -8,9 +8,20 @@ const OPENAI_KEY = Deno.env.get('OPENAI_API_KEY')!
 // Mantém override via env para testes A/B sem deploy.
 const MODEL = Deno.env.get('OPENAI_EXTRACT_MODEL') ?? 'gpt-4o'
 
-const SYSTEM_PROMPT = `Você extrai dados estruturados de documentos comerciais brasileiros (NF-e, NFS-e, boleto, recibo, OS). Trabalha em DOCUMENTOS REAIS, normalmente em TABELAS DENSAS.
+const SYSTEM_PROMPT = `Você extrai dados estruturados de documentos comerciais brasileiros para alimentar um sistema de contas a pagar / recepção de notas. Trabalha em DOCUMENTOS REAIS de qualquer formato:
+- NF-e (DANFE) — produto, com itens em tabela densa
+- NFS-e — serviço (padrão ABRASF ou variações municipais como SP/RJ/BH/Curitiba); pode vir só XML ou imagem/PDF do recibo
+- CT-e — conhecimento de transporte (frete)
+- Boleto bancário (com linha digitável FEBRABAN)
+- Comprovante de PIX / TED / DOC
+- Recibo, OS, fatura simples
 
-REGRA DE OURO PARA TABELAS DE ITENS
+REGRA DE OURO: O OBJETIVO PRIMÁRIO É CAPTURAR DADOS DE PAGAMENTO
+Em qualquer documento, mesmo que não consiga ler tudo, PRIORIZE extrair:
+  fornecedor.nome, fornecedor.cnpj, documento.valor_total, documento.data_vencimento (ou data_emissao se vencimento ausente), pagamento.forma e os dados necessários pra pagar (linha digitável, chave PIX, banco/agência/conta).
+Se o documento NÃO TEM itens detalhados (boleto, PIX, recibo simples, NFSe de serviço único), devolva "itens": [] — NÃO INVENTE itens. Em NFSe de serviço único, você PODE devolver um único item com a descrição do serviço, quantidade=1, valor_unitario=valor_total, valor_total=valor_total.
+
+REGRA DE OURO PARA TABELAS DE ITENS (NF-e e similares)
 Notas brasileiras tipicamente trazem colunas nesta ordem (varia, mas a semântica é estável):
   Item/Nº | Código | Descrição | NCM | CST/CFOP | Unidade | Quantidade | Valor Unitário | Valor Total | (Impostos)
 
@@ -50,7 +61,19 @@ FORMATO DE SAÍDA (JSON estrito, sem markdown, sem comentários):
     "data_emissao": "YYYY-MM-DD"|null,
     "data_vencimento": "YYYY-MM-DD"|null,
     "valor_total": number|null,
-    "tipo": "NFE"|"NFSE"|"BOLETO"|"RECIBO"|"OUTRO"
+    "tipo": "NFE"|"NFSE"|"CTE"|"BOLETO"|"PIX"|"RECIBO"|"OUTRO"
+  },
+  "pagamento": {
+    "forma": "BOLETO"|"PIX"|"TED"|"DINHEIRO"|"CARTAO"|"DESCONHECIDO"|null,
+    "linha_digitavel": string|null,
+    "codigo_barras": string|null,
+    "chave_pix": string|null,
+    "tipo_chave_pix": "CPF"|"CNPJ"|"EMAIL"|"TELEFONE"|"ALEATORIA"|null,
+    "banco": string|null,
+    "agencia": string|null,
+    "conta": string|null,
+    "beneficiario_nome": string|null,
+    "beneficiario_cnpj_cpf": string|null
   },
   "itens": [
     {
@@ -65,6 +88,13 @@ FORMATO DE SAÍDA (JSON estrito, sem markdown, sem comentários):
   ],
   "observacoes": string|null
 }
+
+REGRAS DO BLOCO "pagamento"
+- Boleto: extraia linha digitável (47 dígitos, formato XXXXX.XXXXX XXXXX.XXXXXX XXXXX.XXXXXX X XXXXXXXXXXXXXX) e código de barras (44 dígitos) se visíveis. Devolva ambos limpos (só dígitos + um único espaço entre blocos da linha digitável é OK).
+- PIX: identifique chave (CPF/CNPJ/email/telefone/aleatória UUID). QR Code copia-e-cola (BR Code) também é válido em chave_pix se nada mais estiver legível.
+- TED/transferência: banco + agência + conta + nome do beneficiário.
+- Se NENHUMA informação de pagamento estiver no documento (NF-e padrão sem boleto anexo), devolva todos os campos do bloco como null e "forma": null.
+- NÃO tente inferir uma forma só pelo tipo de documento (uma NFS-e PODE ter boleto anexo OU PIX OU nada). Só preencha o que estiver visível.
 
 CONVENÇÕES NUMÉRICAS
 - Decimais com ponto (1234.56). NUNCA vírgula. NUNCA string.

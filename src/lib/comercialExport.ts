@@ -13,6 +13,7 @@ import type { Etapa } from '@/hooks/useEtapas'
 import type { ItemCompra, Pedido, Fornecedor } from '@/hooks/useCompras'
 import type { Parcela } from '@/hooks/useFinanceiro'
 import type { DespesaIndireta } from '@/hooks/useDespesasIndiretas'
+import type { Mutuo } from '@/hooks/useMutuos'
 
 interface ExportInput {
   etapas: Etapa[]
@@ -21,10 +22,11 @@ interface ExportInput {
   parcelas: Parcela[]
   despesas: DespesaIndireta[]
   fornecedores: Fornecedor[]
+  mutuos?: Mutuo[]
 }
 
 export function exportComercialToExcel(input: ExportInput) {
-  const { etapas, itensCompra, pedidos, parcelas, despesas, fornecedores } = input
+  const { etapas, itensCompra, pedidos, parcelas, despesas, fornecedores, mutuos = [] } = input
 
   const etapaById = new Map(etapas.map(e => [e.id, e]))
   const itemById = new Map(itensCompra.map(i => [i.id, i]))
@@ -103,8 +105,14 @@ export function exportComercialToExcel(input: ExportInput) {
     const forn = ped?.fornecedor_id
       ? fornById.get(ped.fornecedor_id)
       : (desp?.fornecedor_id ? fornById.get(desp.fornecedor_id) : undefined)
+    const origem = parc.pedido_id
+      ? 'pedido'
+      : parc.despesa_indireta_id
+        ? 'despesa_indireta'
+        : 'sem_vinculo'
     return {
       'parcela_id': parc.id,
+      '[origem]': origem,
       'pedido_id': parc.pedido_id ?? '',
       'despesa_indireta_id': parc.despesa_indireta_id ?? '',
       'numero_parcela': parc.numero_parcela,
@@ -125,10 +133,55 @@ export function exportComercialToExcel(input: ExportInput) {
     }
   })
   const wsParcelas = XLSX.utils.json_to_sheet(parcelaRows)
-  setColumnWidths(wsParcelas, [38, 38, 38, 8, 14, 14, 14, 16, 14, 14, 24, 30, 24, 30, 12, 14])
+  setColumnWidths(wsParcelas, [38, 16, 38, 38, 8, 14, 14, 14, 16, 14, 14, 24, 30, 24, 30, 12, 14])
   XLSX.utils.book_append_sheet(wb, wsParcelas, 'Parcelas')
 
-  // ── Aba 3: Custos Indiretos ────────────────────────────
+  // ── Aba 3: Parcelas Mútuos (read-only) ─────────────────
+  // Mútuos vivem em `mutuo_parcelas` (tabela separada de `parcelas`).
+  // Exportado aqui só pra visualização — re-importar NÃO altera mútuos
+  // (use a tela de Mútuos pra editar).
+  const mutuoById = new Map(mutuos.map(m => [m.id, m]))
+  const mutuoParcelaRows = mutuos
+    .flatMap(m => (m.parcelas ?? []).map(parc => ({ mutuo: m, parc })))
+    .sort((a, b) => {
+      const na = a.mutuo.nome ?? ''
+      const nb = b.mutuo.nome ?? ''
+      if (na !== nb) return na.localeCompare(nb)
+      return a.parc.numero_parcela - b.parc.numero_parcela
+    })
+    .map(({ mutuo, parc }) => ({
+      'parcela_id': parc.id,
+      '[origem]': 'mutuo',
+      'mutuo_id': parc.mutuo_id,
+      '[mutuo_nome]': mutuo.nome ?? '',
+      '[mutuo_tipo]': mutuo.tipo ?? '',
+      '[instituicao]': mutuo.instituicao ?? '',
+      'numero_parcela': parc.numero_parcela,
+      'valor': parc.valor,
+      'data_vencimento': parc.data_vencimento ?? '',
+      'valor_pago': parc.valor_pago ?? 0,
+      'data_pagamento_real': parc.data_pagamento_real ?? '',
+      'status': parc.status ?? '',
+      'observacoes': parc.observacoes ?? '',
+      '[saldo_aberto]': (Number(parc.valor || 0) - Number(parc.valor_pago || 0)).toFixed(2),
+    }))
+  // Mesmo sem dados, cria a aba pra deixar claro que mútuos NÃO estão na aba Parcelas
+  const wsMutParc = XLSX.utils.json_to_sheet(
+    mutuoParcelaRows.length > 0
+      ? mutuoParcelaRows
+      : [{
+          'parcela_id': '', '[origem]': 'mutuo', 'mutuo_id': '',
+          '[mutuo_nome]': '(sem mútuos cadastrados)', '[mutuo_tipo]': '', '[instituicao]': '',
+          'numero_parcela': '', 'valor': '', 'data_vencimento': '', 'valor_pago': '',
+          'data_pagamento_real': '', 'status': '', 'observacoes': '', '[saldo_aberto]': '',
+        }]
+  )
+  setColumnWidths(wsMutParc, [38, 12, 38, 28, 14, 22, 8, 14, 14, 14, 14, 22, 30, 14])
+  XLSX.utils.book_append_sheet(wb, wsMutParc, 'Parcelas Mutuos')
+  // Suprime warning de mapa não-usado quando não há mútuos
+  void mutuoById
+
+  // ── Aba 4: Custos Indiretos ────────────────────────────
   const despRows = despesas.map(d => {
     const forn = d.fornecedor_id ? fornById.get(d.fornecedor_id) : undefined
     const parcsDoCusto = parcelas.filter(parc => parc.despesa_indireta_id === d.id)
@@ -154,7 +207,7 @@ export function exportComercialToExcel(input: ExportInput) {
   setColumnWidths(wsDesp, [38, 30, 18, 24, 14, 16, 14, 14, 12, 14, 8, 30, 14, 12])
   XLSX.utils.book_append_sheet(wb, wsDesp, 'Custos Indiretos')
 
-  // ── Aba 4: Fornecedores ────────────────────────────────
+  // ── Aba 5: Fornecedores ────────────────────────────────
   const fornRows = fornecedores.map(f => ({
     'fornecedor_id': f.id,
     'nome': f.nome,
@@ -168,12 +221,27 @@ export function exportComercialToExcel(input: ExportInput) {
   setColumnWidths(wsForn, [38, 28, 18, 22, 18, 12, 30])
   XLSX.utils.book_append_sheet(wb, wsForn, 'Fornecedores')
 
-  // ── Aba 5: Instruções (opcional, ajuda o usuário) ──────
+  // ── Aba 6: Instruções (opcional, ajuda o usuário) ──────
   const instrucoes = [
     ['Pacote Comercial — Build Fleury'],
     [''],
-    ['Este arquivo contém TODOS os pedidos, parcelas, custos indiretos e fornecedores'],
-    ['do projeto. Edite à vontade no Excel e re-importe para aplicar as mudanças.'],
+    ['Este arquivo contém TODOS os pedidos, parcelas, custos indiretos, fornecedores'],
+    ['e parcelas de mútuos (read-only) do projeto. Edite à vontade no Excel e re-importe'],
+    ['para aplicar as mudanças.'],
+    [''],
+    ['ABAS NESTE ARQUIVO'],
+    ['- Pedidos:           pedidos de compra + agregados de parcelas'],
+    ['- Parcelas:          parcelas de pedidos E custos indiretos (origem na coluna [origem])'],
+    ['- Parcelas Mutuos:   parcelas de mútuos/empréstimos/financiamentos (READ-ONLY,'],
+    ['                     vivem em outra tabela — edite na tela de Mútuos)'],
+    ['- Custos Indiretos:  cadastro de despesas indiretas/recorrentes'],
+    ['- Fornecedores:      cadastro de fornecedores'],
+    [''],
+    ['COLUNA [origem] (aba Parcelas)'],
+    ['- pedido           → parcela vinculada a um pedido de compra'],
+    ['- despesa_indireta → parcela vinculada a um custo indireto/recorrente'],
+    ['- sem_vinculo      → parcela órfã (revise: provavelmente erro de cadastro)'],
+    ['Mútuos NÃO aparecem na aba Parcelas — só na aba "Parcelas Mutuos".'],
     [''],
     ['CHAVES DE IDENTIDADE'],
     ['- Coluna *_id (UUID) é a chave estável. NÃO altere nem invente IDs.'],

@@ -15,13 +15,14 @@ import {
   TrendingUp, TrendingDown, Banknote, CalendarCheck,
   FileWarning, Activity, Scale, FileText,
   CreditCard, ChevronDown, ChevronRight,
+  Download,
 } from 'lucide-react'
 import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { useMovimentacoes } from '@/hooks/useOperacional'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import {
   useImportExtrato, useRunConciliacao, useConfirmConciliacao,
-  useConciliacoes, parseStatement, readFileAsText,
+  useConciliacoes, useExportConciliacao, parseStatement, readFileAsText,
   type ParseResult, type ReconciliationResult,
 } from '@/hooks/useConciliacao'
 import { ExtratosManager } from '@/components/conciliacao/ExtratosManager'
@@ -158,11 +159,13 @@ function KpiChip({ icon: Icon, label, value, sub, variant = 'muted' }: {
 
 // ─── Compact Header ──────────────────────────────────────────
 
-function CompactHeader({ health, onUpload, onQuickConciliar, isProcessing }: {
+function CompactHeader({ health, onUpload, onQuickConciliar, onExport, isProcessing, isExporting }: {
   health: HealthData
   onUpload: () => void
   onQuickConciliar: () => void
+  onExport: () => void
   isProcessing: boolean
+  isExporting: boolean
 }) {
   const statusColor = health.status === 'ok' ? 'text-emerald-600' : health.status === 'attention' ? 'text-amber-500' : 'text-red-500'
   const statusDot = health.status === 'ok' ? 'bg-emerald-500' : health.status === 'attention' ? 'bg-amber-500' : 'bg-red-500'
@@ -213,6 +216,12 @@ function CompactHeader({ health, onUpload, onQuickConciliar, isProcessing }: {
               Conciliar
             </button>
           )}
+          <button onClick={onExport} disabled={isExporting}
+            title="Exporta XLSX com Realizado (conciliações + origens), Aberto (saldo > 0) e Movs sem conciliação"
+            className="flex items-center gap-1.5 rounded-lg border bg-card px-3 py-2 text-xs font-bold hover:bg-muted/50 disabled:opacity-50 transition-colors">
+            {isExporting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            Exportar
+          </button>
         </div>
       </div>
 
@@ -360,6 +369,7 @@ export default function ConciliacaoPage() {
   const importExtrato = useImportExtrato()
   const runConciliacao = useRunConciliacao()
   const confirmConc = useConfirmConciliacao()
+  const exportar = useExportConciliacao()
   const { data: savedConcs = [] } = useConciliacoes()
   const health = useHealthData()
 
@@ -439,7 +449,9 @@ export default function ConciliacaoPage() {
         health={health}
         onUpload={onToggleUpload}
         onQuickConciliar={doQuickConciliar}
+        onExport={() => exportar.mutate()}
         isProcessing={isProcessing}
+        isExporting={exportar.isPending}
       />
 
       {/* 2. Smart alerts (only when relevant) */}

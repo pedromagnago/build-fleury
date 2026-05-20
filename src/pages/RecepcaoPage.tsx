@@ -20,7 +20,7 @@ import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
 import { parseNfeXml } from '@/lib/recepcao/xmlNfeParser'
-import { extrairDoc, searchItensCompra, fileToBase64, carregarAliasesFornecedor, aplicarBoostHistorico, resolverFornecedorLocal, parsearPdf, type ItemMatchSugerido, type AliasMap } from '@/lib/recepcao/api'
+import { extrairDoc, searchItensCompra, fileToBase64, carregarAliasesFornecedor, aplicarBoostHistorico, resolverFornecedorLocal, parsearPdf, type ItemMatchSugerido, type AliasMap, type PagamentoExtraido } from '@/lib/recepcao/api'
 import { indexarEmbeddingsPendentes, embedQuery } from '@/lib/recepcao/indexador'
 import { pdfFileToImages } from '@/lib/recepcao/pdfToImages'
 // Nota: pdfFileToText e parseDanfe foram movidos pra edge function recepcao-pdf-parse
@@ -188,9 +188,17 @@ interface Extracao {
   }
   itens: LinhaExtraida[]
   observacoes?: string | null
-  origem: 'xml_nfe' | 'imagem' | 'texto'
+  /** xml_nfe = parser determinístico de NF-e (rápido, custo zero).
+   *  xml_outro = XML que não é NF-e (NFSe, CTe, qualquer schema) que caiu pro fallback IA.
+   *  imagem / texto = IA Vision ou texto extraído de PDF.
+   *  Persistido em recepcao_docs.origem (text livre, sem CHECK). */
+  origem: 'xml_nfe' | 'xml_outro' | 'imagem' | 'texto'
   modelo?: string
   custo_cents?: number
+  /** Dados de pagamento extraídos quando o doc contém boleto/PIX/TED.
+   *  Persiste em recepcao_docs.raw_extracao (jsonb). UI mostra ao operador
+   *  e — quando disponível — pré-popula data_vencimento / cond_pagamento. */
+  pagamento?: PagamentoExtraido | null
 }
 
 /** Conflito de NF já aplicada (chave_acesso já existe pra esta company). */
@@ -352,14 +360,38 @@ export default function RecepcaoPage() {
     try {
       const ext = file.name.toLowerCase().split('.').pop() ?? ''
       if (ext === 'xml') {
+        // Tenta parser determinístico de NF-e primeiro (custo zero, exato).
+        // Se for NFSe (qualquer município), CTe ou outro schema, parseNfeXml lança
+        // "sem infNFe" — caímos pro fallback IA mandando o XML cru como texto.
+        // A IA já está instruída a reconhecer NFSe/CTe/boleto e devolver o bloco pagamento.
         const text = await file.text()
-        const parsed = parseNfeXml(text)
-        await iniciarRevisao({
-          fornecedor: parsed.fornecedor,
-          documento: { ...parsed.documento, tipo: 'NFE' },
-          itens: parsed.itens,
-          origem: 'xml_nfe',
-        })
+        let parsedNfe: ReturnType<typeof parseNfeXml> | null = null
+        try {
+          parsedNfe = parseNfeXml(text)
+        } catch {
+          parsedNfe = null
+        }
+        if (parsedNfe) {
+          await iniciarRevisao({
+            fornecedor: parsedNfe.fornecedor,
+            documento: { ...parsedNfe.documento, tipo: 'NFE' },
+            itens: parsedNfe.itens,
+            origem: 'xml_nfe',
+          })
+        } else {
+          toast.info('XML não é NF-e padrão (provável NFSe/CTe). Extraindo via IA…')
+          const r = await extrairDoc({ kind: 'texto', content: text, prompt_extra: 'Este é um XML — provavelmente NFSe (padrão ABRASF ou municipal) ou CTe. Extraia fornecedor/tomador, valor, vencimento e pagamento.' })
+          await iniciarRevisao({
+            fornecedor: r.fornecedor,
+            documento: r.documento,
+            itens: r.itens,
+            observacoes: r.observacoes,
+            origem: 'xml_outro',
+            modelo: r._meta?.modelo,
+            custo_cents: r._meta?.custo_cents,
+            pagamento: r.pagamento ?? null,
+          })
+        }
       } else if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
         const b64 = await fileToBase64(file)
         const r = await extrairDoc({ kind: 'imagem', content: b64 })
@@ -371,6 +403,7 @@ export default function RecepcaoPage() {
           origem: 'imagem',
           modelo: r._meta?.modelo,
           custo_cents: r._meta?.custo_cents,
+          pagamento: r.pagamento ?? null,
         })
       } else if (ext === 'pdf') {
         // PDF: extração 100% server-side (Deno + unpdf). O client antes tentava
@@ -409,6 +442,7 @@ export default function RecepcaoPage() {
             origem: 'texto',
             modelo: r._meta?.modelo,
             custo_cents: r._meta?.custo_cents,
+            pagamento: r.pagamento ?? null,
           })
         } else {
           // PDF escaneado ou erro do servidor → rasteriza no client e manda pra Vision
@@ -430,6 +464,8 @@ export default function RecepcaoPage() {
             (r.itens ?? []).map((it, j) => ({ ...it, ordem: idx * 1000 + (it.ordem ?? j + 1) }))
           )
           const custoTotalCents = resultados.reduce((s, r) => s + (r._meta?.custo_cents ?? 0), 0)
+          // Pega o primeiro bloco pagamento não-nulo (boleto/PIX geralmente está em uma página só)
+          const pagamentoPrimeiro = resultados.find(r => r.pagamento && r.pagamento.forma !== null)?.pagamento ?? null
           await iniciarRevisao({
             fornecedor: r0.fornecedor,
             documento: r0.documento,
@@ -438,10 +474,30 @@ export default function RecepcaoPage() {
             origem: 'imagem',
             modelo: r0._meta?.modelo,
             custo_cents: custoTotalCents,
+            pagamento: pagamentoPrimeiro,
           })
         }
       } else {
-        toast.error(`Formato nao suportado (${ext}). Use XML, PDF, JPG, PNG ou WEBP.`)
+        // Fallback genérico: extensão desconhecida (txt, csv, doc, etc.) — tenta ler como texto e mandar pra IA.
+        // Único caso que ainda falha duro: arquivos binários não-suportados (zip, docx, etc.) — caem no catch.
+        try {
+          const text = await file.text()
+          if (text.trim().length < 10) throw new Error('arquivo vazio ou binário ilegível')
+          toast.info(`Formato .${ext} — tentando extração via IA…`)
+          const r = await extrairDoc({ kind: 'texto', content: text })
+          await iniciarRevisao({
+            fornecedor: r.fornecedor,
+            documento: r.documento,
+            itens: r.itens,
+            observacoes: r.observacoes,
+            origem: 'texto',
+            modelo: r._meta?.modelo,
+            custo_cents: r._meta?.custo_cents,
+            pagamento: r.pagamento ?? null,
+          })
+        } catch {
+          toast.error(`Formato nao suportado (${ext}). Use XML, PDF, JPG, PNG ou WEBP.`)
+        }
       }
     } catch (err) {
       toast.error('Erro ao extrair: ' + (err instanceof Error ? err.message : String(err)))
@@ -459,6 +515,7 @@ export default function RecepcaoPage() {
         fornecedor: r.fornecedor,
         documento: r.documento,
         itens: r.itens,
+        pagamento: r.pagamento ?? null,
         observacoes: r.observacoes,
         origem: 'texto',
         modelo: r._meta?.modelo,
@@ -1111,6 +1168,8 @@ export default function RecepcaoPage() {
     accept: {
       'text/xml': ['.xml'],
       'application/xml': ['.xml'],
+      // NFSe de algumas prefeituras vem com MIME genérico — text/plain aceita pra não bloquear
+      'text/plain': ['.xml', '.txt'],
       'application/pdf': ['.pdf'],
       'image/*': ['.jpg', '.jpeg', '.png', '.webp'],
     },
@@ -1672,6 +1731,23 @@ export default function RecepcaoPage() {
                 <X className="h-3.5 w-3.5 inline mr-1" /> Cancelar
               </button>
             </div>
+            {/* Bloco de pagamento extraído (boleto/PIX/TED) — só aparece quando a IA achou algo concreto.
+                Read-only / informativo: serve pro operador conferir antes de pagar. Persistido em raw_extracao. */}
+            {extracao.pagamento && extracao.pagamento.forma && extracao.pagamento.forma !== 'DESCONHECIDO' && (
+              <div className="rounded-md border border-blue-500/30 bg-blue-500/5 p-2.5 text-[11px] space-y-1">
+                <div className="flex items-center gap-1.5 text-blue-700 font-semibold uppercase tracking-wide text-[10px]">
+                  Pagamento detectado: {extracao.pagamento.forma}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-0.5 font-mono">
+                  {extracao.pagamento.linha_digitavel && <div><span className="text-muted-foreground">Linha digitável:</span> {extracao.pagamento.linha_digitavel}</div>}
+                  {extracao.pagamento.codigo_barras && !extracao.pagamento.linha_digitavel && <div><span className="text-muted-foreground">Cód. barras:</span> {extracao.pagamento.codigo_barras}</div>}
+                  {extracao.pagamento.chave_pix && <div><span className="text-muted-foreground">Chave PIX ({extracao.pagamento.tipo_chave_pix ?? '?'}):</span> {extracao.pagamento.chave_pix}</div>}
+                  {extracao.pagamento.banco && <div><span className="text-muted-foreground">Banco:</span> {extracao.pagamento.banco} {extracao.pagamento.agencia ? `· Ag ${extracao.pagamento.agencia}` : ''} {extracao.pagamento.conta ? `· Cc ${extracao.pagamento.conta}` : ''}</div>}
+                  {extracao.pagamento.beneficiario_nome && <div><span className="text-muted-foreground">Beneficiário:</span> {extracao.pagamento.beneficiario_nome} {extracao.pagamento.beneficiario_cnpj_cpf ? `(${extracao.pagamento.beneficiario_cnpj_cpf})` : ''}</div>}
+                </div>
+                <p className="text-[10px] text-muted-foreground italic">Confira esses dados antes de pagar — extração automática, sujeita a erro de OCR.</p>
+              </div>
+            )}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
               <div>
                 <label className="text-[10px] uppercase text-muted-foreground">Valor da NF</label>

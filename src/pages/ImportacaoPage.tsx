@@ -4,6 +4,7 @@ import { useProject } from '@/contexts/ProjectContext'
 import { useItensCompra, usePedidos, useFornecedores } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
+import { useMutuos } from '@/hooks/useMutuos'
 import { useDistribuicao } from '@/hooks/useOperacional'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { supabase } from '@/lib/supabase'
@@ -2363,6 +2364,7 @@ function ComercialTab() {
   const { data: parcelasData = [] } = useParcelas()
   const { despesas: despesasData = [] } = useDespesasIndiretas()
   const { data: fornecedoresData = [] } = useFornecedores()
+  const { data: mutuosData = [] } = useMutuos()
 
   const [importPreview, setImportPreview] = useState<ComercialPreview | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
@@ -2372,6 +2374,7 @@ function ComercialTab() {
       toast.info('Sem dados comerciais para exportar.')
       return
     }
+    const mutuoParcelasCount = mutuosData.reduce((acc, m) => acc + (m.parcelas?.length ?? 0), 0)
     exportComercialToExcel({
       etapas: etapasData as any,
       itensCompra: itensData as any,
@@ -2379,8 +2382,9 @@ function ComercialTab() {
       parcelas: parcelasData as any,
       despesas: despesasData as any,
       fornecedores: fornecedoresData as any,
+      mutuos: mutuosData as any,
     })
-    toast.success(`Exportado: ${pedidosData.length} pedidos, ${parcelasData.length} parcelas, ${despesasData.length} custos, ${fornecedoresData.length} fornecedores`)
+    toast.success(`Exportado: ${pedidosData.length} pedidos, ${parcelasData.length} parcelas, ${despesasData.length} custos, ${fornecedoresData.length} fornecedores, ${mutuoParcelasCount} parcelas de mútuos`)
   }
 
   const handleFile = async (file: File) => {

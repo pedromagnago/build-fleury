@@ -5,10 +5,19 @@
  * Ajusta valor_aplicado por parcela e recalcula status/valor_pago automaticamente.
  */
 import { useState, useMemo, useEffect } from 'react'
-import { X, Plus, Trash2, Save, AlertTriangle, Search } from 'lucide-react'
-import { useUpdateConciliacao } from '@/hooks/useConciliacao'
+import { X, Plus, Trash2, Save, AlertTriangle, Search, ChevronDown, ChevronRight } from 'lucide-react'
+import { useUpdateConciliacao, type VinculoPayload } from '@/hooks/useConciliacao'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { formatCurrency } from '@/lib/utils'
+
+interface LinkState {
+  parcela_id: string
+  valor_aplicado: number
+  valor_juros: number
+  valor_multa: number
+  valor_desconto: number
+  encargosOpen: boolean
+}
 
 interface Props {
   conciliacao: any
@@ -20,11 +29,17 @@ export function EditConciliacaoDialog({ conciliacao, movimentacao, onClose }: Pr
   const { data: parcelas = [] } = useParcelas()
   const update = useUpdateConciliacao()
 
-  const [links, setLinks] = useState<{ parcela_id: string; valor_aplicado: number }[]>(() =>
-    (conciliacao.conciliacao_parcelas ?? []).map((l: any) => ({
-      parcela_id: l.parcela_id,
-      valor_aplicado: Number(l.valor_aplicado),
-    }))
+  const [links, setLinks] = useState<LinkState[]>(() =>
+    (conciliacao.conciliacao_parcelas ?? [])
+      .filter((l: any) => l.parcela_id) // só parcelas (medição/mútuo editados em outros lugares)
+      .map((l: any) => ({
+        parcela_id: l.parcela_id,
+        valor_aplicado: Number(l.valor_aplicado),
+        valor_juros: Number(l.valor_juros ?? 0),
+        valor_multa: Number(l.valor_multa ?? 0),
+        valor_desconto: Number(l.valor_desconto ?? 0),
+        encargosOpen: Number(l.valor_juros ?? 0) > 0 || Number(l.valor_multa ?? 0) > 0 || Number(l.valor_desconto ?? 0) > 0,
+      }))
   )
   const [search, setSearch] = useState('')
   const [showPicker, setShowPicker] = useState(false)
@@ -36,8 +51,12 @@ export function EditConciliacaoDialog({ conciliacao, movimentacao, onClose }: Pr
   }, [parcelas])
 
   const totalAplicado = links.reduce((s, l) => s + Number(l.valor_aplicado || 0), 0)
+  const totalJuros    = links.reduce((s, l) => s + Number(l.valor_juros    || 0), 0)
+  const totalMulta    = links.reduce((s, l) => s + Number(l.valor_multa    || 0), 0)
+  const totalDesconto = links.reduce((s, l) => s + Number(l.valor_desconto || 0), 0)
+  const totalBruto    = totalAplicado + totalJuros + totalMulta - totalDesconto
   const valorMov = Math.abs(Number(movimentacao?.valor ?? 0))
-  const diferenca = valorMov - totalAplicado
+  const diferenca = valorMov - totalBruto
 
   const filteredParcelas = useMemo(() => {
     const selected = new Set(links.map(l => l.parcela_id))
@@ -59,7 +78,12 @@ export function EditConciliacaoDialog({ conciliacao, movimentacao, onClose }: Pr
     const jaAplicado = Number(p.valor_pago) || 0
     const restante = Math.max(0, Number(p.valor) - jaAplicado)
     const sugerido = Math.min(restante, Math.max(0, diferenca))
-    setLinks(prev => [...prev, { parcela_id: parcelaId, valor_aplicado: sugerido > 0 ? sugerido : Number(p.valor) }])
+    setLinks(prev => [...prev, {
+      parcela_id: parcelaId,
+      valor_aplicado: sugerido > 0 ? sugerido : Number(p.valor),
+      valor_juros: 0, valor_multa: 0, valor_desconto: 0,
+      encargosOpen: false,
+    }])
     setShowPicker(false)
     setSearch('')
   }
@@ -68,15 +92,23 @@ export function EditConciliacaoDialog({ conciliacao, movimentacao, onClose }: Pr
     setLinks(prev => prev.filter(l => l.parcela_id !== parcelaId))
   }
 
-  const handleValor = (parcelaId: string, valor: number) => {
-    setLinks(prev => prev.map(l => l.parcela_id === parcelaId ? { ...l, valor_aplicado: valor } : l))
+  const handleField = (parcelaId: string, field: keyof LinkState, value: number | boolean) => {
+    setLinks(prev => prev.map(l => l.parcela_id === parcelaId ? { ...l, [field]: value } : l))
   }
 
   const handleSave = async () => {
     if (links.length === 0) {
       if (!confirm('Remover todas as parcelas deixará esta conciliação sem vínculos. Continuar?')) return
     }
-    await update.mutateAsync({ conciliacaoId: conciliacao.id, parcelas: links })
+    const vinculos: VinculoPayload[] = links.map(l => ({
+      origem: 'parcela',
+      origem_id: l.parcela_id,
+      valor_aplicado: Number(l.valor_aplicado) || 0,
+      valor_juros: Number(l.valor_juros) || 0,
+      valor_multa: Number(l.valor_multa) || 0,
+      valor_desconto: Number(l.valor_desconto) || 0,
+    }))
+    await update.mutateAsync({ conciliacaoId: conciliacao.id, vinculos })
     onClose()
   }
 
@@ -130,26 +162,60 @@ export function EditConciliacaoDialog({ conciliacao, movimentacao, onClose }: Pr
             <div className="space-y-2">
               {links.map(l => {
                 const p = parcelaById.get(l.parcela_id)
+                const totalLinha = Number(l.valor_aplicado) + Number(l.valor_juros) + Number(l.valor_multa) - Number(l.valor_desconto)
+                const temEncargos = Number(l.valor_juros) > 0 || Number(l.valor_multa) > 0 || Number(l.valor_desconto) > 0
                 return (
-                  <div key={l.parcela_id} className="flex items-center gap-2 rounded-md border bg-card p-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium truncate">
-                        {p?.pedido_item ?? p?.descricao ?? 'Parcela'}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground">
-                        Venc: {p?.data_vencimento ?? '—'} · Valor: {formatCurrency(Number(p?.valor ?? 0))}
-                        {' · '}Pago: {formatCurrency(Number(p?.valor_pago ?? 0))}
-                      </p>
+                  <div key={l.parcela_id} className="rounded-md border bg-card p-2">
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium truncate">
+                          {p?.pedido_item ?? p?.descricao ?? 'Parcela'}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground">
+                          Venc: {p?.data_vencimento ?? '—'} · Valor: {formatCurrency(Number(p?.valor ?? 0))}
+                          {' · '}Pago: {formatCurrency(Number(p?.valor_pago ?? 0))}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <input type="number" step="0.01" value={l.valor_aplicado}
+                          onChange={(e) => handleField(l.parcela_id, 'valor_aplicado', Number(e.target.value) || 0)}
+                          className="w-28 rounded border bg-background px-2 py-1 text-xs text-right font-mono"
+                          title="Principal (vai pra valor_pago da parcela)" />
+                        <button onClick={() => handleField(l.parcela_id, 'encargosOpen', !l.encargosOpen)}
+                          title="Juros / Multa / Desconto"
+                          className={`flex items-center gap-0.5 rounded px-1.5 py-1 text-[10px] font-bold transition-colors ${
+                            temEncargos ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+                                        : 'hover:bg-muted text-muted-foreground'
+                          }`}>
+                          {l.encargosOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                          Encargos
+                        </button>
+                        <button onClick={() => handleRemove(l.parcela_id)}
+                          className="rounded p-1 hover:bg-red-500/10 text-red-500">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <input type="number" step="0.01" value={l.valor_aplicado}
-                        onChange={(e) => handleValor(l.parcela_id, Number(e.target.value) || 0)}
-                        className="w-28 rounded border bg-background px-2 py-1 text-xs text-right font-mono" />
-                      <button onClick={() => handleRemove(l.parcela_id)}
-                        className="rounded p-1 hover:bg-red-500/10 text-red-500">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
+                    {l.encargosOpen && (
+                      <div className="mt-2 grid grid-cols-3 gap-2 rounded bg-muted/40 p-2">
+                        {(['valor_juros', 'valor_multa', 'valor_desconto'] as const).map(field => (
+                          <div key={field} className="flex flex-col gap-0.5">
+                            <label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                              {field === 'valor_juros' ? 'Juros' : field === 'valor_multa' ? 'Multa' : 'Desconto'}
+                            </label>
+                            <input type="number" step="0.01" min="0" value={l[field]}
+                              onChange={(e) => handleField(l.parcela_id, field, Math.max(0, Number(e.target.value) || 0))}
+                              className="w-full rounded border bg-background px-2 py-1 text-xs text-right font-mono" />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {temEncargos && (
+                      <p className="mt-1 text-[10px] text-muted-foreground text-right">
+                        Total da linha: <span className="font-mono font-semibold">{formatCurrency(totalLinha)}</span>
+                        {' '}(principal + juros + multa − desconto)
+                      </p>
+                    )}
                   </div>
                 )
               })}
@@ -194,19 +260,42 @@ export function EditConciliacaoDialog({ conciliacao, movimentacao, onClose }: Pr
               <span className="font-mono font-semibold">{formatCurrency(valorMov)}</span>
             </div>
             <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Total aplicado</span>
+              <span className="text-muted-foreground">Principal aplicado</span>
               <span className="font-mono font-semibold">{formatCurrency(totalAplicado)}</span>
             </div>
+            {(totalJuros > 0 || totalMulta > 0 || totalDesconto > 0) && (
+              <>
+                {totalJuros > 0 && (
+                  <div className="flex justify-between text-xs text-amber-600">
+                    <span>+ Juros</span><span className="font-mono">{formatCurrency(totalJuros)}</span>
+                  </div>
+                )}
+                {totalMulta > 0 && (
+                  <div className="flex justify-between text-xs text-amber-600">
+                    <span>+ Multa</span><span className="font-mono">{formatCurrency(totalMulta)}</span>
+                  </div>
+                )}
+                {totalDesconto > 0 && (
+                  <div className="flex justify-between text-xs text-emerald-600">
+                    <span>− Desconto</span><span className="font-mono">{formatCurrency(totalDesconto)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-xs pt-1 border-t border-dashed">
+                  <span className="text-muted-foreground">Total bruto</span>
+                  <span className="font-mono font-semibold">{formatCurrency(totalBruto)}</span>
+                </div>
+              </>
+            )}
             <div className={`flex justify-between text-sm pt-1 border-t ${
               Math.abs(diferenca) < 0.01 ? 'text-emerald-600' : 'text-amber-600'
             }`}>
-              <span className="font-bold">Diferença</span>
+              <span className="font-bold">Diferença (mov − total bruto)</span>
               <span className="font-mono font-bold">{formatCurrency(diferenca)}</span>
             </div>
             {Math.abs(diferenca) >= 0.01 && (
               <p className="flex items-start gap-1 pt-1 text-[10px] text-amber-600">
                 <AlertTriangle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                <span>Diferença será registrada na conciliação. Ajuste os valores para zerar, se for o caso.</span>
+                <span>Use Juros/Multa/Desconto pra fechar o saldo, se a diferença for encargo.</span>
               </p>
             )}
           </div>

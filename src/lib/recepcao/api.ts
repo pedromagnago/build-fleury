@@ -1,6 +1,23 @@
 // Wrappers das edge functions (recepcao-extrair, recepcao-embed) e da RPC search.
 import { supabase } from '@/lib/supabase'
 
+/** Bloco "pagamento" — preenchido pela IA quando o documento traz forma de pagamento
+ * (boleto/PIX/TED) anexa ou embutida. Para NF-e XML "limpa" sem boleto vem tudo null.
+ * Persiste em recepcao_docs.raw_extracao (jsonb), sem coluna dedicada — UI usa pra
+ * pré-popular cond_pagamento / vencimento e exibir os dados ao operador. */
+export interface PagamentoExtraido {
+  forma: 'BOLETO' | 'PIX' | 'TED' | 'DINHEIRO' | 'CARTAO' | 'DESCONHECIDO' | null
+  linha_digitavel: string | null
+  codigo_barras: string | null
+  chave_pix: string | null
+  tipo_chave_pix: 'CPF' | 'CNPJ' | 'EMAIL' | 'TELEFONE' | 'ALEATORIA' | null
+  banco: string | null
+  agencia: string | null
+  conta: string | null
+  beneficiario_nome: string | null
+  beneficiario_cnpj_cpf: string | null
+}
+
 export interface ExtracaoResult {
   fornecedor: { nome: string | null; cnpj: string | null; ie: string | null }
   documento: {
@@ -9,8 +26,11 @@ export interface ExtracaoResult {
     data_emissao: string | null
     data_vencimento: string | null
     valor_total: number | null
+    /** NFE | NFSE | CTE | BOLETO | PIX | RECIBO | OUTRO (string aberta pra futuro) */
     tipo: string
   }
+  /** Opcional — IA mais nova devolve, parsers antigos (XML NFe) não. */
+  pagamento?: PagamentoExtraido | null
   itens: Array<{
     ordem: number
     descricao: string
