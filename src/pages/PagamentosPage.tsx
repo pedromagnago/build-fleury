@@ -206,6 +206,7 @@ function ParcelasTab({ search }: { search: string }) {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [fornecedorFilter, setFornecedorFilter] = useState('')
   const [soAberto, setSoAberto] = useState(false)
+  const [nfFilter, setNfFilter] = useState<'todos' | 'com_nf' | 'sem_nf'>('todos')
   const [vencDe, setVencDe] = useState('')
   const [vencAte, setVencAte] = useState('')
   const [formaPgtoFilter, setFormaPgtoFilter] = useState('')
@@ -286,11 +287,12 @@ function ParcelasTab({ search }: { search: string }) {
   }, [parcelas])
 
   // Contador de filtros avançados ativos
-  const advancedActiveCount = [fornecedorFilter, soAberto, vencDe, vencAte, formaPgtoFilter, valorMin, valorMax].filter(Boolean).length
+  const advancedActiveCount = [fornecedorFilter, soAberto, nfFilter !== 'todos', vencDe, vencAte, formaPgtoFilter, valorMin, valorMax].filter(Boolean).length
 
   const clearAdvanced = () => {
     setFornecedorFilter('')
     setSoAberto(false)
+    setNfFilter('todos')
     setVencDe('')
     setVencAte('')
     setFormaPgtoFilter('')
@@ -335,6 +337,8 @@ function ParcelasTab({ search }: { search: string }) {
       const forn = fornecedores.find(f => f.id === fornecedorFilter)
       if (forn && (p as any).fornecedor_nome !== forn.nome) return false
     }
+    if (nfFilter === 'com_nf' && !(p as any).nf_numero) return false
+    if (nfFilter === 'sem_nf' && !!(p as any).nf_numero) return false
     if (formaPgtoFilter && (p.forma_pagamento ?? '').toLowerCase() !== formaPgtoFilter.toLowerCase()) return false
     if (valorMin && p.valor < parseFloat(valorMin)) return false
     if (valorMax && p.valor > parseFloat(valorMax)) return false
@@ -624,6 +628,17 @@ function ParcelasTab({ search }: { search: string }) {
                 Apenas em aberto
               </button>
             </div>
+            {/* Nota Fiscal */}
+            <div>
+              <label className={LABEL}>Nota Fiscal</label>
+              <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
+                {([['todos', 'Todas'], ['com_nf', 'Com NF'], ['sem_nf', 'Sem NF']] as const).map(([k, label]) => (
+                  <button key={k} type="button" onClick={() => setNfFilter(k)}
+                    className={`flex-1 rounded-md px-2 py-1.5 text-[10px] font-bold transition-colors ${nfFilter === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                  >{label}</button>
+                ))}
+              </div>
+            </div>
             {/* Vencimento de */}
             <div>
               <label className={LABEL}>Vencimento — de</label>
@@ -672,6 +687,7 @@ function ParcelasTab({ search }: { search: string }) {
                 <FilterTag label={`Fornecedor: ${fornecedores.find(f => f.id === fornecedorFilter)?.nome ?? '—'}`} onRemove={() => setFornecedorFilter('')} />
               )}
               {soAberto && <FilterTag label="Apenas em aberto" onRemove={() => setSoAberto(false)} />}
+              {nfFilter !== 'todos' && <FilterTag label={nfFilter === 'com_nf' ? 'Com NF' : 'Sem NF'} onRemove={() => setNfFilter('todos')} />}
               {vencDe && <FilterTag label={`Venc ≥ ${localDate(vencDe).toLocaleDateString('pt-BR')}`} onRemove={() => setVencDe('')} />}
               {vencAte && <FilterTag label={`Venc ≤ ${localDate(vencAte).toLocaleDateString('pt-BR')}`} onRemove={() => setVencAte('')} />}
               {formaPgtoFilter && <FilterTag label={`Forma: ${formaPgtoFilter}`} onRemove={() => setFormaPgtoFilter('')} />}
@@ -727,6 +743,7 @@ function ParcelasTab({ search }: { search: string }) {
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pedido</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fornecedor</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Descrição</th>
+                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">NF</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Valor</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pagamento</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Status</th>
@@ -745,6 +762,7 @@ function ParcelasTab({ search }: { search: string }) {
                 const isSemana = p.status !== 'paga' && venc > today && venc <= weekEnd
                 const pedidoNumero = (p as any).pedido_numero as number | null | undefined
                 const fornecedorNome = (p as any).fornecedor_nome as string | null | undefined
+                const nfNumero = (p as any).nf_numero as string | null | undefined
                 return (
                   <tr key={p.id} data-parcela-id={p.id} className={`group transition-colors ${isEditingRow ? 'row-editing' : 'hover:bg-muted/20'}`}>
                     <td className="px-2 py-2.5 text-center">
@@ -778,6 +796,15 @@ function ParcelasTab({ search }: { search: string }) {
                     </td>
                     <td className="px-3 py-2.5 text-xs font-medium truncate max-w-[260px]" title={p.pedido_item ?? p.descricao ?? ''}>
                       {p.pedido_item ?? p.descricao ?? 'Avulsa'}
+                    </td>
+                    <td className="px-3 py-2.5 text-center">
+                      {nfNumero ? (
+                        <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-bold text-violet-600 dark:text-violet-400" title={`NF ${nfNumero}`}>
+                          NF {nfNumero}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground">—</span>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-right text-xs font-medium">{formatCurrency(p.valor)}</td>
                     <td className="px-3 py-2.5 text-center text-xs">{p.data_pagamento_real ? localDate(p.data_pagamento_real).toLocaleDateString('pt-BR') : '—'}</td>

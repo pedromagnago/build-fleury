@@ -63,7 +63,7 @@ export function useParcelas() {
       while (hasMore) {
         const { data, error } = await supabase
           .from('parcelas')
-          .select('*, pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, valor_total_real, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
+          .select('*, pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, nf_origem_id, valor_total_real, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at), recepcao_docs(numero_doc, serie)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
           .eq('company_id', companyId)
           .is('deleted_at', null)
           .order('data_vencimento', { ascending: true })
@@ -99,6 +99,7 @@ export function useParcelas() {
         const despesa = p.despesas_indiretas as Record<string, unknown> | null
         const fornPed = pedido?.fornecedores as Record<string, string> | null
         const fornDesp = despesa?.fornecedores as Record<string, string> | null
+        const nfDoc = pedido?.recepcao_docs as Record<string, string> | null
         return {
           ...p,
           pedido_item: item?.descricao ?? (despesa?.descricao as string) ?? null,
@@ -112,6 +113,7 @@ export function useParcelas() {
           etapa_nome: etapa?.nome ?? null,
           item_valor_orcado: item?.valor_total_orcado != null ? Number(item.valor_total_orcado) : null,
           item_valor_consumido: item?.valor_consumido != null ? Number(item.valor_consumido) : null,
+          nf_numero: nfDoc ? `${nfDoc.numero_doc}${nfDoc.serie ? `/${nfDoc.serie}` : ''}` : null,
         }
       }) as unknown as Parcela[]
     },
