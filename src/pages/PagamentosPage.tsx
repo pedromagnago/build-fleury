@@ -329,25 +329,25 @@ function ParcelasTab({ search }: { search: string }) {
       const t = (p as any).tipo ?? 'contratual'
       if (t !== parcelaTipoFilter) return false
     }
+    // ── Filtros avançados (antes do narrowing de status) ─────────────────────
+    if (soAberto && p.status === 'paga') return false
+    if (fornecedorFilter) {
+      const forn = fornecedores.find(f => f.id === fornecedorFilter)
+      if (forn && (p as any).fornecedor_nome !== forn.nome) return false
+    }
+    if (formaPgtoFilter && (p.forma_pagamento ?? '').toLowerCase() !== formaPgtoFilter.toLowerCase()) return false
+    if (valorMin && p.valor < parseFloat(valorMin)) return false
+    if (valorMax && p.valor > parseFloat(valorMax)) return false
     // Filtro de vencimento — pagas só aparecem se 'todas' ou 'pagas'
     const venc = p.data_vencimento ?? ''
+    if (vencDe && venc < vencDe) return false
+    if (vencAte && venc > vencAte) return false
     if (dueFilter === 'pagas') return p.status === 'paga'
     if (p.status === 'paga') return dueFilter === 'todas'
     if (dueFilter === 'hoje') return venc === today
     if (dueFilter === 'semana') return venc >= today && venc <= weekEnd
     if (dueFilter === 'mes') return venc >= today && venc <= monthEnd
     if (dueFilter === 'vencidas') return venc < today
-    // ── Filtros avançados ────────────────────────────────────────────────────
-    if (soAberto && p.status === 'paga') return false
-    if (fornecedorFilter) {
-      const forn = fornecedores.find(f => f.id === fornecedorFilter)
-      if (forn && (p as any).fornecedor_nome !== forn.nome) return false
-    }
-    if (vencDe && venc < vencDe) return false
-    if (vencAte && venc > vencAte) return false
-    if (formaPgtoFilter && (p.forma_pagamento ?? '').toLowerCase() !== formaPgtoFilter.toLowerCase()) return false
-    if (valorMin && p.valor < parseFloat(valorMin)) return false
-    if (valorMax && p.valor > parseFloat(valorMax)) return false
     return true // 'todas'
   })
 
