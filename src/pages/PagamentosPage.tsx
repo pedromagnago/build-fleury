@@ -203,6 +203,14 @@ function ParcelasTab({ search }: { search: string }) {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('todos')
   const [parcelaTipoFilter, setParcelaTipoFilter] = useState<ParcelaTipoFilter>('todos')
   const [dueFilter, setDueFilter] = useState<DueFilter>('todas')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [fornecedorFilter, setFornecedorFilter] = useState('')
+  const [soAberto, setSoAberto] = useState(false)
+  const [vencDe, setVencDe] = useState('')
+  const [vencAte, setVencAte] = useState('')
+  const [formaPgtoFilter, setFormaPgtoFilter] = useState('')
+  const [valorMin, setValorMin] = useState('')
+  const [valorMax, setValorMax] = useState('')
   const selection = useSelection()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: mutuos = [] } = useMutuos()
@@ -270,6 +278,26 @@ function ParcelasTab({ search }: { search: string }) {
     return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split('T')[0]!
   })()
 
+  // Formas de pagamento únicas extraídas dos dados (para o select)
+  const formasPagtoUnicas = useMemo(() => {
+    const set = new Set<string>()
+    parcelas.forEach(p => { if (p.forma_pagamento) set.add(p.forma_pagamento) })
+    return Array.from(set).sort()
+  }, [parcelas])
+
+  // Contador de filtros avançados ativos
+  const advancedActiveCount = [fornecedorFilter, soAberto, vencDe, vencAte, formaPgtoFilter, valorMin, valorMax].filter(Boolean).length
+
+  const clearAdvanced = () => {
+    setFornecedorFilter('')
+    setSoAberto(false)
+    setVencDe('')
+    setVencAte('')
+    setFormaPgtoFilter('')
+    setValorMin('')
+    setValorMax('')
+  }
+
   const filtered = parcelas.filter((p) => {
     const q = search.toLowerCase().trim()
     // Aceita data em formato BR (DD/MM/YYYY ou DD/MM) e converte para ISO p/ casar com data_vencimento/pagamento
@@ -309,6 +337,17 @@ function ParcelasTab({ search }: { search: string }) {
     if (dueFilter === 'semana') return venc >= today && venc <= weekEnd
     if (dueFilter === 'mes') return venc >= today && venc <= monthEnd
     if (dueFilter === 'vencidas') return venc < today
+    // ── Filtros avançados ────────────────────────────────────────────────────
+    if (soAberto && p.status === 'paga') return false
+    if (fornecedorFilter) {
+      const forn = fornecedores.find(f => f.id === fornecedorFilter)
+      if (forn && (p as any).fornecedor_nome !== forn.nome) return false
+    }
+    if (vencDe && venc < vencDe) return false
+    if (vencAte && venc > vencAte) return false
+    if (formaPgtoFilter && (p.forma_pagamento ?? '').toLowerCase() !== formaPgtoFilter.toLowerCase()) return false
+    if (valorMin && p.valor < parseFloat(valorMin)) return false
+    if (valorMax && p.valor > parseFloat(valorMax)) return false
     return true // 'todas'
   })
 
@@ -384,21 +423,34 @@ function ParcelasTab({ search }: { search: string }) {
     return result
   }, [amortizacoesAvulsas, search, currentCompany])
 
+  // Aplica filtros avançados às fontes extras (mútuos e amortizações)
+  const applyAdvancedToExtras = (list: any[]) => {
+    return list.filter(p => {
+      if (soAberto && p.status === 'paga') return false
+      const venc = p.data_vencimento ?? ''
+      if (vencDe && venc < vencDe) return false
+      if (vencAte && venc > vencAte) return false
+      if (valorMin && p.valor < parseFloat(valorMin)) return false
+      if (valorMax && p.valor > parseFloat(valorMax)) return false
+      return true
+    })
+  }
+
   const allFiltered = useMemo(() => {
     // If type filter is 'mutuos', show only mutuos
     if (typeFilter === 'mutuos') {
-      return mutuoParcelas.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
+      return applyAdvancedToExtras(mutuoParcelas).sort((a: any, b: any) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
     }
     if (typeFilter === 'amortizacoes') {
-      return amortizacoesParcelas.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
+      return applyAdvancedToExtras(amortizacoesParcelas).sort((a: any, b: any) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
     }
     const combined = [
       ...filtered.map(p => ({ ...p, _source: 'pedido' as const, _mutuoNome: '' })),
-      ...(typeFilter === 'todos' ? mutuoParcelas : []),
-      ...(typeFilter === 'todos' ? amortizacoesParcelas : []),
+      ...(typeFilter === 'todos' ? applyAdvancedToExtras(mutuoParcelas) : []),
+      ...(typeFilter === 'todos' ? applyAdvancedToExtras(amortizacoesParcelas) : []),
     ]
     return combined.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
-  }, [filtered, mutuoParcelas, amortizacoesParcelas, typeFilter])
+  }, [filtered, mutuoParcelas, amortizacoesParcelas, typeFilter, soAberto, vencDe, vencAte, valorMin, valorMax])
 
   const totals = allFiltered.reduce(
     (acc, p) => ({
@@ -464,10 +516,12 @@ function ParcelasTab({ search }: { search: string }) {
         </button>
       </div>
 
-      <div className="mb-4 flex items-center gap-2 flex-wrap">
+      {/* ── Barra de filtros principal ─────────────────────────────────────── */}
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
           <Plus className="h-4 w-4" /> Nova Parcela
         </button>
+
         {/* Quick filter — Vencimento */}
         <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
           {([
@@ -483,19 +537,15 @@ function ParcelasTab({ search }: { search: string }) {
               k === 'hoje' ? 'data-[on=true]:text-amber-600' :
               k === 'pagas' ? 'data-[on=true]:text-emerald-600' : ''
             return (
-              <button
-                key={k}
-                onClick={() => setDueFilter(k)}
-                data-on={dueFilter === k}
+              <button key={k} onClick={() => setDueFilter(k)} data-on={dueFilter === k}
                 className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${tone} ${
                   dueFilter === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
                 }`}
-              >
-                {label}
-              </button>
+              >{label}</button>
             )
           })}
         </div>
+
         {/* Type Filter Chips */}
         <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
           {([['todos', 'Todas'], ['pedidos', 'Pedidos'], ['mutuos', 'Mútuos'], ['amortizacoes', 'Amortiz.'], ['avulsas', 'Avulsas']] as const).map(([k, label]) => (
@@ -505,6 +555,7 @@ function ParcelasTab({ search }: { search: string }) {
             >{label}</button>
           ))}
         </div>
+
         {/* Parcela Tipo (contratual / adiantamento) */}
         <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5" title="Contratual = parcela do cronograma. Adiantamento = PIX antecipado fora do cronograma.">
           {([['todos', 'Todas'], ['contratual', 'Contr.'], ['adiantamento', 'Adiant.']] as const).map(([k, label]) => (
@@ -513,11 +564,124 @@ function ParcelasTab({ search }: { search: string }) {
             >{label}</button>
           ))}
         </div>
+
         <div className="ml-auto flex gap-1.5">
           <button onClick={selectVencidas} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-red-500 hover:bg-red-500/10" title="Selecionar parcelas vencidas">Sel. vencidas</button>
           <button onClick={selectSemana} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-amber-600 hover:bg-amber-500/10" title="Selecionar parcelas desta semana">Sel. semana</button>
+          {/* Botão filtros avançados */}
+          <button
+            onClick={() => setShowAdvanced(v => !v)}
+            className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[10px] font-semibold transition-colors ${
+              showAdvanced || advancedActiveCount > 0
+                ? 'border-primary/50 bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <ChevronDown className={`h-3 w-3 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
+            Filtros avançados
+            {advancedActiveCount > 0 && (
+              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[9px] font-bold text-primary-foreground">
+                {advancedActiveCount}
+              </span>
+            )}
+          </button>
         </div>
       </div>
+
+      {/* ── Painel de filtros avançados ────────────────────────────────────── */}
+      {showAdvanced && (
+        <div className="mb-4 rounded-xl border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <span className="text-xs font-semibold text-foreground">Filtros avançados</span>
+            {advancedActiveCount > 0 && (
+              <button onClick={clearAdvanced} className="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground">
+                <X className="h-3 w-3" /> Limpar filtros ({advancedActiveCount})
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+            {/* Fornecedor */}
+            <div>
+              <label className={LABEL}>Fornecedor</label>
+              <select value={fornecedorFilter} onChange={e => setFornecedorFilter(e.target.value)} className={INPUT}>
+                <option value="">Todos</option>
+                {fornecedores.map(f => (
+                  <option key={f.id} value={f.id}>{f.nome}</option>
+                ))}
+              </select>
+            </div>
+            {/* Apenas em aberto */}
+            <div className="flex flex-col justify-end">
+              <label className={LABEL}>Status de pagamento</label>
+              <button
+                type="button"
+                onClick={() => setSoAberto(v => !v)}
+                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                  soAberto ? 'border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {soAberto ? <Check className="h-3.5 w-3.5 text-amber-600" /> : <div className="h-3.5 w-3.5 rounded border border-muted-foreground/40" />}
+                Apenas em aberto
+              </button>
+            </div>
+            {/* Vencimento de */}
+            <div>
+              <label className={LABEL}>Vencimento — de</label>
+              <input type="date" value={vencDe} onChange={e => setVencDe(e.target.value)} className={INPUT} />
+            </div>
+            {/* Vencimento até */}
+            <div>
+              <label className={LABEL}>Vencimento — até</label>
+              <input type="date" value={vencAte} onChange={e => setVencAte(e.target.value)} className={INPUT} />
+            </div>
+            {/* Forma de pagamento */}
+            <div>
+              <label className={LABEL}>Forma de pagamento</label>
+              <select value={formaPgtoFilter} onChange={e => setFormaPgtoFilter(e.target.value)} className={INPUT}>
+                <option value="">Todas</option>
+                {formasPagtoUnicas.map(f => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+                {/* Opções fixas de fallback caso não haja dados suficientes */}
+                {['PIX', 'Boleto', 'TED', 'DOC', 'Cheque'].filter(f => !formasPagtoUnicas.includes(f)).map(f => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </select>
+            </div>
+            {/* Valor mínimo */}
+            <div>
+              <label className={LABEL}>Valor mínimo (R$)</label>
+              <input
+                type="number" min="0" step="0.01" placeholder="0,00"
+                value={valorMin} onChange={e => setValorMin(e.target.value)} className={INPUT}
+              />
+            </div>
+            {/* Valor máximo */}
+            <div>
+              <label className={LABEL}>Valor máximo (R$)</label>
+              <input
+                type="number" min="0" step="0.01" placeholder="Sem limite"
+                value={valorMax} onChange={e => setValorMax(e.target.value)} className={INPUT}
+              />
+            </div>
+          </div>
+          {/* Resumo do filtro ativo */}
+          {advancedActiveCount > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {fornecedorFilter && (
+                <FilterTag label={`Fornecedor: ${fornecedores.find(f => f.id === fornecedorFilter)?.nome ?? '—'}`} onRemove={() => setFornecedorFilter('')} />
+              )}
+              {soAberto && <FilterTag label="Apenas em aberto" onRemove={() => setSoAberto(false)} />}
+              {vencDe && <FilterTag label={`Venc ≥ ${localDate(vencDe).toLocaleDateString('pt-BR')}`} onRemove={() => setVencDe('')} />}
+              {vencAte && <FilterTag label={`Venc ≤ ${localDate(vencAte).toLocaleDateString('pt-BR')}`} onRemove={() => setVencAte('')} />}
+              {formaPgtoFilter && <FilterTag label={`Forma: ${formaPgtoFilter}`} onRemove={() => setFormaPgtoFilter('')} />}
+              {valorMin && <FilterTag label={`Valor ≥ ${formatCurrency(parseFloat(valorMin))}`} onRemove={() => setValorMin('')} />}
+              {valorMax && <FilterTag label={`Valor ≤ ${formatCurrency(parseFloat(valorMax))}`} onRemove={() => setValorMax('')} />}
+            </div>
+          )}
+        </div>
+      )}
+      {/* ─────────────────────────────────────────────────────────────────────── */}
 
       {showForm && (
         <div className="mb-4 rounded-xl border bg-card p-5">
@@ -2410,6 +2574,17 @@ export function ContasTab({ search }: { search: string }) {
 // ═══════════════════════════════════════════════════════════════
 // Shared micro-components
 // ═══════════════════════════════════════════════════════════════
+
+function FilterTag({ label, onRemove }: { label: string; onRemove: () => void }) {
+  return (
+    <span className="flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-[10px] font-medium text-primary">
+      {label}
+      <button type="button" onClick={onRemove} className="rounded-full hover:bg-primary/20 p-0.5">
+        <X className="h-2.5 w-2.5" />
+      </button>
+    </span>
+  )
+}
 
 function MiniCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
   const color = accent === 'emerald' ? 'text-emerald-500' : accent === 'red' ? 'text-red-500' : accent === 'amber' ? 'text-amber-500' : ''
