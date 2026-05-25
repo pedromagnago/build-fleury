@@ -19,7 +19,9 @@ import {
   ChevronDown,
   Menu,
   XIcon,
+  Calculator,
 } from 'lucide-react'
+import { SimuladorOrcamento } from '@/components/SimuladorOrcamento'
 
 // TODO Pedro: substituir pelo canal real de demo (Calendly, WhatsApp, formulário)
 const DEMO_CTA_HREF = 'mailto:contato@buildfleury.com.br?subject=Quero%20agendar%20uma%20demo'
@@ -27,6 +29,7 @@ const DEMO_CTA_HREF = 'mailto:contato@buildfleury.com.br?subject=Quero%20agendar
 export default function LandingPage() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [openFaq, setOpenFaq] = useState<number | null>(0)
+  const [simuladorAberto, setSimuladorAberto] = useState(false)
 
   useEffect(() => {
     document.title = 'Build Fleury — Software de gestão de obras com cronograma físico-financeiro integrado'
@@ -35,10 +38,12 @@ export default function LandingPage() {
   return (
     <div className="min-h-screen bg-white text-slate-900 antialiased">
       <Header mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
+      <SimuladorOrcamento aberto={simuladorAberto} onFechar={() => setSimuladorAberto(false)} />
       <main>
-        <Hero />
+        <Hero onAbrirSimulador={() => setSimuladorAberto(true)} />
         <LogoBar />
         <Pain />
+        <SimuladorCTA onAbrir={() => setSimuladorAberto(true)} />
         <HowItWorks />
         <Benefits />
         <BeforeAfter />
@@ -124,7 +129,7 @@ function Header({ mobileOpen, setMobileOpen }: { mobileOpen: boolean; setMobileO
   )
 }
 
-function Hero() {
+function Hero({ onAbrirSimulador }: { onAbrirSimulador: () => void }) {
   return (
     <section id="topo" className="relative overflow-hidden bg-gradient-to-b from-slate-50 to-white">
       <div className="mx-auto grid max-w-6xl gap-12 px-4 py-16 sm:px-6 sm:py-24 lg:grid-cols-12 lg:gap-8 lg:py-28">
@@ -147,12 +152,13 @@ function Hero() {
               Agendar demonstração
               <ArrowRight className="h-4 w-4" />
             </a>
-            <a
-              href="#como-funciona"
+            <button
+              onClick={onAbrirSimulador}
               className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-6 py-3 text-base font-medium text-slate-700 transition-colors hover:bg-slate-50"
             >
-              Ver como funciona
-            </a>
+              <Calculator className="h-4 w-4" />
+              Simular orçamento grátis
+            </button>
           </div>
           <p className="mt-4 text-sm text-slate-500">
             Sem migração de ERP. Comece pela próxima obra.
@@ -278,6 +284,58 @@ function Pain() {
               <p className="mt-2 text-sm leading-relaxed text-slate-600">{it.body}</p>
             </div>
           ))}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function SimuladorCTA({ onAbrir }: { onAbrir: () => void }) {
+  return (
+    <section className="py-14 sm:py-16 bg-white">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6">
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary to-primary/80 px-8 py-10 sm:px-12 sm:py-14 text-white shadow-xl">
+          {/* Detalhe decorativo */}
+          <div className="absolute -right-16 -top-16 h-64 w-64 rounded-full bg-white/5" />
+          <div className="absolute -bottom-10 -left-10 h-40 w-40 rounded-full bg-white/5" />
+
+          <div className="relative grid gap-8 lg:grid-cols-2 lg:items-center">
+            <div>
+              <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-medium backdrop-blur-sm">
+                <Sparkles className="h-3.5 w-3.5" />
+                Grátis, sem cadastro
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Simule o custo da sua obra em 1 minuto
+              </h2>
+              <p className="mt-4 text-base text-white/80 max-w-lg">
+                Descreva o que você quer construir ou reformar. Nossa IA monta o orçamento detalhado com referências SINAPI — você ajusta e baixa o PDF para apresentar ao cliente.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-4 lg:items-end">
+              <div className="grid grid-cols-3 gap-4 text-center lg:text-right">
+                {[
+                  { num: '1 min', label: 'para gerar' },
+                  { num: 'SINAPI', label: 'referência' },
+                  { num: 'PDF', label: 'para baixar' },
+                ].map((s) => (
+                  <div key={s.label}>
+                    <p className="text-2xl font-bold">{s.num}</p>
+                    <p className="text-xs text-white/70 mt-0.5">{s.label}</p>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={onAbrir}
+                className="inline-flex items-center gap-2 rounded-xl bg-white px-7 py-3.5 text-base font-semibold text-primary shadow-md transition-opacity hover:opacity-90"
+              >
+                <Calculator className="h-5 w-5" />
+                Simular agora — é grátis
+              </button>
+              <p className="text-xs text-white/60">Sem criar conta. Sem cartão de crédito.</p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
