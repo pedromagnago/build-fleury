@@ -207,6 +207,7 @@ function ParcelasTab({ search }: { search: string }) {
   const [fornecedorFilter, setFornecedorFilter] = useState('')
   const [soAberto, setSoAberto] = useState(false)
   const [nfFilter, setNfFilter] = useState<'todos' | 'com_nf' | 'sem_nf'>('todos')
+  const [nfNumeroFilter, setNfNumeroFilter] = useState('')
   const [vencDe, setVencDe] = useState('')
   const [vencAte, setVencAte] = useState('')
   const [formaPgtoFilter, setFormaPgtoFilter] = useState('')
@@ -287,12 +288,13 @@ function ParcelasTab({ search }: { search: string }) {
   }, [parcelas])
 
   // Contador de filtros avançados ativos
-  const advancedActiveCount = [fornecedorFilter, soAberto, nfFilter !== 'todos', vencDe, vencAte, formaPgtoFilter, valorMin, valorMax].filter(Boolean).length
+  const advancedActiveCount = [fornecedorFilter, soAberto, nfFilter !== 'todos', nfNumeroFilter, vencDe, vencAte, formaPgtoFilter, valorMin, valorMax].filter(Boolean).length
 
   const clearAdvanced = () => {
     setFornecedorFilter('')
     setSoAberto(false)
     setNfFilter('todos')
+    setNfNumeroFilter('')
     setVencDe('')
     setVencAte('')
     setFormaPgtoFilter('')
@@ -333,12 +335,13 @@ function ParcelasTab({ search }: { search: string }) {
     }
     // ── Filtros avançados (antes do narrowing de status) ─────────────────────
     if (soAberto && p.status === 'paga') return false
-    if (fornecedorFilter) {
-      const forn = fornecedores.find(f => f.id === fornecedorFilter)
-      if (forn && (p as any).fornecedor_nome !== forn.nome) return false
-    }
+    if (fornecedorFilter && (p as any).fornecedor_id !== fornecedorFilter) return false
     if (nfFilter === 'com_nf' && !(p as any).nf_numero) return false
     if (nfFilter === 'sem_nf' && !!(p as any).nf_numero) return false
+    if (nfNumeroFilter) {
+      const nf = ((p as any).nf_numero as string | null) ?? ''
+      if (!nf.toLowerCase().includes(nfNumeroFilter.toLowerCase())) return false
+    }
     if (formaPgtoFilter && (p.forma_pagamento ?? '').toLowerCase() !== formaPgtoFilter.toLowerCase()) return false
     if (valorMin && p.valor < parseFloat(valorMin)) return false
     if (valorMax && p.valor > parseFloat(valorMax)) return false
@@ -430,12 +433,21 @@ function ParcelasTab({ search }: { search: string }) {
   // Aplica filtros avançados às fontes extras (mútuos e amortizações)
   const applyAdvancedToExtras = (list: any[]) => {
     return list.filter(p => {
+      // mútuos e amortizações nunca têm NF — excluir quando filtro exige NF
+      if (nfFilter === 'com_nf') return false
       if (soAberto && p.status === 'paga') return false
       const venc = p.data_vencimento ?? ''
       if (vencDe && venc < vencDe) return false
       if (vencAte && venc > vencAte) return false
       if (valorMin && p.valor < parseFloat(valorMin)) return false
       if (valorMax && p.valor > parseFloat(valorMax)) return false
+      // dueFilter aplicado às extras da mesma forma que às parcelas de pedido
+      if (dueFilter === 'pagas') return p.status === 'paga'
+      if (p.status === 'paga') return dueFilter === 'todas'
+      if (dueFilter === 'hoje') return venc === today
+      if (dueFilter === 'semana') return venc >= today && venc <= weekEnd
+      if (dueFilter === 'mes') return venc >= today && venc <= monthEnd
+      if (dueFilter === 'vencidas') return venc < today
       return true
     })
   }
@@ -454,13 +466,13 @@ function ParcelasTab({ search }: { search: string }) {
       ...(typeFilter === 'todos' ? applyAdvancedToExtras(amortizacoesParcelas) : []),
     ]
     return combined.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
-  }, [filtered, mutuoParcelas, amortizacoesParcelas, typeFilter, soAberto, vencDe, vencAte, valorMin, valorMax])
+  }, [filtered, mutuoParcelas, amortizacoesParcelas, typeFilter, soAberto, nfFilter, dueFilter, vencDe, vencAte, valorMin, valorMax, today, weekEnd, monthEnd])
 
   const totals = allFiltered.reduce(
     (acc, p) => ({
       total: acc.total + p.valor,
-      pago: acc.pago + p.valor_pago,
-      pendente: acc.pendente + (p.status !== 'paga' ? p.valor - p.valor_pago : 0),
+      pago: acc.pago + Math.min(p.valor_pago, p.valor),
+      pendente: acc.pendente + Math.max(0, p.valor - p.valor_pago),
     }),
     { total: 0, pago: 0, pendente: 0 }
   )
@@ -541,7 +553,7 @@ function ParcelasTab({ search }: { search: string }) {
               k === 'hoje' ? 'data-[on=true]:text-amber-600' :
               k === 'pagas' ? 'data-[on=true]:text-emerald-600' : ''
             return (
-              <button key={k} onClick={() => setDueFilter(k)} data-on={dueFilter === k}
+              <button key={k} onClick={() => { setDueFilter(k); if (k === 'pagas') setSoAberto(false) }} data-on={dueFilter === k}
                 className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${tone} ${
                   dueFilter === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
                 }`}
@@ -619,7 +631,7 @@ function ParcelasTab({ search }: { search: string }) {
               <label className={LABEL}>Status de pagamento</label>
               <button
                 type="button"
-                onClick={() => setSoAberto(v => !v)}
+                onClick={() => { setSoAberto(v => { if (!v && dueFilter === 'pagas') setDueFilter('todas'); return !v }) }}
                 className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
                   soAberto ? 'border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'text-muted-foreground hover:text-foreground'
                 }`}
@@ -628,7 +640,7 @@ function ParcelasTab({ search }: { search: string }) {
                 Apenas em aberto
               </button>
             </div>
-            {/* Nota Fiscal */}
+            {/* Nota Fiscal — toggle com/sem + busca por número */}
             <div>
               <label className={LABEL}>Nota Fiscal</label>
               <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
@@ -638,6 +650,17 @@ function ParcelasTab({ search }: { search: string }) {
                   >{label}</button>
                 ))}
               </div>
+            </div>
+            {/* Número da NF */}
+            <div>
+              <label className={LABEL}>Número da NF</label>
+              <input
+                type="text"
+                placeholder="ex: 000.003.006"
+                value={nfNumeroFilter}
+                onChange={e => setNfNumeroFilter(e.target.value)}
+                className={INPUT}
+              />
             </div>
             {/* Vencimento de */}
             <div>
@@ -688,6 +711,7 @@ function ParcelasTab({ search }: { search: string }) {
               )}
               {soAberto && <FilterTag label="Apenas em aberto" onRemove={() => setSoAberto(false)} />}
               {nfFilter !== 'todos' && <FilterTag label={nfFilter === 'com_nf' ? 'Com NF' : 'Sem NF'} onRemove={() => setNfFilter('todos')} />}
+              {nfNumeroFilter && <FilterTag label={`NF: ${nfNumeroFilter}`} onRemove={() => setNfNumeroFilter('')} />}
               {vencDe && <FilterTag label={`Venc ≥ ${localDate(vencDe).toLocaleDateString('pt-BR')}`} onRemove={() => setVencDe('')} />}
               {vencAte && <FilterTag label={`Venc ≤ ${localDate(vencAte).toLocaleDateString('pt-BR')}`} onRemove={() => setVencAte('')} />}
               {formaPgtoFilter && <FilterTag label={`Forma: ${formaPgtoFilter}`} onRemove={() => setFormaPgtoFilter('')} />}
@@ -727,7 +751,7 @@ function ParcelasTab({ search }: { search: string }) {
         </div>
       )}
 
-      {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhuma parcela encontrada" /> : (
+      {isLoading ? <Spinner /> : allFiltered.length === 0 ? <EmptyState msg="Nenhuma parcela encontrada" /> : (
         <div className="overflow-auto rounded-xl border bg-card max-h-[calc(100vh-260px)]">
           <table className="tbl-bf w-full text-sm">
             <thead className="sticky top-0 z-30 bg-muted/95 backdrop-blur shadow-[0_1px_0_0_hsl(var(--border))]">
@@ -882,7 +906,7 @@ function ParcelasTab({ search }: { search: string }) {
           const sel = allFiltered.filter(p => selection.selected.has(p.id))
           if (sel.length === 0) return undefined
           const total = sel.reduce((s, p) => s + Number(p.valor || 0), 0)
-          const pago = sel.reduce((s, p) => s + Number(p.valor_pago || 0), 0)
+          const pago = sel.reduce((s, p) => s + Math.min(Number(p.valor_pago || 0), Number(p.valor || 0)), 0)
           const pendente = sel.reduce((s, p) => s + Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0)), 0)
           const vencidas = sel.filter(p => p.status !== 'paga' && p.data_vencimento < new Date().toISOString().split('T')[0]!).length
           return [
@@ -1580,11 +1604,8 @@ function PorPedidoTab() {
     return [...map.entries()].map(([pid, g]) => {
       const sorted = [...g.parcelas].sort((a, b) => a.numero_parcela - b.numero_parcela)
       const total = sorted.reduce((s, p) => s + Number(p.valor || 0), 0)
-      const pago = sorted.reduce((s, p) => s + Number(p.valor_pago || 0), 0)
-      const pendente = sorted.reduce(
-        (s, p) => (p.status !== 'paga' ? s + (Number(p.valor || 0) - Number(p.valor_pago || 0)) : s),
-        0
-      )
+      const pago = sorted.reduce((s, p) => s + Math.min(Number(p.valor_pago || 0), Number(p.valor || 0)), 0)
+      const pendente = sorted.reduce((s, p) => s + Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0)), 0)
       const totalCount = sorted.length
       const pagasCount = sorted.filter((p) => p.status === 'paga').length
       const vencidaCount = sorted.filter((p) => p.status !== 'paga' && p.data_vencimento < today).length
@@ -2032,8 +2053,8 @@ function PorFornecedorTab() {
     return [...map.entries()].map(([fid, g]) => {
       const pendentes = g.parcelas.filter((p) => p.status !== 'paga')
       const pagas = g.parcelas.filter((p) => p.status === 'paga')
-      const totalPend = pendentes.reduce((s, p) => s + p.valor - p.valor_pago, 0)
-      const totalPago = pagas.reduce((s, p) => s + p.valor_pago, 0)
+      const totalPend = pendentes.reduce((s, p) => s + Math.max(0, p.valor - p.valor_pago), 0)
+      const totalPago = pagas.reduce((s, p) => s + Math.min(p.valor_pago, p.valor), 0)
 
       const today = new Date().toISOString().split('T')[0]!
       const proxVenc = pendentes
@@ -2082,7 +2103,7 @@ function PorFornecedorTab() {
   const totalSelected = useMemo(() => {
     return parcelas
       .filter((p) => selectedIds.has(p.id))
-      .reduce((s, p) => s + p.valor - p.valor_pago, 0)
+      .reduce((s, p) => s + Math.max(0, p.valor - p.valor_pago), 0)
   }, [selectedIds, parcelas])
 
   if (isLoading) return <Spinner />

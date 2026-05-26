@@ -93,6 +93,9 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
     mutuos.forEach(m => { checkDate(m.data_captacao); m.parcelas?.forEach((p: any) => checkDate(p.data_vencimento)) })
     parcelas.forEach(p => checkDate(p.data_vencimento))
     etapas.forEach(e => checkDate(e.data_inicio_plan))
+    // Inclui datas dos eventos bancários — sem isso, movs fora do range dos demais
+    // aparecem no total do header mas somem das sub-linhas, causando divergência.
+    cashFlowEvents.forEach(e => checkDate(e.date))
 
     if (periodicity === 'mes') {
       // Monthly buckets
@@ -169,7 +172,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
         lbl: `${String(s.getDate()).padStart(2, '0')}/${String(s.getMonth() + 1).padStart(2, '0')}`,
       }
     })
-  }, [medicoes, mutuos, parcelas, etapas, periodicity])
+  }, [medicoes, mutuos, parcelas, etapas, cashFlowEvents, periodicity])
 
   // Convert shared events to Item[] with override support
   const items = useMemo(() => {
@@ -366,140 +369,157 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
   const weekMatch = (its: Item[], w: typeof grid[0]) =>
     its.filter(i => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() })
 
-  // 3-level hierarchy: Etapa → Fornecedor → Item
+  // Classifica cada item numa categoria de origem de nível 0 (acima da etapa).
+  // Entradas: Medições | Capital/Mútuo | Banco | Clientes
+  // Saídas:   Pedidos de Obra | Despesas Indiretas | Mútuo | Banco
+  const getOrigemNivel0 = (it: Item, tipo: 'entrada' | 'firme' | 'bruto'): string => {
+    const origem = it.meta?.origem
+    const cat = it.meta?.cat ?? ''
+    const etapa = it.meta?.etapa ?? ''
+    if (tipo === 'entrada') {
+      if (origem === 'medicao') return 'Medições'
+      if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) return 'Capital / Mútuo'
+      if (cat === 'Banco') return 'Banco'
+      return 'Clientes'
+    } else {
+      if (origem === 'despesa') return 'Despesas Indiretas'
+      if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) return 'Mútuo'
+      if (cat === 'Banco') return 'Banco'
+      return 'Pedidos de Obra'
+    }
+  }
+
+  // Config visual por bucket de origem nível 0
+  const origemNivel0Config: Record<string, { dot: string; order: number }> = {
+    'Medições':            { dot: 'bg-purple-500',  order: 1 },
+    'Capital / Mútuo':     { dot: 'bg-indigo-500',  order: 2 },
+    'Clientes':            { dot: 'bg-blue-400',    order: 3 },
+    'Banco':               { dot: 'bg-slate-400',   order: 4 },
+    'Pedidos de Obra':     { dot: 'bg-blue-500',    order: 1 },
+    'Despesas Indiretas':  { dot: 'bg-rose-500',    order: 2 },
+    'Mútuo':               { dot: 'bg-indigo-500',  order: 3 },
+  }
+
+  // 4-level hierarchy: Origem → Etapa → Fornecedor → Item
   const subRows = (tipo: 'entrada' | 'firme' | 'bruto') => {
     const filtered = items.filter(i => i.tipo === tipo && weeks.some(w => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() }))
 
-    // Level 1: Group by Etapa
-    const etapaGroups = new Map<string, Item[]>()
+    // Level 0: agrupar por Origem
+    const origemGroups = new Map<string, Item[]>()
     filtered.forEach(i => {
-      const k = i.meta?.etapa || 'Outros'
-      if (!etapaGroups.has(k)) etapaGroups.set(k, [])
-      etapaGroups.get(k)!.push(i)
+      const k = getOrigemNivel0(i, tipo)
+      if (!origemGroups.has(k)) origemGroups.set(k, [])
+      origemGroups.get(k)!.push(i)
     })
 
     const rows: React.ReactNode[] = []
 
-    for (const [etapa, etapaItems] of Array.from(etapaGroups.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
-      const etapaKey = `${tipo}-et-${etapa}`
+    for (const [origem, origemItems] of Array.from(origemGroups.entries()).sort(
+      (a, b) => (origemNivel0Config[a[0]]?.order ?? 99) - (origemNivel0Config[b[0]]?.order ?? 99)
+    )) {
+      const origemKey = `${tipo}-orig-${origem}`
 
-      // ── Etapa row ──
+      // ── Origem row (nível 0) ──
       rows.push(
-        <tr key={etapaKey} className="border-b border-muted/40 hover:bg-muted/20 text-[11px] cursor-pointer" onClick={() => toggle(etapaKey)}>
-          <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-7 font-semibold text-foreground/80 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+        <tr key={origemKey} className="border-b border-muted/40 hover:bg-muted/20 text-[11px] cursor-pointer" onClick={() => toggle(origemKey)}>
+          <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-5 font-semibold text-foreground/80 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
             <span className="flex items-center gap-1.5">
-              {expanded[etapaKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-              <span className="truncate" title={etapa}>📋 {etapa}</span>
+              {expanded[origemKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+              <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${origemNivel0Config[origem]?.dot ?? 'bg-slate-400'}`} />
+              <span className="truncate">{origem}</span>
             </span>
           </td>
           {grid.map((w, ci) => {
-            const sum = weekSum(etapaItems, w)
+            const sum = weekSum(origemItems, w)
             return (
-              <td key={ci} className="border-r px-2 py-1.5 text-right tabular-nums font-medium">
+              <td key={ci} className="border-r px-2 py-1.5 text-right tabular-nums font-semibold">
                 {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
               </td>
             )
           })}
-          <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-semibold shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
-            {(() => { const t = etapaItems.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
+          <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-bold shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+            {(() => { const t = origemItems.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
           </td>
         </tr>
       )
 
-      if (!expanded[etapaKey]) continue
+      if (!expanded[origemKey]) continue
 
-      // Level 2: Group by Fornecedor within Etapa
-      const fornGroups = new Map<string, Item[]>()
-      etapaItems.forEach(i => {
-        const k = i.meta?.forn || i.meta?.cat || 'Direto'
-        if (!fornGroups.has(k)) fornGroups.set(k, [])
-        fornGroups.get(k)!.push(i)
+      // Level 1: Group by Etapa
+      const etapaGroups = new Map<string, Item[]>()
+      origemItems.forEach(i => {
+        const k = i.meta?.etapa || 'Outros'
+        if (!etapaGroups.has(k)) etapaGroups.set(k, [])
+        etapaGroups.get(k)!.push(i)
       })
 
-      for (const [forn, fornItems] of Array.from(fornGroups.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
-        const fornKey = `${tipo}-et-${etapa}-fn-${forn}`
+      for (const [etapa, etapaItems] of Array.from(etapaGroups.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+        const etapaKey = `${origemKey}-et-${etapa}`
 
-        // ── Fornecedor row ──
+        // ── Etapa row ──
         rows.push(
-          <tr key={fornKey} className="border-b border-muted/30 hover:bg-muted/15 text-[11px] cursor-pointer" onClick={() => toggle(fornKey)}>
-            <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-11 font-medium text-foreground/70 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+          <tr key={etapaKey} className="border-b border-muted/40 hover:bg-muted/20 text-[11px] cursor-pointer" onClick={() => toggle(etapaKey)}>
+            <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-9 font-semibold text-foreground/80 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
               <span className="flex items-center gap-1.5">
-                {expanded[fornKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-                <span className="truncate" title={forn}>🏢 {forn}</span>
+                {expanded[etapaKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+                <span className="truncate" title={etapa}>📋 {etapa}</span>
               </span>
             </td>
             {grid.map((w, ci) => {
-              const sum = weekSum(fornItems, w)
+              const sum = weekSum(etapaItems, w)
               return (
-                <td key={ci} className="border-r px-2 py-1.5 text-right tabular-nums text-foreground/70">
+                <td key={ci} className="border-r px-2 py-1.5 text-right tabular-nums font-medium">
                   {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
                 </td>
               )
             })}
-            <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-medium text-foreground/70 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
-              {(() => { const t = fornItems.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
+            <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-semibold shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+              {(() => { const t = etapaItems.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
             </td>
           </tr>
         )
 
-        if (!expanded[fornKey]) continue
+        if (!expanded[etapaKey]) continue
 
-        // Level 3 (NOVO): agrupa items por ORIGEM (NF / Saldo / Planejado / etc).
-        // Permite ao operador ver, dentro de um fornecedor, quanto vem de NF
-        // aplicada vs de planejamento puro vs saldo após consumo parcial.
-        const origemGroups = new Map<string, Item[]>()
-        fornItems.forEach(i => {
-          const k = i.meta?.origem || 'planejado'
-          if (!origemGroups.has(k)) origemGroups.set(k, [])
-          origemGroups.get(k)!.push(i)
+        // Level 2: Group by Fornecedor within Etapa
+        const fornGroups = new Map<string, Item[]>()
+        etapaItems.forEach(i => {
+          const k = i.meta?.forn || i.meta?.cat || 'Direto'
+          if (!fornGroups.has(k)) fornGroups.set(k, [])
+          fornGroups.get(k)!.push(i)
         })
 
-        // Ordem fixa pras origens (visual mais previsível)
-        const ordemOrigem: Record<string, number> = { nf: 1, saldo: 2, planejado: 3, despesa: 4, avulsa: 5, medicao: 6, mutuo: 7 }
-        const origensOrdenadas = Array.from(origemGroups.entries()).sort(
-          (a, b) => (ordemOrigem[a[0]] ?? 99) - (ordemOrigem[b[0]] ?? 99)
-        )
+        for (const [forn, fornItems] of Array.from(fornGroups.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+          const fornKey = `${etapaKey}-fn-${forn}`
 
-        const origemLabel: Record<string, string> = {
-          nf: 'NF (real)', saldo: 'Saldo após NF', planejado: 'Planejado',
-          despesa: 'Despesa', avulsa: 'Avulsa', medicao: 'Medição', mutuo: 'Mútuo',
-        }
-        const origemDot: Record<string, string> = {
-          nf: 'bg-emerald-500', saldo: 'bg-amber-500', planejado: 'bg-blue-400',
-          despesa: 'bg-rose-400', avulsa: 'bg-slate-400', medicao: 'bg-purple-400', mutuo: 'bg-indigo-500',
-        }
-
-        for (const [origemKey, origemItems] of origensOrdenadas) {
-          const origKey = `${fornKey}-or-${origemKey}`
+          // ── Fornecedor row ──
           rows.push(
-            <tr key={origKey} className="border-b border-muted/20 hover:bg-muted/10 text-[10.5px] cursor-pointer" onClick={() => toggle(origKey)}>
-              <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1 pl-[60px] text-foreground/65 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
-                <div className="flex items-center gap-1.5">
-                  {expanded[origKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${origemDot[origemKey] ?? 'bg-slate-400'}`} />
-                  <span className="truncate">{origemLabel[origemKey] ?? origemKey}</span>
-                  <span className="text-muted-foreground">({origemItems.length})</span>
-                </div>
+            <tr key={fornKey} className="border-b border-muted/30 hover:bg-muted/15 text-[11px] cursor-pointer" onClick={() => toggle(fornKey)}>
+              <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-[52px] font-medium text-foreground/70 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                <span className="flex items-center gap-1.5">
+                  {expanded[fornKey] ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+                  <span className="truncate" title={forn}>🏢 {forn}</span>
+                </span>
               </td>
               {grid.map((w, ci) => {
-                const sum = weekSum(origemItems, w)
+                const sum = weekSum(fornItems, w)
                 return (
-                  <td key={ci} className="border-r px-2 py-1 text-right tabular-nums">
+                  <td key={ci} className="border-r px-2 py-1.5 text-right tabular-nums text-foreground/70">
                     {sum > 0 ? formatCurrency(sum) : <span className="text-muted-foreground/20">-</span>}
                   </td>
                 )
               })}
-              <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1 text-right tabular-nums text-foreground/65 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
-                {(() => { const t = origemItems.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
+              <td className="sticky right-0 z-20 bg-white dark:bg-gray-900 border-l px-3 py-1.5 text-right tabular-nums font-medium text-foreground/70 shadow-[-2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                {(() => { const t = fornItems.reduce((s, i) => s + i.valor, 0); return t > 0 ? formatCurrency(t) : <span className="text-muted-foreground/20">-</span> })()}
               </td>
             </tr>
           )
 
-          if (!expanded[origKey]) continue
+          if (!expanded[fornKey]) continue
 
-          // Level 4 (antes era 3): items individuais dentro da origem.
+          // Level 3: Items individuais
           const itemGroups = new Map<string, Item[]>()
-          origemItems.forEach(i => {
+          fornItems.forEach(i => {
             const k = i.desc
             if (!itemGroups.has(k)) itemGroups.set(k, [])
             itemGroups.get(k)!.push(i)
@@ -507,8 +527,8 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
           for (const [desc, its] of itemGroups) {
             rows.push(
-              <tr key={`${origKey}-${desc}`} className="border-b border-muted/20 hover:bg-muted/10 text-[11px]">
-                <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-[80px] truncate max-w-[260px] text-foreground/60 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]" title={desc}>
+              <tr key={`${fornKey}-${desc}`} className="border-b border-muted/20 hover:bg-muted/10 text-[11px]">
+                <td className="sticky left-0 z-20 bg-white dark:bg-gray-900 border-r px-3 py-1.5 pl-[68px] truncate max-w-[260px] text-foreground/60 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]" title={desc}>
                   {its[0]!.modified && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5 -mt-0.5" />}
                   {desc}
                 </td>

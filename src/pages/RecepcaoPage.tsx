@@ -1042,7 +1042,7 @@ export default function RecepcaoPage() {
         ...l,
         item_compra_id: novoItemId,
         pedido_substituido_id: pedidoExistente?.id ?? null,
-        acao: pedidoExistente ? 'substituir_pedido' : (l.acao === 'substituir_pedido' ? 'criar_pedido' : (l.acao ?? 'criar_pedido')),
+        acao: pedidoExistente ? 'substituir_pedido' : 'criar_pedido',
         confirmado: true,
         precisaConfirmar: false,
       } : l)

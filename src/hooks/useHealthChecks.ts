@@ -5,7 +5,6 @@
  * despesas indiretas para produzir checks de status (ok / warn / critical).
  */
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { usePedidos, useItensCompra, STATUS_PEDIDO_ATIVO } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
@@ -13,7 +12,7 @@ import { useMedicoes, useDistribuicao, useMovimentacoes } from '@/hooks/useOpera
 import { useMutuos } from '@/hooks/useMutuos'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
 import { useProject } from '@/contexts/ProjectContext'
-import { supabase } from '@/lib/supabase'
+import { useConciliacaoLinks } from '@/hooks/useConciliacao'
 
 export type CheckSeverity = 'ok' | 'warn' | 'critical'
 
@@ -59,22 +58,10 @@ export function useHealthChecks() {
   const { data: movs = [] } = useMovimentacoes()
   const { despesas = [] } = useDespesasIndiretas()
 
-  // Liga conciliacao -> parcela. Mesmo padrao do useCashFlowEvents para garantir
-  // que a heuristica de "mov vinculada" usa as mesmas conciliacoes que o fluxo.
-  const { data: linksMovs = [] } = useQuery({
-    queryKey: ['health-links-movs', currentCompany?.id],
-    queryFn: async () => {
-      if (!currentCompany) return [] as any[]
-      const { data, error } = await supabase
-        .from('conciliacoes')
-        .select('movimentacao_id, status, conciliacao_parcelas(parcela_id)')
-        .eq('company_id', currentCompany.id)
-        .neq('status', 'rejeitado')
-      if (error) throw error
-      return data ?? []
-    },
-    enabled: !!currentCompany,
-  })
+  // Cache compartilhado com useCashFlowEvents e useEquacoesContabeis —
+  // garante que todos usam os mesmos dados de conciliação.
+  const { data: linksData } = useConciliacaoLinks()
+  const linksMovs = linksData?.rawRows ?? []
 
   const isLoading = !parcelas || !pedidos || !itens || !etapas
 
@@ -92,6 +79,15 @@ export function useHealthChecks() {
         movsByParcelaId.set(l.parcela_id, s)
       }
     }
+    // Set de todos os mov_ids que têm qualquer vínculo com plano (parcela/medicao/mutuo/mutuo_parcela).
+    // Movs FORA desse set = "Banco" = erro de classificação = precisam ser conciliadas.
+    const movsConciliadasIds = new Set<string>()
+    for (const c of (linksMovs as any[])) {
+      const links = c.conciliacao_parcelas ?? []
+      const temVinculo = links.some((l: any) => l.parcela_id || l.medicao_id || l.mutuo_id || l.mutuo_parcela_id)
+      if (temVinculo) movsConciliadasIds.add(c.movimentacao_id)
+    }
+
     const movById = new Map<string, any>()
     for (const m of (movs as any[])) movById.set(m.id, m)
     // Data da mov mais recente vinculada a cada parcela (ISO YYYY-MM-DD).
@@ -591,8 +587,112 @@ export function useHealthChecks() {
       routeLabel: 'Ir para Pagamentos',
     })
 
+    // ═══════════════════════════════════════════════════════════
+    // 17. Entradas bancárias sem vínculo com plano
+    //     Toda entrada deveria estar ligada a medição, mútuo ou outro item.
+    //     O que não está vinculado é o "bucket Banco" do fluxo — indica
+    //     conciliação pendente ou lançamento avulso sem origem.
+    // ═══════════════════════════════════════════════════════════
+    const entradasSemVinculo = (movs as any[]).filter(m =>
+      m.tipo === 'entrada' && !movsConciliadasIds.has(m.id)
+    )
+    const totalEntradasSV = entradasSemVinculo.reduce((s: number, m: any) => s + Math.abs(Number(m.valor || 0)), 0)
+    all.push({
+      id: 'entradas-sem-vinculo',
+      title: 'Entradas sem vínculo (Banco → ?)',
+      severity: entradasSemVinculo.length === 0 ? 'ok' : totalEntradasSV > 1000 ? 'critical' : 'warn',
+      summary: entradasSemVinculo.length === 0
+        ? 'Todas as entradas bancárias estão vinculadas a medições ou capital'
+        : `${entradasSemVinculo.length} entrada(s) sem vínculo — ${fmtBRL(totalEntradasSV)} não rastreados`,
+      items: entradasSemVinculo
+        .sort((a: any, b: any) => Math.abs(Number(b.valor || 0)) - Math.abs(Number(a.valor || 0)))
+        .slice(0, 50)
+        .map((m: any) => ({
+          id: m.id,
+          label: m.descricao || 'Crédito bancário',
+          description: `Data: ${m.data ? new Date(m.data + 'T12:00:00').toLocaleDateString('pt-BR') : '—'} • Valor: ${fmtBRL(Math.abs(Number(m.valor || 0)))} • Conta: ${m.conta_nome || m.conta_id || '—'}`,
+          value: Math.abs(Number(m.valor || 0)),
+        })),
+      route: '/conciliacao',
+      routeLabel: 'Conciliar Entradas',
+    })
+
+    // ═══════════════════════════════════════════════════════════
+    // 18. Saídas bancárias sem vínculo com plano
+    //     Toda saída deveria estar ligada a parcela de pedido/despesa ou mútuo.
+    // ═══════════════════════════════════════════════════════════
+    const saidasSemVinculo = (movs as any[]).filter(m =>
+      m.tipo === 'saida' && !movsConciliadasIds.has(m.id)
+    )
+    const totalSaidasSV = saidasSemVinculo.reduce((s: number, m: any) => s + Math.abs(Number(m.valor || 0)), 0)
+    all.push({
+      id: 'saidas-sem-vinculo',
+      title: 'Saídas sem vínculo (Banco → ?)',
+      severity: saidasSemVinculo.length === 0 ? 'ok' : totalSaidasSV > 1000 ? 'critical' : 'warn',
+      summary: saidasSemVinculo.length === 0
+        ? 'Todas as saídas bancárias estão vinculadas a parcelas ou mútuo'
+        : `${saidasSemVinculo.length} saída(s) sem vínculo — ${fmtBRL(totalSaidasSV)} não rastreados`,
+      items: saidasSemVinculo
+        .sort((a: any, b: any) => Math.abs(Number(b.valor || 0)) - Math.abs(Number(a.valor || 0)))
+        .slice(0, 50)
+        .map((m: any) => ({
+          id: m.id,
+          label: m.descricao || 'Débito bancário',
+          description: `Data: ${m.data ? new Date(m.data + 'T12:00:00').toLocaleDateString('pt-BR') : '—'} • Valor: ${fmtBRL(Math.abs(Number(m.valor || 0)))} • Conta: ${m.conta_nome || m.conta_id || '—'}`,
+          value: Math.abs(Number(m.valor || 0)),
+        })),
+      route: '/conciliacao',
+      routeLabel: 'Conciliar Saídas',
+    })
+
+    // ═══════════════════════════════════════════════════════════
+    // 19. Gap financeiro vs WBS — Medições
+    //     Total WBS (valor_planejado) vs total financeiro (banco vinculado + previsto sem banco).
+    //     Capital de giro e custos indiretos ficam de fora desta equação.
+    // ═══════════════════════════════════════════════════════════
+    const medicoesPorId = new Map(medicoes.map(m => [m.id, m]))
+    // Movs de banco vinculadas a medições
+    const movsVinculadasAMedicao = new Set<string>()
+    for (const c of (linksMovs as any[])) {
+      for (const l of (c.conciliacao_parcelas ?? [])) {
+        if (l.medicao_id) movsVinculadasAMedicao.add(c.movimentacao_id)
+      }
+    }
+    const wbsMedicoes = medicoes.reduce((s, m) => s + (Number(m.valor_planejado) || 0), 0)
+    const bancadoMedicoes = (movs as any[])
+      .filter(m => m.tipo === 'entrada' && movsVinculadasAMedicao.has(m.id))
+      .reduce((s: number, m: any) => s + Math.abs(Number(m.valor || 0)), 0)
+    // Medições não bancadas ainda contribuem pelo valor planejado
+    const medicoesSemBanco = new Set<string>()
+    for (const c of (linksMovs as any[])) {
+      for (const l of (c.conciliacao_parcelas ?? [])) {
+        if (l.medicao_id) medicoesSemBanco.add(l.medicao_id)
+      }
+    }
+    const previstoPendenteMedicoes = medicoes
+      .filter(m => !medicoesSemBanco.has(m.id))
+      .reduce((s, m) => s + (Number(m.valor_planejado) || 0), 0)
+    const financeiroMedicoes = bancadoMedicoes + previstoPendenteMedicoes
+    const gapMedicoes = Math.abs(wbsMedicoes - financeiroMedicoes)
+    all.push({
+      id: 'gap-wbs-medicoes',
+      title: 'Gap WBS ↔ Financeiro — Medições',
+      severity: gapMedicoes <= 1 ? 'ok' : gapMedicoes <= 5000 ? 'warn' : 'critical',
+      summary: gapMedicoes <= 1
+        ? `WBS bate com financeiro — ${fmtBRL(wbsMedicoes)} em medições`
+        : `Gap de ${fmtBRL(gapMedicoes)}: WBS ${fmtBRL(wbsMedicoes)} vs Financeiro ${fmtBRL(financeiroMedicoes)}`,
+      items: gapMedicoes <= 1 ? [] : [{
+        id: 'gap-med',
+        label: `WBS ${fmtBRL(wbsMedicoes)} / Bancado ${fmtBRL(bancadoMedicoes)} / Previsto ${fmtBRL(previstoPendenteMedicoes)}`,
+        description: `Diferença de ${fmtBRL(gapMedicoes)} — verifique medições pagas sem banco ou valores divergentes`,
+        value: gapMedicoes,
+      }],
+      route: '/cronograma',
+      routeLabel: 'Ver Medições',
+    })
+
     return all
-  }, [parcelas, pedidos, itens, etapas, medicoes, distribuicoes, mutuos, despesas, movs, linksMovs])
+  }, [parcelas, pedidos, itens, etapas, medicoes, distribuicoes, mutuos, despesas, movs, linksData])
 
   // Aggregate stats
   const stats = useMemo(() => {

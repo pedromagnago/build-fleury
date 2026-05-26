@@ -17,6 +17,7 @@ import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
 import { useMovimentacoes } from '@/hooks/useOperacional'
 import { useProject } from '@/contexts/ProjectContext'
 import { supabase } from '@/lib/supabase'
+import { useConciliacaoLinks, type ConciliacaoLink } from '@/hooks/useConciliacao'
 
 export type EquacaoStatus = 'ok' | 'warn' | 'error'
 
@@ -54,22 +55,6 @@ export interface Equacao {
   buckets: EquacaoBucket[]
 }
 
-interface ConciliacaoLink {
-  conciliacao_id: string
-  movimentacao_id: string
-  status: string
-  parcela_id: string | null
-  mutuo_id: string | null
-  mutuo_parcela_id: string | null
-  medicao_id: string | null
-  mov_valor: number
-  mov_tipo: string
-  /** Valor do rateio (cp.valor_aplicado). Pode ser < mov_valor quando a mov é
-   * dividida entre múltiplas origens. Usar este (não mov_valor) ao classificar
-   * uma parcela individual, senão rateio aparece como divergência falsa. */
-  valor_aplicado: number
-}
-
 export function useEquacoesContabeis() {
   const { currentCompany } = useProject()
   const { data: parcelas = [] } = useParcelas()
@@ -93,53 +78,11 @@ export function useEquacoesContabeis() {
     enabled: !!currentCompany,
   })
 
-  // Liga conciliações a movs e às 4 origens possíveis. Retorna 2 estruturas:
-  //   - links: uma row por (conciliacao × origem). Usado para classificar destino.
-  //   - movsConciliadas: set de mov_ids com qualquer conciliação ativa. Usado
-  //     para a Eq C — uma conciliação confirmada SEM row em conciliacao_parcelas
-  //     ainda conta como "mov conciliada", senão a Eq C inflaria órfãs.
-  const { data: linksData = { links: [], movsConciliadas: new Set<string>() }, isLoading: loadingLinks } = useQuery({
-    queryKey: ['equacoes-links', currentCompany?.id],
-    queryFn: async () => {
-      if (!currentCompany) return { links: [] as ConciliacaoLink[], movsConciliadas: new Set<string>() }
-      const { data, error } = await supabase
-        .from('conciliacoes')
-        .select(`
-          id, status, movimentacao_id,
-          movimentacoes_bancarias!inner(valor, tipo),
-          conciliacao_parcelas(parcela_id, mutuo_id, mutuo_parcela_id, medicao_id, valor_aplicado)
-        `)
-        .eq('company_id', currentCompany.id)
-        .neq('status', 'rejeitado')
-      if (error) throw error
-      const out: ConciliacaoLink[] = []
-      const movsSet = new Set<string>()
-      for (const c of (data ?? []) as any[]) {
-        movsSet.add(c.movimentacao_id)
-        const mov = Array.isArray(c.movimentacoes_bancarias)
-          ? c.movimentacoes_bancarias[0]
-          : c.movimentacoes_bancarias
-        for (const cp of (c.conciliacao_parcelas ?? [])) {
-          out.push({
-            conciliacao_id: c.id,
-            movimentacao_id: c.movimentacao_id,
-            status: c.status,
-            parcela_id: cp.parcela_id,
-            mutuo_id: cp.mutuo_id,
-            mutuo_parcela_id: cp.mutuo_parcela_id,
-            medicao_id: cp.medicao_id,
-            mov_valor: Number(mov?.valor ?? 0),
-            mov_tipo: String(mov?.tipo ?? ''),
-            valor_aplicado: Number(cp.valor_aplicado ?? 0),
-          })
-        }
-      }
-      return { links: out, movsConciliadas: movsSet }
-    },
-    enabled: !!currentCompany,
-  })
-  const links = linksData.links
-  const movsConciliadas = linksData.movsConciliadas
+  // Cache compartilhado com useCashFlowEvents e useHealthChecks.
+  // Garante que as 3 telas leiam os mesmos links e sejam invalidadas juntas.
+  const { data: linksResult, isLoading: loadingLinks } = useConciliacaoLinks()
+  const links: ConciliacaoLink[] = linksResult?.links ?? []
+  const movsConciliadas = linksResult?.movsConciliadasIds ?? new Set<string>()
 
   const isLoading = !parcelas || !pedidos || !despesas || !movs || loadingLinks || loadingMutuosPago
 
@@ -486,7 +429,7 @@ export function useEquacoesContabeis() {
         buckets: bucketsD,
       },
     ]
-  }, [parcelas, pedidos, despesas, movs, linksData, pagoMutuos, isLoading])
+  }, [parcelas, pedidos, despesas, movs, linksResult, pagoMutuos, isLoading])
 
   const totalGap = equacoes.reduce((s, e) => s + Math.abs(e.gap), 0)
 

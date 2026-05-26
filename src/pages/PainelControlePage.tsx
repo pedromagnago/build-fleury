@@ -25,6 +25,7 @@ import { useMedicoes, useMovimentacoes } from '@/hooks/useOperacional'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useProject } from '@/contexts/ProjectContext'
 import { formatCurrency } from '@/lib/utils'
+import { useHealthChecks } from '@/hooks/useHealthChecks'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -97,6 +98,11 @@ export default function PainelControlePage() {
   const { data: medicoes = [] } = useMedicoes()
   const { data: movimentacoes = [] } = useMovimentacoes()
   const { data: etapas = [] } = useEtapas()
+
+  const { checks } = useHealthChecks()
+  const checkEntradasSV = checks.find(c => c.id === 'entradas-sem-vinculo')
+  const checkSaidasSV = checks.find(c => c.id === 'saidas-sem-vinculo')
+  const checkGapMed = checks.find(c => c.id === 'gap-wbs-medicoes')
 
   const [expandedSection, setExpandedSection] = useState<'diretos' | 'indiretos' | 'capital' | null>('diretos')
   const [showMacro, setShowMacro] = useState(false)
@@ -290,6 +296,62 @@ export default function PainelControlePage() {
 
       {/* ─── CAMADA 0: AUDITORIA CONTÁBIL (3 equações que devem fechar) ─── */}
       <AuditoriaContabilCard />
+
+      {/* ─── CAMADA 0.5: RASTREABILIDADE BANCÁRIA ─── */}
+      {(() => {
+        const checks_rv = [checkEntradasSV, checkSaidasSV, checkGapMed].filter(Boolean)
+        const temProblema = checks_rv.some(c => c!.severity !== 'ok')
+        if (!temProblema) return null
+        return (
+          <div className="rounded-xl border-2 border-amber-300 bg-amber-50/30 dark:bg-amber-950/10 p-4 space-y-3">
+            <div className="flex items-center gap-2 mb-1">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <h2 className="text-sm font-bold text-amber-800 dark:text-amber-400">Rastreabilidade Bancária</h2>
+              <span className="text-xs text-amber-600">— movimentos sem vínculo bloqueiam o fechamento financeiro</span>
+            </div>
+            {checks_rv.map(check => {
+              if (!check || check.severity === 'ok') return null
+              const isCritical = check.severity === 'critical'
+              return (
+                <div key={check.id} className={`rounded-lg border p-3 ${isCritical ? 'border-red-300 bg-red-50/50 dark:bg-red-950/10' : 'border-amber-200 bg-amber-50/50 dark:bg-amber-950/10'}`}>
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-flex h-2 w-2 rounded-full ${isCritical ? 'bg-red-500' : 'bg-amber-500'}`} />
+                      <span className="text-sm font-semibold">{check.title}</span>
+                      <span className="text-xs text-muted-foreground">{check.summary}</span>
+                    </div>
+                    {check.route && (
+                      <a href={check.route} className={`text-xs font-semibold px-3 py-1 rounded-lg ${isCritical ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-amber-500 text-white hover:bg-amber-600'} transition-colors`}>
+                        {check.routeLabel}
+                      </a>
+                    )}
+                  </div>
+                  {check.items.length > 0 && (
+                    <div className="mt-2 space-y-1 max-h-48 overflow-auto">
+                      {check.items.slice(0, 15).map((item, i) => (
+                        <div key={item.id || i} className="flex items-start justify-between gap-2 text-xs py-0.5 border-t border-muted/30 first:border-0">
+                          <div className="flex-1 min-w-0">
+                            <span className="font-medium truncate block">{item.label}</span>
+                            <span className="text-muted-foreground truncate block">{item.description}</span>
+                          </div>
+                          {item.value != null && (
+                            <span className={`tabular-nums font-semibold shrink-0 ${isCritical ? 'text-red-600' : 'text-amber-700'}`}>
+                              {formatCurrency(item.value)}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                      {check.items.length > 15 && (
+                        <p className="text-xs text-muted-foreground pt-1">+{check.items.length - 15} item(s) — veja em {check.routeLabel}</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )
+      })()}
 
       {/* ─── CAMADA 1: INCONSISTÊNCIAS DETECTADAS (foco operacional) ─── */}
       <InconsistenciasTable />

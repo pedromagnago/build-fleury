@@ -5,7 +5,6 @@
  * que Dashboard, CashFlowChart e SimuladorPanel mostrem os mesmos números.
  */
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { useProject } from '@/contexts/ProjectContext'
 import { useParcelas, useContasBancarias } from '@/hooks/useFinanceiro'
 import { useMedicoes, useDistribuicao, useMovimentacoes } from '@/hooks/useOperacional'
@@ -13,7 +12,7 @@ import { useItensCompra, usePedidos } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useMutuos } from '@/hooks/useMutuos'
 import { localDate, parsearCondicao, dataEfetivaParcela } from '@/lib/parcelas'
-import { supabase } from '@/lib/supabase'
+import { useConciliacaoLinks } from '@/hooks/useConciliacao'
 import type { FinancialViewMode } from '@/components/cronograma/FinancialViewFilter'
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -91,22 +90,10 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
   const { data: distribuicoes = [] } = useDistribuicao()
   const { data: movs = [] } = useMovimentacoes()
   const { data: contasBancarias = [] } = useContasBancarias()
-  // Liga conciliacao -> parcela/mutuo/medicao para sabermos quais movs
-  // ja estao representadas por parcelas (evita dupla contagem).
-  const { data: linksMovs = [] } = useQuery({
-    queryKey: ['cashflow-links-movs', currentCompany?.id],
-    queryFn: async () => {
-      if (!currentCompany) return [] as any[]
-      const { data, error } = await supabase
-        .from('conciliacoes')
-        .select('movimentacao_id, status, conciliacao_parcelas(parcela_id, mutuo_parcela_id, mutuo_id, medicao_id)')
-        .eq('company_id', currentCompany.id)
-        .neq('status', 'rejeitado')
-      if (error) throw error
-      return data ?? []
-    },
-    enabled: !!currentCompany,
-  })
+  // Liga conciliacao -> parcela/mutuo/medicao — cache compartilhado com
+  // useHealthChecks e useEquacoesContabeis via key 'conciliacao-links'.
+  const { data: linksData } = useConciliacaoLinks()
+  const linksMovs = linksData?.rawRows ?? []
 
   // Saldo inicial = soma dos saldos iniciais de TODAS as contas ativas (multi-conta).
   // Fallback para o legado company.saldo_inicial_caixa quando ainda nao ha contas.
@@ -130,12 +117,143 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     const apenasRealizado = viewMode === 'realizado' || viewMode === 'planejado'
 
     // ═══════════════════════════════════════════════════════════
+    // PREAMBLE — Lookups e helpers (usados por todas as seções)
+    // ═══════════════════════════════════════════════════════════
+    const isAdiantamentoFeito = (m: any) => {
+      const cat = String(m.categoria ?? '').toLowerCase()
+      return cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
+    }
+
+    // Mutuos lixo (STUB_Dedupe / cancelados) — nao representam dinheiro real
+    const mutuosLixoIds = new Set<string>()
+    for (const m of (mutuos as any[])) {
+      const cat = String((m as any).categoria ?? '').toUpperCase()
+      const status = String((m as any).status ?? '').toLowerCase()
+      if (cat.includes('STUB_DEDUPE') || cat === 'STUB' || status === 'cancelado') {
+        mutuosLixoIds.add(m.id)
+      }
+    }
+
+    // Lookups: para cada item do plano, lista de movs bancarias vinculadas
+    const movsByMutuoId = new Map<string, Set<string>>()
+    const movsByParcelaId = new Map<string, Set<string>>()
+    const movsByMutuoParcelaId = new Map<string, Set<string>>()
+    const movsByMedicaoId = new Map<string, Set<string>>()
+    for (const c of (linksMovs as any[])) {
+      const links = c.conciliacao_parcelas ?? []
+      for (const l of links) {
+        const movId = c.movimentacao_id
+        if (l.parcela_id) {
+          const s = movsByParcelaId.get(l.parcela_id) ?? new Set<string>()
+          s.add(movId); movsByParcelaId.set(l.parcela_id, s)
+        }
+        if (l.mutuo_parcela_id) {
+          const s = movsByMutuoParcelaId.get(l.mutuo_parcela_id) ?? new Set<string>()
+          s.add(movId); movsByMutuoParcelaId.set(l.mutuo_parcela_id, s)
+        }
+        if (l.mutuo_id && !mutuosLixoIds.has(l.mutuo_id)) {
+          const s = movsByMutuoId.get(l.mutuo_id) ?? new Set<string>()
+          s.add(movId); movsByMutuoId.set(l.mutuo_id, s)
+        }
+        if (l.medicao_id) {
+          const s = movsByMedicaoId.get(l.medicao_id) ?? new Set<string>()
+          s.add(movId); movsByMedicaoId.set(l.medicao_id, s)
+        }
+      }
+    }
+
+    // IDs de movs que pertencem a algum item plano (parcela/mutuo_parcela/mutuo/medicao)
+    const movsConciliadasIds = new Set<string>()
+    for (const s of movsByMutuoId.values()) for (const id of s) movsConciliadasIds.add(id)
+    for (const s of movsByParcelaId.values()) for (const id of s) movsConciliadasIds.add(id)
+    for (const s of movsByMutuoParcelaId.values()) for (const id of s) movsConciliadasIds.add(id)
+    for (const s of movsByMedicaoId.values()) for (const id of s) movsConciliadasIds.add(id)
+
+    // Lookup rápido: mov_id -> objeto mov
+    const movByIdLookup = new Map<string, any>()
+    for (const mv of (movs as any[])) movByIdLookup.set(mv.id, mv)
+
+    // Soma do valor real (extrato) das movs vinculadas a cada parcela.
+    // Usado para emitir SOMENTE o residuo da parcela quando ela ainda tem
+    // saldo aberto: residuo = valor_da_parcela - soma_das_movs.
+    const movsValueByParcelaId = new Map<string, number>()
+    for (const [parcelaId, movIds] of movsByParcelaId.entries()) {
+      let soma = 0
+      for (const movId of movIds) {
+        const mv = movByIdLookup.get(movId)
+        if (mv) soma += Math.abs(Number(mv.valor || 0))
+      }
+      movsValueByParcelaId.set(parcelaId, soma)
+    }
+
+    // Mesmo padrão para medições: soma do extrato bancário vinculado a cada medição.
+    // Permite emitir o resíduo (valor_planejado - banco) quando a medição foi
+    // parcialmente recebida — sem isso o saldo a receber some do fluxo.
+    const movsValueByMedicaoId = new Map<string, number>()
+    for (const [medicaoId, movIds] of movsByMedicaoId.entries()) {
+      let soma = 0
+      for (const movId of movIds) {
+        const mv = movByIdLookup.get(movId)
+        if (mv) soma += Math.abs(Number(mv.valor || 0))
+      }
+      movsValueByMedicaoId.set(medicaoId, soma)
+    }
+
+    // Lookup reverso: mov_id -> parcela_id (primeira vinculada). Usado para
+    // enriquecer o evento bancario com etapa/fornecedor/item do pedido.
+    const parcelaIdByMovId = new Map<string, string>()
+    for (const c of (linksMovs as any[])) {
+      for (const l of (c.conciliacao_parcelas ?? [])) {
+        if (!l.parcela_id) continue
+        if (!parcelaIdByMovId.has(c.movimentacao_id)) {
+          parcelaIdByMovId.set(c.movimentacao_id, l.parcela_id)
+        }
+      }
+    }
+
+    // Lookup reverso: mov_id -> medicao_id (primeira vinculada).
+    const medicaoIdByMovId = new Map<string, string>()
+    // Lookup reverso: mov_id -> mutuo_id (primeira vinculada, exceto lixo).
+    const mutuoIdByMovId = new Map<string, string>()
+    // Lookup reverso: mov_id -> mutuo_parcela_id (primeira vinculada).
+    const mutuoParcelaIdByMovId = new Map<string, string>()
+    for (const c of (linksMovs as any[])) {
+      for (const l of (c.conciliacao_parcelas ?? [])) {
+        const movId = c.movimentacao_id
+        if (l.medicao_id && !medicaoIdByMovId.has(movId)) {
+          medicaoIdByMovId.set(movId, l.medicao_id)
+        }
+        if (l.mutuo_id && !mutuosLixoIds.has(l.mutuo_id) && !mutuoIdByMovId.has(movId)) {
+          mutuoIdByMovId.set(movId, l.mutuo_id)
+        }
+        if (l.mutuo_parcela_id && !mutuoParcelaIdByMovId.has(movId)) {
+          mutuoParcelaIdByMovId.set(movId, l.mutuo_parcela_id)
+        }
+      }
+    }
+    const medicaoById = new Map(medicoes.map(m => [m.id, m]))
+    // mutuoById e mutuoByParcelaId — enriquecem eventos bancários de mútuo conciliados.
+    const mutuoById = new Map((mutuos as any[]).filter(m => !mutuosLixoIds.has(m.id)).map(m => [m.id, m]))
+    const mutuoByParcelaId = new Map<string, any>()
+    for (const m of (mutuos as any[])) {
+      if (mutuosLixoIds.has(m.id)) continue
+      for (const p of (m.parcelas || [])) mutuoByParcelaId.set(p.id, m)
+    }
+    const parcelaById = new Map(parcelas.map(p => [p.id, p]))
+    const pedidoById = new Map(pedidos.map(p => [p.id, p]))
+    const itemById = new Map(itens.map(i => [i.id, i]))
+    const etapaById = new Map(etapas.map(e => [e.id, e]))
+
+    // ═══════════════════════════════════════════════════════════
     // 1. ENTRADAS — Medições (via Distribuições)
     // ═══════════════════════════════════════════════════════════
     medicoes.forEach(m => {
       if (!m.data_prevista) return
       // Realizado ou Planejado: só inclui medição paga (firme é coisa de pedido, não de planejado).
       if (apenasRealizado && m.status !== 'paga') return
+      // Medição já coberta por mov bancária vinculada: a mov virou evento no bloco de movs.
+      // Suprime o evento agregado para evitar dupla contagem.
+      if ((movsByMedicaoId.get(m.id)?.size ?? 0) > 0) return
 
       // Recebimento = data fim da medição + prazo configurado.
       // Sem distribuições, "data fim" = data_prevista da medição (marco de conclusão).
@@ -143,7 +261,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       if (baseDate) {
         baseDate = addDaysISO(baseDate, prazoRecebimento)
       }
-      
+
       // Vencida e não-paga: move para AMANHA (não hoje) — saldo de hoje fica igual ao Realizado.
       if (m.status !== 'paga' && baseDate < today && !apenasRealizado) {
         baseDate = amanha
@@ -196,82 +314,6 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // Captações genuínas (empréstimo recebido) = ENTRADA
     // "Adiantamento Feito" / saída conciliada como mútuo = SAÍDA
     // ═══════════════════════════════════════════════════════════
-    const isAdiantamentoFeito = (m: any) => {
-      const cat = String(m.categoria ?? '').toLowerCase()
-      return cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
-    }
-
-    // Mutuos lixo (STUB_Dedupe / cancelados) — nao representam dinheiro real
-    const mutuosLixoIds = new Set<string>()
-    for (const m of (mutuos as any[])) {
-      const cat = String((m as any).categoria ?? '').toUpperCase()
-      const status = String((m as any).status ?? '').toLowerCase()
-      if (cat.includes('STUB_DEDUPE') || cat === 'STUB' || status === 'cancelado') {
-        mutuosLixoIds.add(m.id)
-      }
-    }
-    // Lookups: para cada item do plano, lista de movs bancarias vinculadas
-    const movsByMutuoId = new Map<string, Set<string>>()
-    const movsByParcelaId = new Map<string, Set<string>>()
-    const movsByMutuoParcelaId = new Map<string, Set<string>>()
-    for (const c of (linksMovs as any[])) {
-      const links = c.conciliacao_parcelas ?? []
-      for (const l of links) {
-        const movId = c.movimentacao_id
-        if (l.parcela_id) {
-          const s = movsByParcelaId.get(l.parcela_id) ?? new Set<string>()
-          s.add(movId); movsByParcelaId.set(l.parcela_id, s)
-        }
-        if (l.mutuo_parcela_id) {
-          const s = movsByMutuoParcelaId.get(l.mutuo_parcela_id) ?? new Set<string>()
-          s.add(movId); movsByMutuoParcelaId.set(l.mutuo_parcela_id, s)
-        }
-        if (l.mutuo_id && !mutuosLixoIds.has(l.mutuo_id)) {
-          const s = movsByMutuoId.get(l.mutuo_id) ?? new Set<string>()
-          s.add(movId); movsByMutuoId.set(l.mutuo_id, s)
-        }
-      }
-    }
-    // IDs de movs que pertencem a algum item plano (parcela/mutuo_parcela/mutuo nao-lixo)
-    const movsConciliadasIds = new Set<string>()
-    for (const s of movsByMutuoId.values()) for (const id of s) movsConciliadasIds.add(id)
-    for (const s of movsByParcelaId.values()) for (const id of s) movsConciliadasIds.add(id)
-    for (const s of movsByMutuoParcelaId.values()) for (const id of s) movsConciliadasIds.add(id)
-
-    // Soma do valor real (extrato) das movs vinculadas a cada parcela.
-    // Usado para emitir SOMENTE o residuo da parcela quando ela ainda tem
-    // saldo aberto: residuo = valor_da_parcela - soma_das_movs. As movs
-    // ja viram eventos reais (bloco acima); o residuo entra como evento
-    // firme na data de vencimento, evitando que saldo parcial suma do fluxo.
-    const movByIdLookup = new Map<string, any>()
-    for (const mv of (movs as any[])) movByIdLookup.set(mv.id, mv)
-    const movsValueByParcelaId = new Map<string, number>()
-    for (const [parcelaId, movIds] of movsByParcelaId.entries()) {
-      let soma = 0
-      for (const movId of movIds) {
-        const mv = movByIdLookup.get(movId)
-        if (mv) soma += Math.abs(Number(mv.valor || 0))
-      }
-      movsValueByParcelaId.set(parcelaId, soma)
-    }
-
-    // Lookup reverso: mov_id -> parcela_id (primeira vinculada). Usado para
-    // enriquecer o evento bancario com etapa/fornecedor/item do pedido —
-    // sem isso, todo pagamento via mov vira "Banco/Banco" na arvore do
-    // fluxo, escondendo o pagamento da etapa/fornecedor original.
-    const parcelaIdByMovId = new Map<string, string>()
-    for (const c of (linksMovs as any[])) {
-      for (const l of (c.conciliacao_parcelas ?? [])) {
-        if (!l.parcela_id) continue
-        if (!parcelaIdByMovId.has(c.movimentacao_id)) {
-          parcelaIdByMovId.set(c.movimentacao_id, l.parcela_id)
-        }
-      }
-    }
-    const parcelaById = new Map(parcelas.map(p => [p.id, p]))
-    const pedidoById = new Map(pedidos.map(p => [p.id, p]))
-    const itemById = new Map(itens.map(i => [i.id, i]))
-    const etapaById = new Map(etapas.map(e => [e.id, e]))
 
     // ═══════════════════════════════════════════════════════════
     // EVENTO REAL — TODAS as movs bancarias viram eventos com valor + data REAIS.
@@ -295,6 +337,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       let parcelaNumero: number | undefined
       let parcelaTipo: 'contratual' | 'adiantamento' | undefined
       let descPrefix = ''
+      let origemMov: CashFlowEvent['meta']['origem'] = undefined
 
       const parcelaId = parcelaIdByMovId.get(mv.id)
       if (parcelaId) {
@@ -322,6 +365,28 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             forn = di.fornecedor_nome || di.categoria || 'Indireto'
             item = di.descricao
             descPrefix = `Parc ${par.numero_parcela}${forn ? ' — ' + forn : ''} · `
+            origemMov = 'despesa'
+          }
+        }
+      } else {
+        // Sem parcela vinculada — verifica medição, depois mútuo (captação ou parcela)
+        const medicaoId = medicaoIdByMovId.get(mv.id)
+        if (medicaoId) {
+          const med = medicaoById.get(medicaoId)
+          cat = 'Cliente'
+          etapa = `M${med?.numero ?? '?'}`
+          origemMov = 'medicao'
+          descPrefix = `Medição ${med?.numero ?? ''} · `
+        } else {
+          const mutuoId = mutuoIdByMovId.get(mv.id)
+          const mpId = mutuoParcelaIdByMovId.get(mv.id)
+          if (mutuoId || mpId) {
+            const mut: any = mutuoId ? mutuoById.get(mutuoId) : mutuoByParcelaId.get(mpId!)
+            cat = mut?.tipo || 'Mútuo'
+            etapa = 'Capital'
+            forn = mut?.instituicao || mut?.nome
+            origemMov = 'mutuo'
+            descPrefix = mut?.nome ? `${mut.nome} · ` : 'Mútuo · '
           }
         }
       }
@@ -342,6 +407,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           pedidoNumero,
           parcelaNumero,
           parcelaTipo,
+          origem: origemMov,
         },
       })
     }
@@ -649,7 +715,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // evento agregado. Garante saldo historico = Conciliacao.)
 
     return all
-  }, [parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, movs, linksMovs, viewMode])
+  }, [parcelas, medicoes, itens, pedidos, etapas, mutuos, distribuicoes, movs, linksData, viewMode])
 
   return { events, saldoInicial }
 }

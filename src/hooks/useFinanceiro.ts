@@ -31,6 +31,7 @@ export interface Parcela {
   item_compra_id?: string | null
   observacoes?: string | null
   fornecedor_nome?: string | null
+  fornecedor_id?: string | null
 }
 
 export interface ContaBancaria {
@@ -63,7 +64,7 @@ export function useParcelas() {
       while (hasMore) {
         const { data, error } = await supabase
           .from('parcelas')
-          .select('*, pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, nf_origem_id, valor_total_real, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at), recepcao_docs(numero_doc, serie)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
+          .select('*, recepcao_docs(numero_doc, serie), pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, nf_origem_id, valor_total_real, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at), recepcao_docs(numero_doc, serie)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
           .eq('company_id', companyId)
           .is('deleted_at', null)
           .order('data_vencimento', { ascending: true })
@@ -99,12 +100,24 @@ export function useParcelas() {
         const despesa = p.despesas_indiretas as Record<string, unknown> | null
         const fornPed = pedido?.fornecedores as Record<string, string> | null
         const fornDesp = despesa?.fornecedores as Record<string, string> | null
-        const nfDoc = pedido?.recepcao_docs as Record<string, string> | null
+        const nfDocParcela = p.recepcao_docs as Record<string, string> | null
+        const nfDocPedido = pedido?.recepcao_docs as Record<string, string> | null
+        const parcelaNfId = (p as any).nf_origem_id as string | null
+        const pedidoNfId = pedido?.nf_origem_id as string | null
+        // Exibe NF apenas em parcelas âncora: aquelas criadas pela mesma NF que
+        // originou o pedido (parcelaNfId === pedidoNfId). Parcelas de saldo
+        // (geradas quando uma NF consome um pedido pré-existente) têm nf_origem_id
+        // diferente do pedido → não exibem NF no Pagamentos para evitar confusão.
+        // Fallback para parcelas anteriores à migration (parcelaNfId nulo): usa o pedido.
+        const nfDoc = parcelaNfId && pedidoNfId && parcelaNfId === pedidoNfId
+          ? nfDocParcela
+          : (!parcelaNfId ? nfDocPedido : null)
         return {
           ...p,
           pedido_item: item?.descricao ?? (despesa?.descricao as string) ?? null,
           item_compra_id: (pedido?.item_compra_id as string) ?? null,
           fornecedor_nome: fornPed?.nome ?? fornDesp?.nome ?? null,
+          fornecedor_id: (pedido?.fornecedor_id as string) ?? (despesa?.fornecedor_id as string) ?? null,
           // Enriquecimento para hierarquia Item → Pedido → Parcela na conciliação
           pedido_numero: (pedido?.numero_pedido as number) ?? null,
           pedido_cond_pagamento: (pedido?.cond_pagamento as string) ?? null,

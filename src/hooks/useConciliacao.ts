@@ -43,6 +43,97 @@ export interface Conciliacao {
   created_at: string
 }
 
+// ─── Shared Links Query ─────────────────────────────────────
+// Única fonte de dados para conciliações × movs × origens.
+// Consumida por useCashFlowEvents, useHealthChecks e useEquacoesContabeis
+// para que os 3 leiam do mesmo cache (key 'conciliacao-links') e sejam
+// invalidados em conjunto por qualquer mutação de conciliação.
+
+export interface ConciliacaoLink {
+  conciliacao_id: string
+  movimentacao_id: string
+  status: string
+  parcela_id: string | null
+  mutuo_id: string | null
+  mutuo_parcela_id: string | null
+  medicao_id: string | null
+  mov_valor: number
+  mov_tipo: string
+  valor_aplicado: number
+}
+
+export interface ConciliacaoLinksResult {
+  /** Flat: 1 row por (conciliação × origem). Usado por useEquacoesContabeis. */
+  links: ConciliacaoLink[]
+  /** Set de movimentacao_ids com ao menos uma conciliação ativa. Usado para deduplicação. */
+  movsConciliadasIds: Set<string>
+  /** Estrutura aninhada original (conciliação → conciliacao_parcelas). Usado por useCashFlowEvents e useHealthChecks. */
+  rawRows: Array<{
+    movimentacao_id: string
+    status: string
+    conciliacao_parcelas: Array<{
+      parcela_id: string | null
+      mutuo_parcela_id: string | null
+      mutuo_id: string | null
+      medicao_id: string | null
+      valor_aplicado: number
+    }>
+  }>
+}
+
+export function useConciliacaoLinks() {
+  const { currentCompany } = useProject()
+  return useQuery<ConciliacaoLinksResult>({
+    queryKey: ['conciliacao-links', currentCompany?.id],
+    queryFn: async () => {
+      if (!currentCompany) return { links: [], movsConciliadasIds: new Set(), rawRows: [] }
+      const { data, error } = await supabase
+        .from('conciliacoes')
+        .select(`
+          id, status, movimentacao_id,
+          movimentacoes_bancarias!inner(valor, tipo),
+          conciliacao_parcelas(parcela_id, mutuo_id, mutuo_parcela_id, medicao_id, valor_aplicado)
+        `)
+        .eq('company_id', currentCompany.id)
+        .neq('status', 'rejeitado')
+      if (error) throw error
+
+      const links: ConciliacaoLink[] = []
+      const movsConciliadasIds = new Set<string>()
+      const rawRows: ConciliacaoLinksResult['rawRows'] = []
+
+      for (const c of (data ?? []) as any[]) {
+        movsConciliadasIds.add(c.movimentacao_id)
+        const mov = Array.isArray(c.movimentacoes_bancarias)
+          ? c.movimentacoes_bancarias[0]
+          : c.movimentacoes_bancarias
+        rawRows.push({
+          movimentacao_id: c.movimentacao_id,
+          status: c.status,
+          conciliacao_parcelas: c.conciliacao_parcelas ?? [],
+        })
+        for (const cp of (c.conciliacao_parcelas ?? [])) {
+          links.push({
+            conciliacao_id: c.id,
+            movimentacao_id: c.movimentacao_id,
+            status: c.status,
+            parcela_id: cp.parcela_id,
+            mutuo_id: cp.mutuo_id,
+            mutuo_parcela_id: cp.mutuo_parcela_id,
+            medicao_id: cp.medicao_id,
+            mov_valor: Number(mov?.valor ?? 0),
+            mov_tipo: String(mov?.tipo ?? ''),
+            valor_aplicado: Number(cp.valor_aplicado ?? 0),
+          })
+        }
+      }
+
+      return { links, movsConciliadasIds, rawRows }
+    },
+    enabled: !!currentCompany,
+  })
+}
+
 // ─── Queries ────────────────────────────────────────────────
 
 export function useConciliacoes() {
@@ -263,6 +354,7 @@ export function useImportExtrato() {
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       const reconcileMsg = result.autoReconciled > 0 ? ` · ${result.autoReconciled} reconciliadas automaticamente` : ''
       toast.success(`Importadas ${result.inserted} transações (${result.skipped} duplicadas ignoradas)${reconcileMsg}`)
@@ -474,6 +566,7 @@ export function useRunConciliacao() {
     },
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       const s = result.stats
@@ -548,6 +641,7 @@ export function useConfirmConciliacao() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       toast.success('Conciliação confirmada')
@@ -593,6 +687,7 @@ export function useRejectConciliacao() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       toast.success('Sugestão rejeitada')
@@ -901,6 +996,25 @@ export function useUndoConciliacao() {
       await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conciliacaoId)
       await supabase.from('conciliacoes').delete().eq('id', conciliacaoId)
 
+      // Fix B: após o trigger recalcular valor_pago a partir dos links restantes,
+      // limpa data_pagamento_real nas parcelas que ficaram zeradas. O trigger não
+      // toca esse campo — sem esta limpeza a parcela volta a 'a_vencer' mas ainda
+      // exibe a data de pagamento anterior, confundindo o operador.
+      const parcelaIdsUndo = (conc.conciliacao_parcelas ?? [])
+        .filter((l: any) => l.parcela_id)
+        .map((l: any) => l.parcela_id as string)
+      if (parcelaIdsUndo.length > 0) {
+        const { data: parcelasAposUndo } = await supabase
+          .from('parcelas')
+          .select('id, valor_pago')
+          .in('id', parcelaIdsUndo)
+        for (const p of (parcelasAposUndo ?? [])) {
+          if (Number(p.valor_pago || 0) <= 0.005) {
+            await supabase.from('parcelas').update({ data_pagamento_real: null }).eq('id', p.id)
+          }
+        }
+      }
+
       await supabase.from('audit_logs').insert({
         company_id: currentCompany.id,
         tabela: 'conciliacoes',
@@ -915,8 +1029,11 @@ export function useUndoConciliacao() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
       toast.success('Conciliação desfeita')
     },
     onError: (err: Error) => toast.error('Erro ao desfazer: ' + err.message),
@@ -1030,6 +1147,7 @@ export function useUpdateConciliacao() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['medicoes'] })
@@ -1142,6 +1260,7 @@ export function useCreateConciliacao() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['medicoes'] })
@@ -1248,6 +1367,7 @@ export function useCreateMovimentoManual() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['medicoes'] })
       qc.invalidateQueries({ queryKey: ['mutuos'] })
@@ -1272,24 +1392,40 @@ export function useDeleteMovimento() {
         .single()
       if (!mov) throw new Error('Movimento não encontrado')
 
+      // Busca todos os 4 tipos de vínculo — não só parcela_id
       const { data: concs } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, valor_aplicado)')
+        .select('*, conciliacao_parcelas(parcela_id, medicao_id, mutuo_parcela_id, mutuo_id, valor_aplicado)')
         .eq('movimentacao_id', movId)
+
+      const today = new Date().toISOString().split('T')[0]!
 
       for (const conc of (concs ?? []) as any[]) {
         for (const link of (conc.conciliacao_parcelas ?? [])) {
-          const { data: p } = await supabase
-            .from('parcelas')
-            .select('valor_pago')
-            .eq('id', link.parcela_id)
-            .single()
-          if (!p) continue
-          const novoPago = Math.max(0, (Number(p.valor_pago) || 0) - Number(link.valor_aplicado))
-          const { status, data_pagamento_real } = await computeParcelaStatus(link.parcela_id, novoPago)
-          await supabase.from('parcelas').update({
-            valor_pago: novoPago, status, data_pagamento_real,
-          }).eq('id', link.parcela_id)
+          const origem = inferirOrigem(link)
+          if (!origem) continue
+
+          if (origem.origem === 'parcela') {
+            // Para parcelas: reverte valor_pago + limpa data_pagamento_real via computeParcelaStatus.
+            // O trigger trg_sync_parcela_valor_pago vai recalcular valor_pago a partir de
+            // SUM(valor_aplicado) quando deletarmos conciliacao_parcelas abaixo, mas não limpa
+            // data_pagamento_real — fazemos isso manualmente aqui.
+            const { data: p } = await supabase
+              .from('parcelas')
+              .select('valor_pago')
+              .eq('id', origem.origem_id)
+              .single()
+            if (p) {
+              const novoPago = Math.max(0, (Number(p.valor_pago) || 0) - Number(link.valor_aplicado))
+              const { status, data_pagamento_real } = await computeParcelaStatus(origem.origem_id, novoPago)
+              await supabase.from('parcelas').update({
+                valor_pago: novoPago, status, data_pagamento_real,
+              }).eq('id', origem.origem_id)
+            }
+          } else {
+            // Para medição / mutuo_parcela / mutuo: não há trigger — reverte via aplicarDeltaOrigem.
+            await aplicarDeltaOrigem(origem.origem, origem.origem_id, -Number(link.valor_aplicado), today)
+          }
         }
         await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conc.id)
         await supabase.from('conciliacoes').delete().eq('id', conc.id)
@@ -1311,7 +1447,10 @@ export function useDeleteMovimento() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
       toast.success('Movimento excluído')
     },
     onError: (err: Error) => toast.error('Erro ao excluir: ' + err.message),

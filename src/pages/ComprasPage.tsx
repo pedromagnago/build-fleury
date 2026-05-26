@@ -710,7 +710,16 @@ function PedidosTab({ search }: { search: string }) {
   // PR 3.4: filtros da aba Pedidos
   const [filtroStatus, setFiltroStatus] = useState<string>('')
   const [filtroFornecedor, setFiltroFornecedor] = useState<string>('')
-  const [filtroOrigem, setFiltroOrigem] = useState<'todos' | 'nf' | 'manual'>('todos')
+  const [filtroOrigem, setFiltroOrigem] = useState<'todos' | 'nf' | 'manual' | 'livre'>('todos')
+
+  // Pedidos que têm ao menos uma parcela com pagamento — usados pelo filtro "Sem vínculo"
+  const pedidosComPagamento = useMemo(() => {
+    const s = new Set<string>()
+    parcelasAll.forEach((pa: any) => {
+      if (Number(pa.valor_pago) > 0 && pa.pedido_id) s.add(pa.pedido_id)
+    })
+    return s
+  }, [parcelasAll])
 
   const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'], observacoes: '', is_previsao_orcamento: false }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
@@ -1279,6 +1288,11 @@ function PedidosTab({ search }: { search: string }) {
     if (filtroFornecedor && p.fornecedor_id !== filtroFornecedor) return false
     if (filtroOrigem === 'nf' && !p.nf_origem_id) return false
     if (filtroOrigem === 'manual' && p.nf_origem_id) return false
+    if (filtroOrigem === 'livre') {
+      if (p.nf_origem_id) return false
+      if (pedidosComPagamento.has(p.id)) return false
+      if ((p.itens ?? []).some(pi => Number(pi.qtd_recebida) > 0)) return false
+    }
     return true
   })
 
@@ -1478,6 +1492,7 @@ function PedidosTab({ search }: { search: string }) {
             <option value="todos">Origem: todos</option>
             <option value="nf">Via NF</option>
             <option value="manual">Manual</option>
+            <option value="livre">Sem vínculo</option>
           </select>
           {(filtroStatus || filtroFornecedor || filtroOrigem !== 'todos') && (
             <button onClick={() => { setFiltroStatus(''); setFiltroFornecedor(''); setFiltroOrigem('todos') }} className="rounded border px-2 py-1 text-[11px] hover:bg-muted">Limpar filtros</button>
