@@ -10,6 +10,7 @@
  *  - cond_pagamento mudou e parcelas NÃO foram editadas → flag "regenerar?"
  */
 import * as XLSX from 'xlsx'
+import { safeSheetToJson } from '@/lib/safeXlsx'
 import { supabase } from '@/lib/supabase'
 import { toDateISO, findCol } from '@/lib/wbsImport'
 
@@ -124,7 +125,7 @@ export function parseComercialImport(buffer: ArrayBuffer): {
   const wb = XLSX.read(buffer, { type: 'array', cellDates: false })
   const read = (name: string): Record<string, unknown>[] => {
     const sheet = wb.Sheets[name]
-    return sheet ? (XLSX.utils.sheet_to_json(sheet) as Record<string, unknown>[]) : []
+    return sheet ? safeSheetToJson<Record<string, unknown>>(sheet) : []
   }
   return {
     pedidoRows: read('Pedidos'),

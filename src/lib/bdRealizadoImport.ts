@@ -9,6 +9,7 @@
  * Custos registrados a nível de ETAPA (departamento), não de item WBS.
  */
 import * as XLSX from 'xlsx'
+import { safeSheetToJson } from '@/lib/safeXlsx'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -184,7 +185,7 @@ function extractRows(workbook: XLSX.WorkBook): Record<string, any>[] {
   })
   const sheetName = preferred ?? workbook.SheetNames[0] ?? 'BD REALIZADO'
   const ws = workbook.Sheets[sheetName]!
-  const arr = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '', raw: false })
+  const arr = safeSheetToJson<unknown[]>(ws, { header: 1, defval: '', raw: false })
   if (arr.length === 0) return []
 
   const KEYWORDS = ['data', 'fornecedor', 'valor', 'categoria', 'tipo', 'conta', 'pagto', 'emissao', 'emissão']

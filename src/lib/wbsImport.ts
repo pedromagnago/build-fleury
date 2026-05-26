@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { safeSheetToJson } from '@/lib/safeXlsx'
 import { supabase } from '@/lib/supabase'
 
 // ─── Types ────────────────────────────────────────────────
@@ -185,13 +186,13 @@ export function parseWBSImport(buffer: ArrayBuffer): { etapaRows: Record<string,
   const wb = XLSX.read(buffer, { type: 'array' })
 
   const etapaSheet = wb.Sheets['Etapas']
-  const etapaRows = etapaSheet ? (XLSX.utils.sheet_to_json(etapaSheet) as Record<string, unknown>[]) : []
+  const etapaRows = etapaSheet ? safeSheetToJson<Record<string, unknown>>(etapaSheet) : []
 
   const itemSheet = wb.Sheets['Itens de Compra']
-  const itemRows = itemSheet ? (XLSX.utils.sheet_to_json(itemSheet) as Record<string, unknown>[]) : []
+  const itemRows = itemSheet ? safeSheetToJson<Record<string, unknown>>(itemSheet) : []
 
   const distSheet = wb.Sheets['Distribuição']
-  const distRows = distSheet ? (XLSX.utils.sheet_to_json(distSheet) as Record<string, unknown>[]) : []
+  const distRows = distSheet ? safeSheetToJson<Record<string, unknown>>(distSheet) : []
 
   return { etapaRows, itemRows, distRows }
 }

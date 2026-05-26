@@ -383,10 +383,10 @@ Usuário acessa /documentos → clica "Upload"
 ```
 Edge Function "process-document" recebe documento_id
     │
-    ├── ETAPA 1 — Extração (OCR + Claude API)
+    ├── ETAPA 1 — Extração (OCR + OpenAI API)
     │     │
     │     ├── Baixa arquivo do Storage
-    │     ├── SE PDF/imagem → envia como documento para Claude API
+    │     ├── SE PDF/imagem → envia como documento para OpenAI API
     │     ├── SE XML NF-e → parseia XML diretamente (sem IA)
     │     │
     │     ├── Prompt de extração pede JSON estruturado:
@@ -401,7 +401,7 @@ Edge Function "process-document" recebe documento_id
     │     │
     │     └── Atualiza status: "recebido" → "processando"
     │
-    ├── ETAPA 2 — Classificação (Claude API + contexto)
+    ├── ETAPA 2 — Classificação (OpenAI API + contexto)
     │     │
     │     ├── Busca lista de etapas do projeto
     │     ├── Busca lista de itens_compra com fornecedores e valores
@@ -424,7 +424,7 @@ Edge Function "process-document" recebe documento_id
     │     │     WHERE etapa_id = proposta AND tipo = proposta AND valor_saldo > 0
     │     │
     │     ├── SE múltiplos candidatos:
-    │     │     → Segundo prompt Claude API para desempate
+    │     │     → Segundo prompt OpenAI API para desempate
     │     │     → Critérios: similaridade de descrição, fornecedor, valor próximo
     │     │
     │     ├── SE nenhum candidato:

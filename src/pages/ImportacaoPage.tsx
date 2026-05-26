@@ -17,6 +17,7 @@ import { exportComercialToExcel } from '@/lib/comercialExport'
 import { parseComercialImport, buildComercialPreview, type ComercialPreview } from '@/lib/comercialImport'
 import ComercialImportPreviewModal from '@/components/cronograma/ComercialImportPreviewModal'
 import * as XLSX from 'xlsx'
+import { safeSheetToJson } from '@/lib/safeXlsx'
 import {
   Upload, FileSpreadsheet, AlertCircle, CheckCircle2, X, Download,
   ArrowRight, ShoppingCart, Calendar, BarChart3, Plus, Trash2,
@@ -84,7 +85,7 @@ function parseSheetToRows(worksheet: XLSX.WorkSheet): { headers: string[]; rows:
   // Read as array-of-arrays to detect the real header row when the sheet has
   // descriptive lines on top (ex.: SFP template has 3 descriptive rows before
   // the ETAPA/ITEM/... header).
-  const arr = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: '', raw: false })
+  const arr = safeSheetToJson<unknown[]>(worksheet, { header: 1, defval: '', raw: false })
   if (arr.length === 0) return { headers: [], rows: [] }
 
   const HEADER_KEYWORDS = [

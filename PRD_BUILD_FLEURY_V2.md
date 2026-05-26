@@ -89,10 +89,10 @@ Regra: quando o gestor altera a data de uma etapa no cronograma, o sistema recal
 Documento (upload: NF, recibo, pedido, comprovante)
     │
     ▼
-OCR + Extração (Edge Function + Claude API)
+OCR + Extração (Edge Function + OpenAI API)
     │  Extrai: fornecedor, CNPJ, valor, itens, data, condição de pagamento
     ▼
-Classificação (Edge Function + Claude API)
+Classificação (Edge Function + OpenAI API)
     │  Identifica: etapa de obra, tipo de serviço, item de compra vinculado
     │  Calcula: saldo disponível, score de confiança (0 a 1)
     ▼
@@ -245,7 +245,7 @@ Tabela agrupada por etapa → item, com fornecedor, preço, condição, pedidos.
 **Funcionalidades:**
 - Upload de documentos: NF (PDF/imagem/XML NF-e), recibo, pedido de compra, comprovante de pagamento
 - Processamento automático por IA ao fazer upload:
-  1. Extração: OCR + Claude API extrai fornecedor, CNPJ, itens, valores, datas
+  1. Extração: OCR + OpenAI API extrai fornecedor, CNPJ, itens, valores, datas
   2. Classificação: identifica etapa de obra, item de compra, pedido correspondente
   3. Match orçamentário: localiza a previsão de pagamento mais provável, calcula saldo
   4. Score de confiança (0 a 1) com justificativa
@@ -362,9 +362,9 @@ Tabela agrupada por etapa → item, com fornecedor, preço, condição, pedidos.
 ```
 Upload → Armazenamento (Supabase Storage)
   → Edge Function "process-document"
-    → Etapa 1: Extração (OCR + Claude API)
-    → Etapa 2: Classificação (Claude API + contexto do orçamento)
-    → Etapa 3: Match com orçamento (SQL + Claude API para desempate)
+    → Etapa 1: Extração (OCR + OpenAI API)
+    → Etapa 2: Classificação (OpenAI API + contexto do orçamento)
+    → Etapa 3: Match com orçamento (SQL + OpenAI API para desempate)
     → Etapa 4: Cálculo de saldo e score
     → Insere em classificacoes_ia
     → Se score >= limiar → auto-approve → registra pagamento
@@ -430,7 +430,7 @@ Quando classificação é aprovada (manual ou auto):
 | Formulários | React Hook Form + Zod |
 | Gráficos | Recharts |
 | Backend | Supabase (PostgreSQL + Auth + Storage + Edge Functions) |
-| IA | Claude API (Anthropic) — extração, classificação, match |
+| IA | OpenAI GPT-4o / GPT-4o-mini — extração, classificação, match, simulador |
 | Cron | pg_cron (refresh de views materializadas) |
 
 ---

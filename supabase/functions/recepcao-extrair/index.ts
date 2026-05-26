@@ -129,41 +129,59 @@ FIDELIDADE — NÃO INVENTE
 - Quantidade, valor unitário, valor total: leia o que está escrito. Se um valor parece improvável (R$ 36864 numa torneira), provavelmente você confundiu coluna — refaça a leitura ANTES de devolver.`
 
 async function callOpenAI(messages: any[]): Promise<{ json: any; usage: any }> {
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${OPENAI_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages,
-      response_format: { type: 'json_object' },
-      temperature: 0,
-      // max_tokens generoso pra cobrir NF de até ~80 itens. Sem isso, resposta
-      // pode vir truncada e quebrar o JSON.parse com erro genérico.
-      max_tokens: 8000,
-    }),
-  })
-  if (!resp.ok) {
-    const text = await resp.text()
-    throw new Error(`OpenAI ${resp.status}: ${text}`)
+  const MAX_RETRIES = 3
+  const RETRY_DELAYS = [1000, 2000, 4000] // exponential backoff in ms
+  const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages,
+        response_format: { type: 'json_object' },
+        temperature: 0,
+        // max_tokens generoso pra cobrir NF de até ~80 itens. Sem isso, resposta
+        // pode vir truncada e quebrar o JSON.parse com erro genérico.
+        max_tokens: 8000,
+      }),
+    })
+
+    if (!resp.ok) {
+      const text = await resp.text()
+      // Retry on transient errors
+      if (RETRYABLE_STATUSES.has(resp.status) && attempt < MAX_RETRIES) {
+        const delay = RETRY_DELAYS[attempt] ?? 4000
+        console.warn(`[recepcao-extrair] OpenAI ${resp.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)
+        await new Promise(r => setTimeout(r, delay))
+        continue
+      }
+      throw new Error(`OpenAI ${resp.status}: ${text}`)
+    }
+
+    const data = await resp.json()
+    const content = data.choices?.[0]?.message?.content
+    if (typeof content !== 'string') {
+      throw new Error(`OpenAI retornou conteúdo inesperado: ${JSON.stringify(data).slice(0, 500)}`)
+    }
+    const finishReason = data.choices?.[0]?.finish_reason
+    if (finishReason && finishReason !== 'stop') {
+      // length, content_filter, tool_calls — qualquer um diferente de 'stop' indica resposta incompleta
+      console.warn(`[recepcao-extrair] finish_reason=${finishReason} — resposta possivelmente incompleta`)
+    }
+    try {
+      return { json: JSON.parse(content), usage: data.usage }
+    } catch (parseErr) {
+      throw new Error(`Falha ao parsear JSON da OpenAI (finish_reason=${finishReason ?? 'unknown'}): ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. Trecho do retorno: ${content.slice(0, 300)}`)
+    }
   }
-  const data = await resp.json()
-  const content = data.choices?.[0]?.message?.content
-  if (typeof content !== 'string') {
-    throw new Error(`OpenAI retornou conteúdo inesperado: ${JSON.stringify(data).slice(0, 500)}`)
-  }
-  const finishReason = data.choices?.[0]?.finish_reason
-  if (finishReason && finishReason !== 'stop') {
-    // length, content_filter, tool_calls — qualquer um diferente de 'stop' indica resposta incompleta
-    console.warn(`[recepcao-extrair] finish_reason=${finishReason} — resposta possivelmente incompleta`)
-  }
-  try {
-    return { json: JSON.parse(content), usage: data.usage }
-  } catch (parseErr) {
-    throw new Error(`Falha ao parsear JSON da OpenAI (finish_reason=${finishReason ?? 'unknown'}): ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. Trecho do retorno: ${content.slice(0, 300)}`)
-  }
+
+  // Should never reach here, but TypeScript needs it
+  throw new Error('OpenAI: max retries exceeded')
 }
 
 // Custo aproximado em centavos. Tabela atualizada (USD/M tokens, conversão BRL ~5x → cents BR).
@@ -182,14 +200,37 @@ function estimateCostCents(usage: any, model: string): number {
   return Math.round((inCost + outCost) * 100 * 100) / 100
 }
 
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
 const CORS = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': Deno.env.get('ALLOWED_ORIGIN') ?? '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
+
+  // JWT validation — block unauthenticated calls to prevent API credit abuse
+  const authHeader = req.headers.get('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return new Response(
+      JSON.stringify({ error: 'Missing or invalid Authorization header' }),
+      { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } }
+    )
+  }
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!
+  const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  const supabase = createClient(supabaseUrl, supabaseServiceKey)
+  const token = authHeader.replace('Bearer ', '')
+  const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+  if (authError || !user) {
+    return new Response(
+      JSON.stringify({ error: 'Unauthorized: invalid or expired token' }),
+      { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } }
+    )
+  }
+
   try {
     const body = await req.json()
     const { kind, content, prompt_extra } = body

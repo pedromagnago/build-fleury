@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { safeSheetToJson } from '@/lib/safeXlsx';
 import { supabase } from '@/lib/supabase';
 
 export interface ParsedServico {
@@ -51,7 +52,7 @@ function excelDateToISO(val: unknown): string {
 export function parseComposicaoMedicoes(file: ArrayBuffer): ComposicaoParsed {
   const wb = XLSX.read(file, { type: 'array', cellDates: true });
   const sheet = wb.Sheets[wb.SheetNames[0]!]!;
-  const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null }) as unknown[][];
+  const data = safeSheetToJson<unknown[]>(sheet, { header: 1, defval: null });
 
   // 1. Extrair serviços (rows 8+)
   const servicos: ParsedServico[] = [];
