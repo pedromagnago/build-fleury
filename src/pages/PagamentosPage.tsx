@@ -919,6 +919,7 @@ function ParcelasTab({ search }: { search: string }) {
       >
         <PagamentosBulkActions
           parcelas={parcelas}
+          allParcelas={allFiltered}
           selectedIds={selection.selected}
           fornecedorMap={fornecedorMap}
           onDone={selection.clear}

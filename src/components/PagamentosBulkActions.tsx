@@ -14,6 +14,7 @@ import {
 
 interface Props {
   parcelas: Parcela[]
+  allParcelas?: any[] // inclui mútuos e amortizações — usado só no export
   selectedIds: Set<string>
   fornecedorMap: Map<string, string> // pedido_id -> fornecedor name
   onDone: () => void
@@ -21,9 +22,13 @@ interface Props {
 
 type ModalType = 'pagar' | 'adiar' | 'excluir' | 'editar' | 'estornar' | null
 
-export default function PagamentosBulkActions({ parcelas, selectedIds, fornecedorMap, onDone }: Props) {
+export default function PagamentosBulkActions({ parcelas, allParcelas, selectedIds, fornecedorMap, onDone }: Props) {
   const [modal, setModal] = useState<ModalType>(null)
   const selected = useMemo(() => parcelas.filter(p => selectedIds.has(p.id)), [parcelas, selectedIds])
+  const selectedForExport = useMemo(
+    () => (allParcelas ?? parcelas).filter((p: any) => selectedIds.has(p.id)),
+    [allParcelas, parcelas, selectedIds]
+  )
   const hasPagas = selected.some(p => p.status === 'paga')
 
   return (
@@ -31,7 +36,7 @@ export default function PagamentosBulkActions({ parcelas, selectedIds, fornecedo
       <BulkBtn icon={CreditCard} label="Pagar" onClick={() => setModal('pagar')} />
       <BulkBtn icon={Pencil} label="Editar em Lote" onClick={() => setModal('editar')} />
       <BulkBtn icon={CalendarClock} label="Adiar" onClick={() => setModal('adiar')} />
-      <BulkBtn icon={Download} label="Exportar" onClick={() => handleExport(selected, fornecedorMap)} />
+      <BulkBtn icon={Download} label="Exportar" onClick={() => handleExport(selectedForExport, fornecedorMap)} />
       {hasPagas && <BulkBtn icon={RotateCcw} label="Estornar" onClick={() => setModal('estornar')} />}
       <BulkBtn icon={Trash2} label="Excluir" onClick={() => setModal('excluir')} />
 
@@ -289,14 +294,20 @@ function AdiarModal({ parcelas, onClose, onDone }: { parcelas: Parcela[]; onClos
 }
 
 // ---------------------------------------------------------------------------
-function handleExport(parcelas: Parcela[], fornecedorMap: Map<string, string>) {
-  const data = parcelas.map(p => ({
-    '#': p.numero_parcela, 'Fornecedor': fornecedorMap.get(p.pedido_id ?? '') ?? '',
-    'Valor': p.valor, 'Pago': p.valor_pago, 'Saldo': p.valor - p.valor_pago,
-    'Vencimento': p.data_vencimento, 'Status': p.status,
+function handleExport(items: any[], fornecedorMap: Map<string, string>) {
+  const data = items.map((p: any) => ({
+    '#': p.numero_parcela,
+    'Fornecedor': p._mutuoNome || (fornecedorMap.get(p.pedido_id ?? '') ?? ''),
+    'Descrição': p.descricao ?? '',
+    'Valor': p.valor,
+    'Pago': p.valor_pago,
+    'Saldo': p.valor - p.valor_pago,
+    'Vencimento': p.data_vencimento,
+    'Status': p.status,
+    'NF': p.nf_numero ?? '',
   }))
   exportToExcel(data, `parcelas_${new Date().toISOString().split('T')[0]}`, 'Parcelas')
-  toast.success(`${parcelas.length} parcelas exportadas`)
+  toast.success(`${items.length} parcelas exportadas`)
 }
 
 // Shared UI
