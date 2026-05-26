@@ -47,7 +47,7 @@ function fmtBRL(v: number): string {
 }
 
 export function useHealthChecks() {
-  const { currentCompany } = useProject()
+  useProject()
   const { data: parcelas = [] } = useParcelas()
   const { data: pedidos = [] } = usePedidos()
   const { data: itens = [] } = useItensCompra()
@@ -650,7 +650,7 @@ export function useHealthChecks() {
     //     Total WBS (valor_planejado) vs total financeiro (banco vinculado + previsto sem banco).
     //     Capital de giro e custos indiretos ficam de fora desta equação.
     // ═══════════════════════════════════════════════════════════
-    const medicoesPorId = new Map(medicoes.map(m => [m.id, m]))
+
     // Movs de banco vinculadas a medições
     const movsVinculadasAMedicao = new Set<string>()
     for (const c of (linksMovs as any[])) {
