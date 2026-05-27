@@ -58,6 +58,7 @@ FORMATO DE SAÍDA (JSON estrito, sem markdown, sem comentários):
   "documento": {
     "numero": string|null,
     "serie": string|null,
+    "chave_acesso": string|null,
     "data_emissao": "YYYY-MM-DD"|null,
     "data_vencimento": "YYYY-MM-DD"|null,
     "valor_total": number|null,

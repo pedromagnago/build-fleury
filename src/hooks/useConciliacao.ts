@@ -597,6 +597,28 @@ export function useConfirmConciliacao() {
         .single()
       if (concErr) throw concErr
 
+      // Guard: verifica overpayment antes de confirmar — evita que parcela
+      // acumule valor_pago > valor face quando a mesma movimentação foi
+      // erroneamente conciliada a uma parcela já quitada.
+      for (const link of (conc.conciliacao_parcelas ?? [])) {
+        if (!link.parcela_id) continue
+        const { data: par } = await supabase
+          .from('parcelas')
+          .select('valor, valor_pago, status')
+          .eq('id', link.parcela_id)
+          .single()
+        if (!par) continue
+        const novoTotal = Number(par.valor_pago || 0) + Number(link.valor_aplicado || 0)
+        if (novoTotal > Number(par.valor) + 0.01) {
+          throw new Error(
+            `Pagamento excederia o valor da parcela (face R$ ${Number(par.valor).toFixed(2)}, ` +
+            `já conciliado R$ ${Number(par.valor_pago).toFixed(2)}, ` +
+            `aplicando R$ ${Number(link.valor_aplicado).toFixed(2)}). ` +
+            `Verifique se esta movimentação já foi conciliada em outro pedido.`
+          )
+        }
+      }
+
       const { data: mov } = await supabase
         .from('movimentacoes_bancarias')
         .select('data, conta_id, descricao, memo_raw')

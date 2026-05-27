@@ -135,24 +135,56 @@ export function ActionEngineColumn({ activeMov, activeParcela, activeMatch, save
           .update({ conciliado: true, conciliado_em: new Date().toISOString() })
           .eq('id', activeMov.id)
 
-        // Create conciliacao link
-        await supabase.from('conciliacoes').upsert({
+        // Guard: movimentação já conciliada em outro pedido?
+        const { data: concExistente } = await supabase
+          .from('conciliacoes')
+          .select('id, conciliacao_parcelas(parcela_id)')
+          .eq('movimentacao_id', activeMov.id)
+          .eq('status', 'confirmado')
+          .maybeSingle()
+        if (concExistente) {
+          const outraParcela = concExistente.conciliacao_parcelas?.[0]?.parcela_id
+          if (outraParcela && outraParcela !== activeParcela.id) {
+            throw new Error('Esta movimentação já foi conciliada em outro pedido. Estorne lá antes de reutilizá-la aqui.')
+          }
+        }
+
+        // Guard: parcela não pode receber além do valor face
+        const novoTotal = Number(activeParcela.valor_pago || 0) + Number(activeMov.valor || 0)
+        if (novoTotal > Number(activeParcela.valor) + 0.01) {
+          throw new Error(
+            `Pagamento excederia o valor da parcela (face R$ ${Number(activeParcela.valor).toFixed(2)}, ` +
+            `já pago R$ ${Number(activeParcela.valor_pago || 0).toFixed(2)}). ` +
+            `Esta parcela já está quitada.`
+          )
+        }
+
+        // Create conciliacao (upsert usa movimentacao_id — UNIQUE no banco)
+        const { data: concRow, error: concErr } = await supabase.from('conciliacoes').upsert({
           company_id: currentCompany.id,
           movimentacao_id: activeMov.id,
-          parcela_id: activeParcela.id,
+          match_type: 'manual',
+          confidence: 100,
+          diferenca: Math.abs(Number(activeMov.valor) - Number(activeParcela.valor)),
           status: 'confirmado',
-          tipo_match: 'manual',
-          confianca: 100,
-        }, { onConflict: 'company_id,movimentacao_id' })
+        }, { onConflict: 'movimentacao_id' }).select('id').single()
+        if (concErr) throw concErr
 
-        // Update parcela status if needed
-        if (activeParcela.status !== 'paga') {
-          await supabase.from('parcelas').update({
-            status: 'paga',
-            valor_pago: activeParcela.valor,
-            data_pagamento_real: activeMov.data,
-          }).eq('id', activeParcela.id)
-        }
+        // Vincula parcela — trigger trg_sync_parcela_valor_pago recalcula valor_pago/status
+        await supabase.from('conciliacao_parcelas').upsert({
+          conciliacao_id: concRow.id,
+          parcela_id: activeParcela.id,
+          valor_aplicado: Number(activeMov.valor),
+        }, { onConflict: 'conciliacao_id,parcela_id' }).throwOnError()
+
+        // Persistir campos que o trigger não toca
+        await supabase.from('parcelas').update({
+          data_pagamento_real: activeMov.data,
+          forma_pagamento: activeMov.descricao?.includes('PIX') ? 'PIX'
+            : activeMov.descricao?.includes('Boleto') || activeMov.descricao?.includes('PAG') ? 'Boleto'
+            : null,
+          conta_bancaria_id: activeMov.conta_id ?? null,
+        }).eq('id', activeParcela.id)
 
         qc.invalidateQueries({ queryKey: ['movimentacoes'] })
         qc.invalidateQueries({ queryKey: ['conciliacoes'] })

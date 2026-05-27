@@ -54,6 +54,8 @@ export default function GerarPedidosWizard({ onClose }: { onClose: () => void })
   const [overrideCond, setOverrideCond] = useState('')
 
   const [generating, setGenerating] = useState(false)
+  // Modo agrupado: cria 1 pedido com N pedido_itens por lote (em vez de N pedidos 1:1)
+  const [modoAgrupado, setModoAgrupado] = useState(false)
 
   // ── Step 1: Filtered items ──────────────────────────
   const itensSemPedido = useMemo(() => {
@@ -175,47 +177,120 @@ export default function GerarPedidosWizard({ onClose }: { onClose: () => void })
     let successParcelas = 0
     const errors: string[] = []
 
-    for (const row of previewPedidos) {
-      try {
-        const { data: pedido, error: pedidoErr } = await supabase
-          .from('pedidos')
-          .insert({
-            company_id: currentCompany.id,
-            item_compra_id: row.item.id,
-            casas_lote: row.casas,
-            qtd_lote: row.qtd,
-            valor_unitario_real: row.valorUnit,
-            valor_total_real: row.valorTotal,
-            fornecedor_id: row.fornecedor?.id ?? null,
-            cond_pagamento: row.condPagamento || null,
-            data_entrega_prevista: row.dataEntrega || null,
-            status: 'planejado',
+    if (modoAgrupado) {
+      // Modo agrupado: 1 pedido com N pedido_itens por lote
+      const selectedItems = itens.filter((i) => selectedIds.has(i.id))
+      const fornecedor = useItemConfig
+        ? (selectedItems[0] ? fornecedores.find(f => f.id === selectedItems[0]!.fornecedor_id) ?? null : null)
+        : fornecedores.find(f => f.id === overrideFornecedor) ?? null
+      const cond = useItemConfig ? (selectedItems[0]?.cond_pagamento ?? '') : overrideCond
+
+      for (let li = 0; li < lotes.length; li++) {
+        const lote = lotes[li]!
+        try {
+          const linhasItens = selectedItems.map((item, idx) => {
+            const qtd = Math.round(lote.casas * (item.qtd_por_casa ?? 0) * 100) / 100
+            const valorUnit = item.custo_unitario_orcado ?? 0
+            return { item, qtd, valorUnit, valorTotal: Math.round(qtd * valorUnit * 100) / 100, ordem: idx + 1 }
           })
-          .select()
-          .single()
+          const valorTotalPedido = linhasItens.reduce((s, l) => s + l.valorTotal, 0)
 
-        if (pedidoErr) throw pedidoErr
-        successPedidos++
+          const { data: pedido, error: pedidoErr } = await supabase
+            .from('pedidos')
+            .insert({
+              company_id: currentCompany.id,
+              item_compra_id: null,
+              casas_lote: lote.casas,
+              qtd_lote: linhasItens.reduce((s, l) => s + l.qtd, 0),
+              valor_unitario_real: 0,
+              valor_total_real: valorTotalPedido,
+              fornecedor_id: fornecedor?.id ?? null,
+              cond_pagamento: cond || null,
+              data_entrega_prevista: lote.dataEntrega || null,
+              status: 'planejado',
+            })
+            .select()
+            .single()
 
-        if (row.valorTotal > 0 && pedido) {
-          const fallbackData = new Date()
-          fallbackData.setDate(fallbackData.getDate() + 30)
+          if (pedidoErr) throw pedidoErr
+          successPedidos++
 
-          const parcelas = gerarParcelas({
-            pedidoId: pedido.id,
-            companyId: currentCompany.id,
-            valorTotal: row.valorTotal,
-            condPagamento: row.condPagamento || 'à vista',
-            dataEntrega: row.dataEntrega ? localDate(row.dataEntrega) : fallbackData,
-          })
-          if (parcelas.length > 0) {
-            const { error: parcErr } = await supabase.from('parcelas').insert(parcelas)
-            if (parcErr) throw parcErr
-            successParcelas += parcelas.length
+          const pedidoItensInsert = linhasItens.map(l => ({
+            pedido_id: pedido.id,
+            item_compra_id: l.item.id,
+            qtd: l.qtd,
+            valor_unitario_real: l.valorUnit,
+            valor_total_real: l.valorTotal,
+            qtd_recebida: 0,
+            casas_lote: lote.casas,
+            ordem: l.ordem,
+          }))
+          const { error: piErr } = await supabase.from('pedido_itens').insert(pedidoItensInsert)
+          if (piErr) throw piErr
+
+          if (valorTotalPedido > 0) {
+            const fallbackData = new Date()
+            fallbackData.setDate(fallbackData.getDate() + 30)
+            const parcelas = gerarParcelas({
+              pedidoId: pedido.id,
+              companyId: currentCompany.id,
+              valorTotal: valorTotalPedido,
+              condPagamento: cond || 'à vista',
+              dataEntrega: lote.dataEntrega ? localDate(lote.dataEntrega) : fallbackData,
+            })
+            if (parcelas.length > 0) {
+              const { error: parcErr } = await supabase.from('parcelas').insert(parcelas)
+              if (parcErr) throw parcErr
+              successParcelas += parcelas.length
+            }
           }
+        } catch (err) {
+          errors.push(`Lote ${li + 1}: ${err instanceof Error ? err.message : 'Erro'}`)
         }
-      } catch (err) {
-        errors.push(`${row.item.codigo} (Lote ${row.loteNum}): ${err instanceof Error ? err.message : 'Erro'}`)
+      }
+    } else {
+      // Modo padrão: 1 pedido por item por lote
+      for (const row of previewPedidos) {
+        try {
+          const { data: pedido, error: pedidoErr } = await supabase
+            .from('pedidos')
+            .insert({
+              company_id: currentCompany.id,
+              item_compra_id: row.item.id,
+              casas_lote: row.casas,
+              qtd_lote: row.qtd,
+              valor_unitario_real: row.valorUnit,
+              valor_total_real: row.valorTotal,
+              fornecedor_id: row.fornecedor?.id ?? null,
+              cond_pagamento: row.condPagamento || null,
+              data_entrega_prevista: row.dataEntrega || null,
+              status: 'planejado',
+            })
+            .select()
+            .single()
+
+          if (pedidoErr) throw pedidoErr
+          successPedidos++
+
+          if (row.valorTotal > 0 && pedido) {
+            const fallbackData = new Date()
+            fallbackData.setDate(fallbackData.getDate() + 30)
+            const parcelas = gerarParcelas({
+              pedidoId: pedido.id,
+              companyId: currentCompany.id,
+              valorTotal: row.valorTotal,
+              condPagamento: row.condPagamento || 'à vista',
+              dataEntrega: row.dataEntrega ? localDate(row.dataEntrega) : fallbackData,
+            })
+            if (parcelas.length > 0) {
+              const { error: parcErr } = await supabase.from('parcelas').insert(parcelas)
+              if (parcErr) throw parcErr
+              successParcelas += parcelas.length
+            }
+          }
+        } catch (err) {
+          errors.push(`${row.item.codigo} (Lote ${row.loteNum}): ${err instanceof Error ? err.message : 'Erro'}`)
+        }
       }
     }
 
@@ -225,7 +300,9 @@ export default function GerarPedidosWizard({ onClose }: { onClose: () => void })
     qc.invalidateQueries({ queryKey: ['onboarding-status'] })
 
     if (successPedidos > 0) {
-      toast.success(`${successPedidos} pedidos criados, ${successParcelas} parcelas geradas`)
+      toast.success(modoAgrupado
+        ? `${successPedidos} pedido(s) agrupado(s) criado(s) com ${successParcelas} parcelas`
+        : `${successPedidos} pedidos criados, ${successParcelas} parcelas geradas`)
     }
     if (errors.length > 0) {
       toast.error(`${errors.length} erro(s) na geração`)
@@ -293,23 +370,38 @@ export default function GerarPedidosWizard({ onClose }: { onClose: () => void })
           )}
 
           {step === 2 && (
-            <Step2
-              pattern={pattern}
-              handlePatternChange={handlePatternChange}
-              lotes={lotes}
-              updateLote={updateLote}
-              addLote={addLote}
-              removeLote={removeLote}
-              totalCasasLotes={totalCasasLotes}
-              casasProjeto={casasProjeto}
-              useItemConfig={useItemConfig}
-              setUseItemConfig={setUseItemConfig}
-              overrideFornecedor={overrideFornecedor}
-              setOverrideFornecedor={setOverrideFornecedor}
-              overrideCond={overrideCond}
-              setOverrideCond={setOverrideCond}
-              fornecedores={fornecedores}
-            />
+            <>
+              {/* Toggle modo agrupado */}
+              <div className="mb-4 flex items-center justify-between rounded-xl border bg-muted/40 px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium">Agrupar todos os itens em 1 pedido por lote</p>
+                  <p className="text-[11px] text-muted-foreground">Cria 1 pedido com N itens (pedido_itens) em vez de N pedidos separados. Ideal para ordens de compra reais com vários materiais do mesmo fornecedor.</p>
+                </div>
+                <button
+                  onClick={() => setModoAgrupado(v => !v)}
+                  className={`relative h-6 w-11 rounded-full transition-colors ${modoAgrupado ? 'bg-primary' : 'bg-muted-foreground/30'}`}
+                >
+                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${modoAgrupado ? 'left-5' : 'left-0.5'}`} />
+                </button>
+              </div>
+              <Step2
+                pattern={pattern}
+                handlePatternChange={handlePatternChange}
+                lotes={lotes}
+                updateLote={updateLote}
+                addLote={addLote}
+                removeLote={removeLote}
+                totalCasasLotes={totalCasasLotes}
+                casasProjeto={casasProjeto}
+                useItemConfig={useItemConfig}
+                setUseItemConfig={setUseItemConfig}
+                overrideFornecedor={overrideFornecedor}
+                setOverrideFornecedor={setOverrideFornecedor}
+                overrideCond={overrideCond}
+                setOverrideCond={setOverrideCond}
+                fornecedores={fornecedores}
+              />
+            </>
           )}
 
           {step === 3 && (

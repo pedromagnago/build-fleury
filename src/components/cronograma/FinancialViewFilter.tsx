@@ -1,10 +1,9 @@
-export type FinancialViewMode = 'realizado' | 'planejado' | 'pedidos' | 'completo'
+export type FinancialViewMode = 'realizado' | 'pedidos' | 'completo'
 
 const modes: { key: FinancialViewMode; label: string; color: string; desc: string }[] = [
   { key: 'realizado', label: 'Realizado', color: 'emerald', desc: 'Apenas parcelas pagas e medições confirmadas' },
   { key: 'pedidos', label: 'Pedidos + Real', color: 'amber', desc: 'Pedidos firmes (com ou sem parcela) + realizado' },
-  { key: 'planejado', label: 'Planejado + Real', color: 'blue', desc: 'Previsto bruto (itens sem pedido) + realizado' },
-  { key: 'completo', label: 'Completo', color: 'purple', desc: 'Pedidos + Planejado + Realizado (visão total)' },
+  { key: 'completo', label: 'Completo', color: 'purple', desc: 'Pedidos + orçamento sem pedido + realizado (visão total)' },
 ]
 
 interface Props {

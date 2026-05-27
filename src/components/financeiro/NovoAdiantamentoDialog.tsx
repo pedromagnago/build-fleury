@@ -80,6 +80,10 @@ export function NovoAdiantamentoDialog({ onClose }: Props) {
           if (errP) throw errP
         }
       }
+
+      // Garante parcela de retorno em 30 dias se nenhum cronograma foi definido
+      await supabase.rpc('ensure_retorno_adiantamento', { p_mutuo_id: mut.id })
+
       return mut
     },
     onSuccess: () => {

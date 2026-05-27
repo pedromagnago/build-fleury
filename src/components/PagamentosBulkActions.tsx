@@ -90,10 +90,10 @@ function PagarLoteModal({ parcelas, fornecedorMap, onClose, onDone }: {
           status: 'paga',
         }).eq('id', p.id)
 
-        // Update item consumido via pedido
+        // Update item consumido via pedido (só quando header item_compra_id preenchido — pedidos multi-item usam pedido_itens diretamente)
         if (p.pedido_id) {
           const { data: pedido } = await supabase.from('pedidos').select('item_compra_id').eq('id', p.pedido_id).single()
-          if (pedido) {
+          if (pedido?.item_compra_id) {
             const { data: item } = await supabase.from('itens_compra').select('valor_consumido').eq('id', pedido.item_compra_id).single()
             if (item) {
               await supabase.from('itens_compra').update({

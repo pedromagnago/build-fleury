@@ -43,7 +43,7 @@ export interface CashFlowEvent {
     /** Origem da parcela: NF (pedido âncora), Saldo (regerada após consumo), Plan (planejado),
      *  Despesa (indireta), Avulsa (sem pedido nem despesa). Pra rendering hierárquico
      *  e badges visuais em fluxo de caixa. */
-    origem?: 'nf' | 'saldo' | 'planejado' | 'despesa' | 'avulsa' | 'medicao' | 'mutuo'
+    origem?: 'nf' | 'saldo' | 'planejado' | 'despesa' | 'avulsa' | 'medicao' | 'mutuo' | 'transferencia'
   }
 }
 
@@ -114,7 +114,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
 
     // Regra: em 'realizado' e 'planejado' mostramos apenas o que é REAL (pago/confirmado).
     // 'pedidos' e 'completo' incluem também as previsões firmes (parcelas/medições não pagas).
-    const apenasRealizado = viewMode === 'realizado' || viewMode === 'planejado'
+    const apenasRealizado = viewMode === 'realizado'
 
     // ═══════════════════════════════════════════════════════════
     // PREAMBLE — Lookups e helpers (usados por todas as seções)
@@ -269,6 +269,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
 
       const dists = distribuicoes.filter(dd => dd.medicao_numero === m.numero)
       if (dists.length > 0) {
+        let pushedDist = false
         dists.forEach((dist, idx) => {
           let val = Number(dist.valor_liberado_faturamento || 0)
           if (apenasRealizado) {
@@ -294,7 +295,23 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             valor: val,
             meta: { cat: 'Cliente', etapa: etapa?.nome, desc: `M${m.numero} — ${etapa?.nome || 'Serviço'}`, orig: val, origem: 'medicao' }
           })
+          pushedDist = true
         })
+
+        // Distribuições existem mas todas têm valor_liberado_faturamento = 0:
+        // cai no fallback via valor_planejado para não suprimir a entrada.
+        if (!pushedDist && !apenasRealizado) {
+          const val = m.valor_planejado
+          if (val > 0) {
+            all.push({
+              id: `med-${m.id}`,
+              date: baseDate,
+              type: 'entrada',
+              valor: val,
+              meta: { cat: 'Cliente', desc: `Medição nº ${m.numero}`, orig: val, origem: 'medicao' }
+            })
+          }
+        }
       } else {
         const val = apenasRealizado ? (m.valor_liberado || 0) : m.valor_planejado
         if (val > 0) {
@@ -387,6 +404,16 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             forn = mut?.instituicao || mut?.nome
             origemMov = 'mutuo'
             descPrefix = mut?.nome ? `${mut.nome} · ` : 'Mútuo · '
+          } else {
+            // Detecta transferências internas: categoria gravada no import ('Entrada de
+            // Transferência' / 'Saída de Transferência'). Separadas de 'Banco' para
+            // que o par entrada+saída possa ser auditado como zero líquido.
+            const catMov = (mv.categoria ?? '').toLowerCase()
+            if (catMov.includes('transferência') || catMov.includes('transferencia')) {
+              cat = 'Transferência Interna'
+              etapa = 'Transferência'
+              origemMov = 'transferencia'
+            }
           }
         }
       }
@@ -657,7 +684,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // ═══════════════════════════════════════════════════════════
     // 6. SAÍDAS BRUTAS — Previsto de itens sem pedido ("planejado" e "completo")
     // ═══════════════════════════════════════════════════════════
-    if (viewMode === 'planejado' || viewMode === 'completo') {
+    if (viewMode === 'completo') {
       const pedMap = new Map<string, number>()
       pedidos.forEach(p => pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + Number(p.valor_total_real || 0)))
 

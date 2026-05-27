@@ -28,7 +28,8 @@ import { processImageForVision, compressBase64Images } from '@/lib/recepcao/imag
 // (server-side), pra evitar o bug "value of readableStream" do pdfjs v5 no Vite.
 import { ItemPickerCombobox } from '@/components/recepcao/ItemPickerCombobox'
 import { gerarParcelas, localDate } from '@/lib/parcelas'
-import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle, History } from 'lucide-react'
+import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle, Eye } from 'lucide-react'
+import { CentralNotas } from '@/components/recepcao/CentralNotas'
 import { useEtapas } from '@/hooks/useEtapas'
 
 type Acao = 'substituir_pedido' | 'criar_pedido' | 'criar_item' | 'ignorar'
@@ -228,6 +229,11 @@ export default function RecepcaoPage() {
   const [extracao, setExtracao] = useState<Extracao | null>(null)
   const [extraindo, setExtraindo] = useState(false)
   const [aplicando, setAplicando] = useState(false)
+  // Pedido âncora selecionado pelo operador: quando preenchido, o FIFO da RPC
+  // consome SOMENTE dentro desse pedido (matching por pedido, não por item global).
+  const [pedidoAlvoId, setPedidoAlvoId] = useState<string | null>(null)
+  // ID do fornecedor resolvido localmente ao extrair a NF (usado para sugerir pedidos abertos).
+  const [fornecedorAlvoId, setFornecedorAlvoId] = useState<string | null>(null)
   const [textoColado, setTextoColado] = useState('')
   const [indexando, setIndexando] = useState(false)
   const [criandoItemIdx, setCriandoItemIdx] = useState<number | null>(null)
@@ -263,82 +269,10 @@ export default function RecepcaoPage() {
   const [existingDocConflict, setExistingDocConflict] = useState<ExistingDocConflict | null>(null)
   const [checandoDedup, setChecandoDedup] = useState(false)
 
-  // C: lista de NFs aplicadas + exclusão (com reversão via trigger no banco)
   const qc = useQueryClient()
-  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<{ id: string; numero: string | null; fornecedor: string | null } | null>(null)
-  // Rastreio: mostra em modal os efeitos que a NF gerou (consumo físico,
-  // cobertura de previsão, pedido criado). Lê de v_recepcao_rastreio.
-  const [rastreioDoc, setRastreioDoc] = useState<{ id: string; numero: string | null; fornecedor: string | null } | null>(null)
-  const { data: rastreioRows = [], isFetching: rastreioLoading } = useQuery<Array<{
-    consumo_id: string
-    tipo: 'pedido_criado' | 'cobertura_previsao' | 'consumo_fisico' | 'outro'
-    pedido_numero: number | null
-    fornecedor_nome: string | null
-    is_previsao: boolean
-    item_codigo: string | null
-    item_descricao: string | null
-    delta_qtd_recebida: number | string | null
-    valor_coberto_previsao: number | string | null
-    vu_pedido: number | string | null
-    vu_nf: number | string | null
-    valor_efeito: number | string | null
-  }>>({
-    queryKey: ['recepcao_rastreio', rastreioDoc?.id],
-    enabled: !!rastreioDoc,
-    queryFn: async () => {
-      if (!rastreioDoc) return []
-      const { data, error } = await supabase
-        .from('v_recepcao_rastreio')
-        .select('*')
-        .eq('doc_id', rastreioDoc.id)
-        .order('created_at')
-      if (error) throw error
-      return (data ?? []) as any[]
-    },
-  })
-  const { data: docsAplicadas = [] } = useQuery<Array<{
-    id: string; numero_doc: string | null; fornecedor_nome: string | null;
-    valor_total: number | string | null; data_emissao: string | null; applied_at: string | null;
-    qtdPedidosCriados: number; qtdConsumos: number;
-  }>>({
-    queryKey: ['recepcao_docs_aplicadas', currentCompany?.id],
-    enabled: !!currentCompany,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('recepcao_docs')
-        .select('id, numero_doc, fornecedor_nome, valor_total, data_emissao, applied_at, recepcao_consumos(id, created_pedido_id)')
-        .eq('company_id', currentCompany!.id)
-        .order('applied_at', { ascending: false })
-        .limit(20)
-      if (error) throw error
-      return (data ?? []).map((d: any) => ({
-        id: d.id,
-        numero_doc: d.numero_doc,
-        fornecedor_nome: d.fornecedor_nome,
-        valor_total: d.valor_total,
-        data_emissao: d.data_emissao,
-        applied_at: d.applied_at,
-        qtdConsumos: (d.recepcao_consumos ?? []).length,
-        qtdPedidosCriados: (d.recepcao_consumos ?? []).filter((c: any) => c.created_pedido_id != null).length,
-      }))
-    },
-  })
+  // view: 'central' = Central de Notas (lista + filtros), 'wizard' = Processar NF
+  const [view, setView] = useState<'central' | 'wizard'>('central')
 
-  const excluirNF = useMutation({
-    mutationFn: async (docId: string) => {
-      const { error } = await supabase.rpc('excluir_recepcao_doc', { p_doc_id: docId })
-      if (error) throw error
-    },
-    onSuccess: () => {
-      toast.success('NF excluída · consumo revertido')
-      qc.invalidateQueries({ queryKey: ['recepcao_docs_aplicadas'] })
-      qc.invalidateQueries({ queryKey: ['pedidos'] })
-      qc.invalidateQueries({ queryKey: ['pedido_itens'] })
-      qc.invalidateQueries({ queryKey: ['parcelas'] })
-      setConfirmDeleteDoc(null)
-    },
-    onError: (err: any) => toast.error('Erro ao excluir NF: ' + (err?.message ?? String(err))),
-  })
 
   const handleIndexar = async () => {
     if (!currentCompany) return
@@ -668,6 +602,7 @@ export default function RecepcaoPage() {
       e.fornecedor.cnpj,
     )
     let aliases: AliasMap = new Map()
+    if (fornecedorIdResolvido) setFornecedorAlvoId(fornecedorIdResolvido)
     if (fornecedorIdResolvido) {
       try {
         aliases = await carregarAliasesFornecedor(currentCompany.id, fornecedorIdResolvido)
@@ -722,6 +657,40 @@ export default function RecepcaoPage() {
         console.error('Erro buscar sugestões:', err)
       }
     }))
+  }
+
+  // Pedidos abertos do fornecedor desta NF — usados no seletor de pedido alvo
+  const pedidosDoFornecedor = useMemo(() =>
+    fornecedorAlvoId
+      ? (pedidos as any[]).filter(p =>
+          p.fornecedor_id === fornecedorAlvoId &&
+          STATUS_ELEGIVEIS_CONSUMO.includes(p.status as string)
+        )
+      : []
+  , [pedidos, fornecedorAlvoId])
+
+  // Quando o operador seleciona um pedido alvo, pré-vincula todas as linhas da NF
+  // que casam com itens daquele pedido. O FIFO da RPC consumirá só dentro dele.
+  const vincularNFAoPedido = (pedidoId: string | null) => {
+    setPedidoAlvoId(pedidoId)
+    if (!pedidoId || !extracao) return
+    const pedidoAlvo = (pedidos as any[]).find(p => p.id === pedidoId)
+    if (!pedidoAlvo) return
+    setExtracao(prev => {
+      if (!prev) return prev
+      const novas = prev.itens.map(linha => {
+        if (!linha.item_compra_id) return linha
+        const piMatch = ((pedidoAlvo.itens ?? []) as any[]).find((pi: any) =>
+          pi.item_compra_id === linha.item_compra_id &&
+          Number(pi.qtd ?? 0) > Number(pi.qtd_recebida ?? 0) + 0.001
+        )
+        if (piMatch) {
+          return { ...linha, acao: 'substituir_pedido' as const, pedido_substituido_id: pedidoId, confirmado: true, precisaConfirmar: false }
+        }
+        return linha
+      })
+      return { ...prev, itens: novas }
+    })
   }
 
   const totalLinhas = extracao?.itens.reduce((s, l) => s + (l.valor_total ?? 0), 0) ?? 0
@@ -1204,12 +1173,12 @@ export default function RecepcaoPage() {
       toast.success(`NF aplicada · ${partes.join(' · ') || 'nada a aplicar'}`)
       for (const w of (result.warnings ?? [])) toast.warning(w)
 
-      // Invalida queries que a UI consome (pedidos, parcelas, recepcao_docs aplicadas)
-      qc.invalidateQueries({ queryKey: ['recepcao_docs_aplicadas'] })
+      qc.invalidateQueries({ queryKey: ['central_notas'] })
       qc.invalidateQueries({ queryKey: ['pedidos'] })
       qc.invalidateQueries({ queryKey: ['pedido_itens'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
 
+      setView('central')
       setExtracao(null)
       setTextoColado('')
       setDiferencaAceita(false)
@@ -1250,8 +1219,33 @@ export default function RecepcaoPage() {
   })
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-16">
       <PageHeader title="Recepção de Documentos" description="Importe NF-e (XML), foto da nota, ou cole texto. A IA extrai e cruza com o orçamento." icon={Inbox} />
+
+      {/* View switcher: Central de Notas | Processar NF */}
+      <div className="flex gap-1 rounded-lg border bg-card p-1 w-fit">
+        <button
+          onClick={() => setView('central')}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${view === 'central' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+        >
+          <FileText className="h-3.5 w-3.5" /> Central de Notas
+        </button>
+        <button
+          onClick={() => { setView('wizard'); setExtracao(null) }}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${view === 'wizard' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+        >
+          <Sparkles className="h-3.5 w-3.5" /> Processar NF
+        </button>
+      </div>
+
+      {view === 'central' && currentCompany && (
+        <CentralNotas
+          companyId={currentCompany.id}
+          onProcessarNovaNF={() => { setView('wizard'); setExtracao(null) }}
+        />
+      )}
+
+      {view === 'wizard' && (<>
 
       {!extracao && (
         <>
@@ -1311,218 +1305,7 @@ export default function RecepcaoPage() {
             </button>
           </div>
 
-          {/* C: Lista de NFs aplicadas — permite excluir e reverter o consumo
-              via trigger no banco (recepcao_consumos → fn_recepcao_doc_revert_consumo).
-              Substitui a prática insegura de apagar pelo Studio. */}
-          {docsAplicadas.length > 0 && (
-            <div className="rounded-xl border bg-card p-4">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-semibold">Últimas NFs aplicadas</h3>
-                <span className="text-[10px] text-muted-foreground">excluir reverte automaticamente o consumo nos pedidos</span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-[9px] uppercase text-muted-foreground border-b">
-                      <th className="py-1.5 text-left">NF</th>
-                      <th className="py-1.5 text-left">Fornecedor</th>
-                      <th className="py-1.5 text-left">Data emissão</th>
-                      <th className="py-1.5 text-left">Aplicada em</th>
-                      <th className="py-1.5 text-right">Valor</th>
-                      <th className="py-1.5 text-center">Impacto</th>
-                      <th className="py-1.5 text-center w-24">Ações</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/40">
-                    {docsAplicadas.map(d => (
-                      <tr key={d.id} className="hover:bg-muted/10">
-                        <td className="py-1.5 font-mono text-primary font-bold">#{d.numero_doc ?? '?'}</td>
-                        <td className="py-1.5 truncate max-w-[200px]">{d.fornecedor_nome ?? '—'}</td>
-                        <td className="py-1.5 font-mono text-[10px]">{d.data_emissao ?? '—'}</td>
-                        <td className="py-1.5 font-mono text-[10px]">{d.applied_at ? new Date(d.applied_at).toLocaleString('pt-BR') : '—'}</td>
-                        <td className="py-1.5 text-right font-medium">{d.valor_total != null ? Number(d.valor_total).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—'}</td>
-                        <td className="py-1.5 text-center text-[10px] text-muted-foreground">
-                          {d.qtdConsumos - d.qtdPedidosCriados > 0 && <span className="mr-1">{d.qtdConsumos - d.qtdPedidosCriados} consumo(s)</span>}
-                          {d.qtdPedidosCriados > 0 && <span className="rounded bg-blue-500/10 text-blue-700 px-1">+ {d.qtdPedidosCriados} pedido novo</span>}
-                          {d.qtdConsumos === 0 && <span className="text-amber-700">sem log</span>}
-                        </td>
-                        <td className="py-1.5 text-center">
-                          <div className="inline-flex items-center gap-0.5">
-                            <button
-                              onClick={() => setRastreioDoc({ id: d.id, numero: d.numero_doc, fornecedor: d.fornecedor_nome })}
-                              className="rounded p-1 hover:bg-blue-500/10 text-blue-600"
-                              title="Ver rastreio (o que essa NF consumiu, cobriu ou criou)"
-                            >
-                              <History className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              onClick={() => setConfirmDeleteDoc({ id: d.id, numero: d.numero_doc, fornecedor: d.fornecedor_nome })}
-                              className="rounded p-1 hover:bg-destructive/10 text-destructive"
-                              title="Excluir NF (reverte o consumo nos pedidos)"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
         </>
-      )}
-
-      {/* Dialog: Rastreio da NF (efeitos gerados) */}
-      {rastreioDoc && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setRastreioDoc(null)}>
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl border bg-card shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="sticky top-0 bg-card border-b px-5 py-3 flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-base font-bold flex items-center gap-2">
-                  <History className="h-4 w-4 text-blue-600" /> Rastreio da NF #{rastreioDoc.numero ?? '?'}
-                </h3>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {rastreioDoc.fornecedor ?? '—'} · efeitos gerados ao aplicar esta nota
-                </p>
-              </div>
-              <button onClick={() => setRastreioDoc(null)} className="rounded-md p-1 hover:bg-accent">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="p-5 space-y-2 text-xs">
-              {rastreioLoading && (
-                <div className="flex items-center gap-2 text-muted-foreground py-4 justify-center">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Carregando rastreio…
-                </div>
-              )}
-              {!rastreioLoading && rastreioRows.length === 0 && (
-                <p className="text-muted-foreground italic text-center py-4">
-                  Sem registros de consumo pra essa NF.
-                </p>
-              )}
-              {!rastreioLoading && rastreioRows.map(r => {
-                const valor = r.valor_efeito != null ? Number(r.valor_efeito) : 0
-                const qtd = r.delta_qtd_recebida != null ? Number(r.delta_qtd_recebida) : 0
-                if (r.tipo === 'pedido_criado') {
-                  return (
-                    <div key={r.consumo_id} className="rounded-md border border-blue-500/30 bg-blue-500/5 p-2.5">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className="text-[10px] rounded bg-blue-500/15 text-blue-700 px-1.5 py-0.5 font-bold uppercase">pedido novo</span>
-                        <span className="font-mono font-bold">#{r.pedido_numero ?? '?'}</span>
-                        <span className="text-muted-foreground">·</span>
-                        <span className="font-medium">{r.fornecedor_nome ?? 'sem fornecedor'}</span>
-                      </div>
-                      <p className="text-[11px] text-muted-foreground">
-                        Pedido criado a partir desta NF (ancora financeiro pras parcelas da NF).
-                      </p>
-                    </div>
-                  )
-                }
-                if (r.tipo === 'cobertura_previsao') {
-                  return (
-                    <div key={r.consumo_id} className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5">
-                      <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                        <span className="text-[10px] rounded bg-amber-500/20 text-amber-800 px-1.5 py-0.5 font-bold uppercase">cobertura financeira</span>
-                        <span className="font-mono font-bold">#{r.pedido_numero ?? '?'}</span>
-                        <span className="text-muted-foreground">·</span>
-                        <span className="font-medium">{r.fornecedor_nome ?? '—'}</span>
-                        <span className="text-[10px] rounded bg-amber-500/15 text-amber-800 px-1 font-semibold">PREVISÃO</span>
-                      </div>
-                      <p className="text-[11px]">
-                        Cobriu <span className="font-mono font-bold text-amber-700">{formatCurrency(valor)}</span> do saldo financeiro da previsão
-                        {r.item_codigo && <> · item <span className="font-mono text-muted-foreground">{r.item_codigo}</span></>}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        A parcela futura mais distante do pedido foi reduzida nesse valor (sem mexer em parcelas pagas/conciliadas).
-                      </p>
-                    </div>
-                  )
-                }
-                if (r.tipo === 'consumo_fisico') {
-                  const vuNF = r.vu_nf != null ? Number(r.vu_nf) : null
-                  const vuPed = r.vu_pedido != null ? Number(r.vu_pedido) : null
-                  const temDifPreco = vuNF != null && vuPed != null && Math.abs(vuNF - vuPed) > 0.01
-                  const deltaUnit = (vuNF ?? 0) - (vuPed ?? 0)
-                  const deltaPct = vuPed && vuPed > 0 ? (deltaUnit / vuPed) * 100 : 0
-                  return (
-                    <div key={r.consumo_id} className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2.5">
-                      <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                        <span className="text-[10px] rounded bg-emerald-500/15 text-emerald-700 px-1.5 py-0.5 font-bold uppercase">consumo</span>
-                        <span className="font-mono font-bold">#{r.pedido_numero ?? '?'}</span>
-                        <span className="text-muted-foreground">·</span>
-                        <span className="font-medium">{r.fornecedor_nome ?? '—'}</span>
-                      </div>
-                      <p className="text-[11px]">
-                        Consumiu <span className="font-mono font-bold text-emerald-700">{qtd.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> un
-                        {valor > 0 && <> = <span className="font-mono">{formatCurrency(valor)}</span></>}
-                        {r.item_codigo && <> · <span className="font-mono text-muted-foreground">{r.item_codigo}</span></>}
-                      </p>
-                      {r.item_descricao && (
-                        <p className="text-[10px] text-muted-foreground mt-0.5 truncate">{r.item_descricao}</p>
-                      )}
-                      {temDifPreco && (
-                        <p className={`text-[10px] mt-1 ${deltaUnit > 0 ? 'text-red-700' : 'text-emerald-700'}`}>
-                          Preço NF: <span className="font-mono">{formatCurrency(vuNF!)}</span>/un
-                          {' '}vs orçado <span className="font-mono">{formatCurrency(vuPed!)}</span>
-                          {' · '}<strong>{deltaUnit > 0 ? '+' : ''}{formatCurrency(deltaUnit * qtd)}</strong>
-                          {' '}({deltaPct > 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
-                        </p>
-                      )}
-                    </div>
-                  )
-                }
-                return (
-                  <div key={r.consumo_id} className="rounded-md border bg-muted/10 p-2 text-[11px] text-muted-foreground">
-                    Registro sem efeito identificado (consumo_id <span className="font-mono">{r.consumo_id.slice(0,8)}</span>)
-                  </div>
-                )
-              })}
-              {!rastreioLoading && rastreioRows.length > 0 && (() => {
-                const totConsumido = rastreioRows.filter(r => r.tipo === 'consumo_fisico').reduce((s, r) => s + Number(r.valor_efeito ?? 0), 0)
-                const totCoberto = rastreioRows.filter(r => r.tipo === 'cobertura_previsao').reduce((s, r) => s + Number(r.valor_efeito ?? 0), 0)
-                const totPedidosNovos = rastreioRows.filter(r => r.tipo === 'pedido_criado').length
-                return (
-                  <div className="mt-3 pt-3 border-t text-[10px] text-muted-foreground space-y-0.5">
-                    {totConsumido > 0 && <div>Consumido (físico): <span className="font-mono">{formatCurrency(totConsumido)}</span></div>}
-                    {totCoberto > 0 && <div>Coberto (previsões): <span className="font-mono">{formatCurrency(totCoberto)}</span></div>}
-                    {totPedidosNovos > 0 && <div>Pedidos novos: <span className="font-mono">{totPedidosNovos}</span></div>}
-                  </div>
-                )
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirm dialog: Excluir NF */}
-      {confirmDeleteDoc && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setConfirmDeleteDoc(null)}>
-          <div className="w-full max-w-md rounded-xl border bg-card shadow-2xl p-5" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-bold mb-2 text-destructive flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4" /> Excluir NF #{confirmDeleteDoc.numero ?? '?'}
-            </h3>
-            <p className="text-xs text-muted-foreground mb-4">
-              Fornecedor: <span className="text-foreground font-medium">{confirmDeleteDoc.fornecedor ?? '—'}</span>.
-              Esta ação reverte o consumo nos planejados (qtd_recebida) e apaga o pedido novo criado pela NF (se houver).
-              Não é possível desfazer.
-            </p>
-            <div className="flex items-center justify-end gap-2">
-              <button onClick={() => setConfirmDeleteDoc(null)} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">
-                Cancelar
-              </button>
-              <button
-                onClick={() => excluirNF.mutate(confirmDeleteDoc.id)}
-                disabled={excluirNF.isPending}
-                className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                {excluirNF.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                Excluir e reverter
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {/* Modal: Criar item rapido */}
@@ -1800,10 +1583,40 @@ export default function RecepcaoPage() {
                   {extracao.documento.data_emissao ? ` · ${extracao.documento.data_emissao}` : ''}
                 </p>
               </div>
-              <button onClick={() => { setExtracao(null); setTextoColado('') }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">
+              <button onClick={() => { setExtracao(null); setTextoColado(''); setPedidoAlvoId(null); setFornecedorAlvoId(null) }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">
                 <X className="h-3.5 w-3.5 inline mr-1" /> Cancelar
               </button>
             </div>
+            {/* Seletor de pedido alvo — quando o operador identifica a qual pedido esta NF se refere,
+                o FIFO da RPC consome SOMENTE dentro daquele pedido (matching por pedido, não global). */}
+            {pedidosDoFornecedor.length > 0 && (
+              <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 px-4 py-3 flex items-center gap-3 flex-wrap">
+                <div className="flex-1 min-w-[200px]">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-700 mb-1">Pedido associado a esta NF</p>
+                  <select
+                    value={pedidoAlvoId ?? ''}
+                    onChange={e => vincularNFAoPedido(e.target.value || null)}
+                    className="w-full rounded border bg-background px-2 py-1.5 text-xs"
+                  >
+                    <option value="">— Nenhum (match global por item) —</option>
+                    {pedidosDoFornecedor.map((p: any) => (
+                      <option key={p.id} value={p.id}>
+                        Ped #{p.numero_pedido}
+                        {p.item_compra_id ? '' : ' [multi-item]'}
+                        {' · '}{p.status}
+                        {p.valor_total_real ? ` · ${formatCurrency(Number(p.valor_total_real))}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {pedidoAlvoId && (
+                  <div className="text-[11px] text-blue-700 font-medium whitespace-nowrap">
+                    Linhas vinculadas ao Ped #{pedidosDoFornecedor.find((p: any) => p.id === pedidoAlvoId)?.numero_pedido}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Bloco de pagamento extraído (boleto/PIX/TED) — só aparece quando a IA achou algo concreto.
                 Read-only / informativo: serve pro operador conferir antes de pagar. Persistido em raw_extracao. */}
             {extracao.pagamento && extracao.pagamento.forma && extracao.pagamento.forma !== 'DESCONHECIDO' && (
@@ -2509,7 +2322,7 @@ export default function RecepcaoPage() {
                 {estourosPorItem.size} item(s) com soma da NF excedendo saldo (veja banner acima).
               </span>
             )}
-            <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false); setCondPagamento(''); setValorFreteInput(''); setEditableParcelas([]); setParcelasManuallyEdited(false) }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
+            <button onClick={() => { setExtracao(null); setTextoColado(''); setDiferencaAceita(false); setCondPagamento(''); setValorFreteInput(''); setEditableParcelas([]); setParcelasManuallyEdited(false); setPedidoAlvoId(null); setFornecedorAlvoId(null) }} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">Cancelar</button>
             <button
               onClick={() => aplicar()}
               disabled={aplicando || linhasOk === 0 || linhasAConfirmar > 0 || divergenciaBloqueia || (editableParcelas.length > 0 && !parcelasOk) || (!permitirEstouroOrcamento && estourosPorItem.size > 0)}
@@ -2528,6 +2341,7 @@ export default function RecepcaoPage() {
           </div>
         </div>
       )}
+      </>)}
     </div>
   )
 }

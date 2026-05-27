@@ -159,6 +159,9 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
           conciliado_em: new Date().toISOString(),
           observacao,
         }).eq('id', movId)
+
+        // Garante parcela de retorno em 30 dias se nenhum cronograma foi definido
+        await supabase.rpc('ensure_retorno_adiantamento', { p_mutuo_id: mut.id })
       }
       else if (tipo === 'transferencia') {
         if (!contaDestinoId) throw new Error('Selecione a conta destino')

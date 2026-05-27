@@ -226,7 +226,8 @@ function parseDocumento(texto: string) {
   const matchValor = texto.match(/VALOR\s+TOTAL\s+DA\s+NOTA[\s\S]{0,80}?([\d.,]+\d{2})/i)
     ?? texto.match(/V\.\s*TOTAL\s+DA\s+NOTA[\s\S]{0,80}?([\d.,]+\d{2})/i)
   const valor_total = matchValor ? parseNumberBr(matchValor[1]) : null
-  return { numero, serie, data_emissao, data_vencimento: null, valor_total, tipo: 'NFE' as const }
+  const chave_acesso = extrairChaveAcesso(texto)
+  return { numero, serie, data_emissao, data_vencimento: null, valor_total, tipo: 'NFE' as const, chave_acesso }
 }
 
 function tentarParseDanfe(texto: string) {

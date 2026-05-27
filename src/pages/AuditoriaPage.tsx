@@ -5,15 +5,18 @@ import { formatDate } from '@/lib/utils'
 import { exportToExcel } from '@/lib/exportExcel'
 import BulkActionBar from '@/components/BulkActionBar'
 import { useSelection } from '@/hooks/useSelection'
+import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   Shield, Search, Database, User, Download, Filter,
   ChevronDown, ChevronRight, ArrowRight, Clock,
   FileText, Trash2, Pencil, Plus, Package, CreditCard, Upload,
-  Activity
+  Activity, RefreshCw, Wrench, CheckCircle2, AlertTriangle,
 } from 'lucide-react'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
+import { supabase } from '@/lib/supabase'
+import { useProject } from '@/contexts/ProjectContext'
 
 // ── Action config ──
 const ACAO_CONFIG: Record<string, { label: string; color: string; icon: typeof Plus; bgRow: string }> = {
@@ -242,6 +245,9 @@ export default function AuditoriaPage() {
     <div>
       <PageHeader title="Auditoria" description="Quem fez, o que fez, quando e o impacto" icon={Shield} onHelp={restartTour} />
 
+      {/* Manutenção de status */}
+      <ManutencaoStatusPanel />
+
       {/* Activity chart */}
       <div id="tour-audit-chart" className="mb-4 rounded-xl border bg-card p-4">
         <div className="flex items-center justify-between mb-3">
@@ -399,6 +405,128 @@ export default function AuditoriaPage() {
           <Download className="h-3.5 w-3.5" /> Exportar selecionados
         </button>
       </BulkActionBar>
+    </div>
+  )
+}
+
+// ── Resultado do recálculo ──
+interface RecalcResult {
+  parcelas_agora_vencidas: number
+  parcelas_agora_a_vencer: number
+  parcelas_agora_pagas: number
+  pedidos_agora_entregue: number
+  pedidos_agora_pago: number
+  pedidos_agora_parcialmente_pago: number
+}
+
+function ManutencaoStatusPanel() {
+  const { currentCompany } = useProject()
+  const qc = useQueryClient()
+  const [loading, setLoading] = useState(false)
+  const [resultado, setResultado] = useState<RecalcResult | null>(null)
+  const [open, setOpen] = useState(false)
+
+  const total = resultado
+    ? resultado.parcelas_agora_vencidas + resultado.parcelas_agora_a_vencer +
+      resultado.parcelas_agora_pagas + resultado.pedidos_agora_entregue +
+      resultado.pedidos_agora_pago + resultado.pedidos_agora_parcialmente_pago
+    : null
+
+  const handleRecalcular = async () => {
+    if (!currentCompany) return
+    setLoading(true)
+    setResultado(null)
+    try {
+      const { data, error } = await supabase.rpc('recalcular_status_empresa', {
+        p_company_id: currentCompany.id,
+      })
+      if (error) throw error
+      const res = data as RecalcResult
+      setResultado(res)
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['pedidos'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      const t = res.parcelas_agora_vencidas + res.parcelas_agora_a_vencer +
+        res.parcelas_agora_pagas + res.pedidos_agora_entregue +
+        res.pedidos_agora_pago + res.pedidos_agora_parcialmente_pago
+      if (t === 0) toast.success('Nenhuma inconsistência encontrada — dados já estão corretos')
+      else toast.success(`${t} registros corrigidos`)
+    } catch (e) {
+      toast.error('Erro ao recalcular: ' + (e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const rows: Array<{ label: string; value: number; color: string }> = resultado ? [
+    { label: 'Parcelas agora vencidas',        value: resultado.parcelas_agora_vencidas,         color: 'text-red-500' },
+    { label: 'Parcelas agora a vencer',        value: resultado.parcelas_agora_a_vencer,         color: 'text-amber-500' },
+    { label: 'Parcelas agora pagas',           value: resultado.parcelas_agora_pagas,            color: 'text-emerald-600' },
+    { label: 'Pedidos agora entregue',         value: resultado.pedidos_agora_entregue,          color: 'text-blue-500' },
+    { label: 'Pedidos agora pago',             value: resultado.pedidos_agora_pago,              color: 'text-emerald-600' },
+    { label: 'Pedidos agora parcialmente pago',value: resultado.pedidos_agora_parcialmente_pago, color: 'text-amber-500' },
+  ] : []
+
+  return (
+    <div className="mb-4 rounded-xl border bg-card overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+      >
+        {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+        <Wrench className="h-4 w-4 text-amber-500" />
+        <span className="text-sm font-bold">Manutenção de Status</span>
+        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600">
+          Parcelas e Pedidos
+        </span>
+        {total !== null && total > 0 && (
+          <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600">
+            {total} corrigidos
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="border-t bg-muted/10 p-4 space-y-4">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Recalcula status de <strong>parcelas</strong> (futura/a_vencer vencidas, pagas sem marcação) e <strong>pedidos</strong>
+            (entregue quando qtd_recebida completa, pago/parcialmente_pago pela soma das parcelas).
+            Útil quando dados foram inseridos antes dos triggers, ou quando houve importação manual.
+          </p>
+
+          <button
+            onClick={handleRecalcular}
+            disabled={loading}
+            className="flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
+          >
+            {loading
+              ? <RefreshCw className="h-4 w-4 animate-spin" />
+              : <RefreshCw className="h-4 w-4" />
+            }
+            {loading ? 'Recalculando…' : 'Recalcular agora'}
+          </button>
+
+          {resultado && (
+            <div className="rounded-lg border bg-background p-3 space-y-1.5">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                {total === 0
+                  ? <><CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />Nenhuma inconsistência encontrada</>
+                  : <><AlertTriangle className="h-3.5 w-3.5 text-amber-500" />{total} registros corrigidos</>
+                }
+              </p>
+              {rows.filter(r => r.value > 0).map(r => (
+                <div key={r.label} className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">{r.label}</span>
+                  <span className={`font-bold tabular-nums ${r.color}`}>{r.value}</span>
+                </div>
+              ))}
+              {total === 0 && (
+                <p className="text-[10px] text-muted-foreground">Todos os status já estão corretos.</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

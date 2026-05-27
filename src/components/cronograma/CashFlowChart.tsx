@@ -132,8 +132,8 @@ export default function CashFlowChart({ viewMode, onViewModeChange }: Props) {
   }
 
   const modeLabel = viewMode === 'realizado' ? 'Apenas dados confirmados (pagos/realizados)' :
-    viewMode === 'planejado' ? 'Confirmados + planejados/futuros' :
-    'Confirmados + planejados + pedidos confirmados'
+    viewMode === 'pedidos' ? 'Confirmados + pedidos firmes (com ou sem parcela)' :
+    'Confirmados + pedidos + orçamento sem pedido (visão total)'
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload?.length) return null

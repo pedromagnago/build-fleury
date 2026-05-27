@@ -38,6 +38,7 @@ export interface DanfeHeader {
     data_vencimento: string | null
     valor_total: number | null
     tipo: 'NFE'
+    chave_acesso: string | null
   }
   observacoes: string | null
 }
@@ -53,6 +54,17 @@ export interface DanfeParseResult extends DanfeHeader {
 // ─────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────
+
+function extrairChaveAcesso(texto: string): string | null {
+  const m1 = texto.match(/(\d{4}[\s.\-]?){10}\d{4}/)
+  if (m1) {
+    const digitos = m1[0].replace(/[^\d]/g, '')
+    if (digitos.length === 44) return digitos
+  }
+  const m2 = texto.match(/\b(\d{44})\b/)
+  if (m2) return m2[1]!
+  return null
+}
 
 /** Converte "1.234,56" (formato BR) → 1234.56. Aceita "0,5", "441,60", "1234.56". */
 function parseNumberBr(s: string | undefined | null): number | null {
@@ -256,6 +268,7 @@ function parseDocumento(texto: string): DanfeHeader['documento'] {
     data_vencimento: null,   // raramente útil em NF-e; fatura pode ter várias
     valor_total: valorTotal,
     tipo: 'NFE',
+    chave_acesso: extrairChaveAcesso(texto),
   }
 }
 

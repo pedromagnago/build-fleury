@@ -370,12 +370,13 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
     its.filter(i => { const t = localDate(i.data).getTime(); return t >= w.s.getTime() && t <= w.e.getTime() })
 
   // Classifica cada item numa categoria de origem de nível 0 (acima da etapa).
-  // Entradas: Medições | Capital/Mútuo | Banco | Clientes
-  // Saídas:   Pedidos de Obra | Despesas Indiretas | Mútuo | Banco
+  // Entradas: Medições | Capital/Mútuo | Banco | Transferência Interna | Clientes
+  // Saídas:   Pedidos de Obra | Despesas Indiretas | Mútuo | Banco | Transferência Interna
   const getOrigemNivel0 = (it: Item, tipo: 'entrada' | 'firme' | 'bruto'): string => {
     const origem = it.meta?.origem
     const cat = it.meta?.cat ?? ''
     const etapa = it.meta?.etapa ?? ''
+    if (origem === 'transferencia' || cat === 'Transferência Interna') return 'Transferência Interna'
     if (tipo === 'entrada') {
       if (origem === 'medicao') return 'Medições'
       if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) return 'Capital / Mútuo'
@@ -391,13 +392,14 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
 
   // Config visual por bucket de origem nível 0
   const origemNivel0Config: Record<string, { dot: string; order: number }> = {
-    'Medições':            { dot: 'bg-purple-500',  order: 1 },
-    'Capital / Mútuo':     { dot: 'bg-indigo-500',  order: 2 },
-    'Clientes':            { dot: 'bg-blue-400',    order: 3 },
-    'Banco':               { dot: 'bg-slate-400',   order: 4 },
-    'Pedidos de Obra':     { dot: 'bg-blue-500',    order: 1 },
-    'Despesas Indiretas':  { dot: 'bg-rose-500',    order: 2 },
-    'Mútuo':               { dot: 'bg-indigo-500',  order: 3 },
+    'Medições':               { dot: 'bg-purple-500',  order: 1 },
+    'Capital / Mútuo':        { dot: 'bg-indigo-500',  order: 2 },
+    'Clientes':               { dot: 'bg-blue-400',    order: 3 },
+    'Banco':                  { dot: 'bg-slate-400',   order: 4 },
+    'Transferência Interna':  { dot: 'bg-amber-400',   order: 5 },
+    'Pedidos de Obra':        { dot: 'bg-blue-500',    order: 1 },
+    'Despesas Indiretas':     { dot: 'bg-rose-500',    order: 2 },
+    'Mútuo':                  { dot: 'bg-indigo-500',  order: 3 },
   }
 
   // 4-level hierarchy: Origem → Etapa → Fornecedor → Item
@@ -660,7 +662,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
       {/* View Mode Filter + Periodicity */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-3">
-          <div className="text-[10px] text-muted-foreground">Visão: {viewMode === 'realizado' ? 'Apenas realizado' : viewMode === 'planejado' ? 'Realizado + Planejado' : 'Realizado + Planejado + Pedidos'}</div>
+          <div className="text-[10px] text-muted-foreground">Visão: {viewMode === 'realizado' ? 'Apenas realizado' : viewMode === 'pedidos' ? 'Realizado + Pedidos' : 'Completo'}</div>
           {/* Periodicity toggle */}
           <div className="flex items-center rounded-lg border bg-muted/30 p-0.5 gap-0.5">
             {(['dia', 'semana', 'mes'] as const).map(p => (

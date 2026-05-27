@@ -3,7 +3,7 @@ import { useState } from 'react'
 type DashPrefs = {
   fluxoPeriodicity: 'dia' | 'semana' | 'mes'
   fluxoViewMode: 'consolidado' | 'maturidade'
-  fluxoFinancialMode: 'pedidos' | 'planejado' | 'realizado' | 'completo'
+  fluxoFinancialMode: 'pedidos' | 'realizado' | 'completo'
 }
 
 const DEFAULTS: DashPrefs = {

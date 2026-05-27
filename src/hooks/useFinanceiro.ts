@@ -64,7 +64,7 @@ export function useParcelas() {
       while (hasMore) {
         const { data, error } = await supabase
           .from('parcelas')
-          .select('*, recepcao_docs(numero_doc, serie), pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, nf_origem_id, valor_total_real, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at), recepcao_docs(numero_doc, serie)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
+          .select('*, conciliacao_parcelas(id), recepcao_docs(numero_doc, serie), pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, nf_origem_id, valor_total_real, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at), recepcao_docs(numero_doc, serie)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
           .eq('company_id', companyId)
           .is('deleted_at', null)
           .order('data_vencimento', { ascending: true })

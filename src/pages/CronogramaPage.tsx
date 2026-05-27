@@ -106,7 +106,8 @@ export default function CronogramaPage() {
   // useDashboardPrefs.fluxoFinancialMode — assim "Pedidos + Real" (default)
   // continua selecionado entre sessoes; usuario nao precisa reaplicar toda vez.
   const { prefs, update: updatePrefs } = useDashboardPrefs()
-  const viewMode = prefs.fluxoFinancialMode as FinancialViewMode
+  const rawMode = prefs.fluxoFinancialMode as string
+  const viewMode: FinancialViewMode = (rawMode === 'planejado' ? 'pedidos' : rawMode) as FinancialViewMode
   const setViewMode = (v: FinancialViewMode) => updatePrefs({ fluxoFinancialMode: v as any })
 
   const [activeTab, setActiveTab] = useState<TabMode>((searchParams.get('tab') as TabMode) || 'wbs')

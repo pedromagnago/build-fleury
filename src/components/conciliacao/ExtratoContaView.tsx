@@ -31,6 +31,8 @@ interface ExtratoRow {
   descricao: string
   fornecedor: string | null
   categoria: string | null
+  item_nome: string | null
+  nf_numero: string | null
   valor: number
   tipo: 'entrada' | 'saida'
   saldo_acumulado: number | null
@@ -143,6 +145,8 @@ export function ExtratoContaView() {
         descricao: m.descricao,
         fornecedor: (parcela as any)?.fornecedor_nome ?? null,
         categoria: m.categoria ?? null,
+        item_nome: (parcela as any)?.pedido_item ?? null,
+        nf_numero: (parcela as any)?.nf_numero ?? null,
         valor: Number(m.valor),
         tipo: m.tipo,
         saldo_acumulado: m.saldo_acumulado != null ? Number(m.saldo_acumulado) : null,
@@ -171,9 +175,11 @@ export function ExtratoContaView() {
         situacao: vencida ? 'atrasado' : 'nao_conciliado',
         data: p.data_pagamento_real!,
         descricao: p.pedido_item ?? p.descricao ?? `Parcela ${p.numero_parcela}`,
-        fornecedor: null,
+        fornecedor: (p as any).fornecedor_nome ?? null,
         // Explica a origem: parcela paga direto (Pagamentos > Pagar) sem vínculo com mov bancária.
         categoria: 'Pagamento registrado fora do extrato (baixa manual)',
+        item_nome: (p as any).pedido_item ?? null,
+        nf_numero: (p as any).nf_numero ?? null,
         valor: Number(p.valor_pago),
         tipo: p.pedido_id ? 'saida' : 'saida',
         saldo_acumulado: null,
@@ -198,11 +204,23 @@ export function ExtratoContaView() {
 
   // Filtros
   const filtered = useMemo(() => {
-    const q = search.toLowerCase().trim()
+    const q = search.toLowerCase().trim().normalize('NFD').replace(/[̀-ͯ]/g, '')
     return rows.filter(r => {
       if (filterSituacao !== 'todos' && r.situacao !== filterSituacao) return false
       if (filterTipo !== 'todos' && r.tipo !== filterTipo) return false
-      if (q && !r.descricao.toLowerCase().includes(q) && !String(r.valor).includes(q)) return false
+      if (q) {
+        const norm = (s: string | null | undefined) =>
+          (s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+        const hay = [
+          r.descricao,
+          r.fornecedor,
+          r.categoria,
+          r.item_nome,
+          r.nf_numero,
+          String(r.valor),
+        ].map(norm).join(' ')
+        if (!hay.includes(q)) return false
+      }
       return true
     })
   }, [rows, filterSituacao, filterTipo, search])
@@ -272,7 +290,7 @@ export function ExtratoContaView() {
         <div className="flex-1 min-w-[200px] relative">
           <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
           <input value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar descrição ou valor..."
+            placeholder="Buscar descrição, fornecedor, item, nota fiscal, valor…"
             className="w-full rounded-md border bg-background pl-7 pr-2 py-1.5 text-xs" />
         </div>
 

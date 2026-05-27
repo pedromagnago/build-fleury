@@ -1313,6 +1313,10 @@ function PedidosTab({ search }: { search: string }) {
       const pctRecebido = totalQtd > 0 ? (totalRecebida / totalQtd) * 100 : 0
       const totalItensDistintos = allItens.length || items.length
       const temNF = items.some(p => !!p.nf_origem_id)
+      const groupPedidoIds = new Set(items.map(p => p.id))
+      const parcsDoGrupo = (parcelasAll as any[]).filter(par => par.pedido_id && groupPedidoIds.has(par.pedido_id))
+      const temConciliacao = parcsDoGrupo.some(par => (par.conciliacao_parcelas?.length ?? 0) > 0)
+      const temRecepcaoNF = allItens.some(pi => Number(pi.qtd_recebida ?? 0) > 0)
       return {
          name,
          items,
@@ -1328,6 +1332,8 @@ function PedidosTab({ search }: { search: string }) {
          pctRecebido,
          totalItensDistintos,
          temNF,
+         temConciliacao,
+         temRecepcaoNF,
       }
     }).sort((a, b) => {
       if (a.numero !== b.numero) return b.numero - a.numero
@@ -1914,6 +1920,12 @@ function PedidosTab({ search }: { search: string }) {
                          )}
                          {group.temNF && (
                            <span className="text-[9px] rounded bg-blue-500/15 text-blue-700 px-1.5 py-0.5" title="Pedido criado/consumido via NF">via NF</span>
+                         )}
+                         {group.temRecepcaoNF && !group.temNF && (
+                           <span className="text-[9px] rounded bg-blue-500/10 text-blue-600 px-1.5 py-0.5" title="Itens recebidos via NF aplicada">NF recebida</span>
+                         )}
+                         {group.temConciliacao && (
+                           <span className="text-[9px] rounded bg-violet-500/15 text-violet-700 px-1.5 py-0.5" title="Possui parcelas conciliadas com movimentação bancária">conciliado</span>
                          )}
                       </div>
                     </td>
