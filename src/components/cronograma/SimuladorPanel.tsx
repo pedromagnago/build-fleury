@@ -376,7 +376,7 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
     const origem = it.meta?.origem
     const cat = it.meta?.cat ?? ''
     const etapa = it.meta?.etapa ?? ''
-    if (origem === 'transferencia' || cat === 'Transferência Interna') return 'Transferência Interna'
+    if ((origem as string) === 'transferencia' || cat === 'Transferência Interna') return 'Transferência Interna'
     if (tipo === 'entrada') {
       if (origem === 'medicao') return 'Medições'
       if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) return 'Capital / Mútuo'

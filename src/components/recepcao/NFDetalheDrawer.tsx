@@ -85,7 +85,7 @@ export function NFDetalheDrawer({ doc, companyId, onClose, onEstornoSuccess }: P
         .eq('company_id', companyId)
         .order('data_vencimento', { nullsFirst: false })
       if (error) throw error
-      return (data ?? []) as ParcelaRow[]
+      return (data ?? []) as unknown as ParcelaRow[]
     },
   })
 

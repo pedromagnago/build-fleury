@@ -1,7 +1,7 @@
 // Recepção de Documentos — wizard de entrada de NF/PDF/imagem/texto
 // Fluxo: Upload → Extração (XML deterministico OU OpenAI) → Revisão linha-a-linha → Comitar
 import { useState, useMemo, useEffect } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { useDropzone } from 'react-dropzone'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useProject } from '@/contexts/ProjectContext'
@@ -28,7 +28,7 @@ import { processImageForVision, compressBase64Images } from '@/lib/recepcao/imag
 // (server-side), pra evitar o bug "value of readableStream" do pdfjs v5 no Vite.
 import { ItemPickerCombobox } from '@/components/recepcao/ItemPickerCombobox'
 import { gerarParcelas, localDate } from '@/lib/parcelas'
-import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle, Eye } from 'lucide-react'
+import { Inbox, FileText, Image as ImageIcon, Sparkles, Check, X, Trash2, AlertTriangle, Loader2, Database, Plus, ShieldCheck, HelpCircle } from 'lucide-react'
 import { CentralNotas } from '@/components/recepcao/CentralNotas'
 import { useEtapas } from '@/hooks/useEtapas'
 

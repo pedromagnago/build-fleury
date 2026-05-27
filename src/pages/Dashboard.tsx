@@ -196,7 +196,8 @@ function FluxoCaixaWidget() {
   const setViewMode = (v: typeof viewMode) => updatePrefs({ fluxoViewMode: v })
   const periodicity = prefs.fluxoPeriodicity
   const setPeriodicity = (v: typeof periodicity) => updatePrefs({ fluxoPeriodicity: v })
-  const { events, saldoInicial } = useCashFlowEvents(prefs.fluxoFinancialMode)
+  const financialModeForChart = prefs.fluxoFinancialMode === 'planejado' ? 'pedidos' : prefs.fluxoFinancialMode
+  const { events, saldoInicial } = useCashFlowEvents(financialModeForChart)
 
   const chartData = useMemo(() => {
     if (events.length === 0) return []
