@@ -12,7 +12,7 @@ import {
   usePedidos, useCreatePedidoLote, useUpdatePedido, useDeletePedido,
   type ItemCompra, type Pedido, type Fornecedor,
 } from '@/hooks/useCompras'
-import { useParcelas } from '@/hooks/useFinanceiro'
+import { useParcelas, useCreateParcela } from '@/hooks/useFinanceiro'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useProject } from '@/contexts/ProjectContext'
 import { supabase } from '@/lib/supabase'
@@ -32,7 +32,7 @@ import {
 import {
   ShoppingCart, Plus, X, Check, Pencil, Package, Truck, Users, Copy,
   Search, BarChart3, ChevronDown, ChevronRight, CalendarClock, Trash2, Boxes,
-  AlertTriangle,
+  AlertTriangle, Loader2, CalendarDays, CheckCircle2,
 } from 'lucide-react'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
@@ -711,6 +711,21 @@ function PedidosTab({ search }: { search: string }) {
   const [filtroStatus, setFiltroStatus] = useState<string>('')
   const [filtroFornecedor, setFiltroFornecedor] = useState<string>('')
   const [filtroOrigem, setFiltroOrigem] = useState<'todos' | 'nf' | 'manual' | 'livre'>('todos')
+  const [filtroSemParcela, setFiltroSemParcela] = useState(false)
+
+  // ── Gerar parcelas inline ───────────────────────────────────────────────────
+  type GerarDialog = {
+    pedido: Pedido
+    dataBase: string
+    parcelas: ReturnType<typeof gerarParcelas>
+    loading: boolean
+    nfDate: string | null
+  }
+  const [gerarDialog, setGerarDialog] = useState<GerarDialog | null>(null)
+  const [fetchingParcelaId, setFetchingParcelaId] = useState<string | null>(null)
+  const [bulkGerandoParcelas, setBulkGerandoParcelas] = useState(false)
+  const [bulkConfirm, setBulkConfirm] = useState(false)
+  const createParcela = useCreateParcela()
 
   // Pedidos que têm ao menos uma parcela com pagamento — usados pelo filtro "Sem vínculo"
   const pedidosComPagamento = useMemo(() => {
@@ -720,6 +735,93 @@ function PedidosTab({ search }: { search: string }) {
     })
     return s
   }, [parcelasAll])
+
+  // Pedidos que têm ao menos uma parcela gerada (independente de pagamento)
+  const pedidosComParcela = useMemo(() => {
+    const s = new Set<string>()
+    parcelasAll.forEach((pa: any) => { if (pa.pedido_id) s.add(pa.pedido_id) })
+    return s
+  }, [parcelasAll])
+
+  // ── Handlers: gerar parcelas inline ────────────────────────────────────────
+  const iniciarGerar = async (p: Pedido) => {
+    setFetchingParcelaId(p.id)
+    let dataBase = p.data_entrega_real || ''
+    let nfDate: string | null = null
+    if (!dataBase && p.nf_origem_id) {
+      const { data } = await supabase.from('recepcao_docs').select('data_emissao').eq('id', p.nf_origem_id).single()
+      if (data?.data_emissao) { nfDate = data.data_emissao; dataBase = data.data_emissao }
+    }
+    if (!dataBase) dataBase = new Date().toISOString().split('T')[0]
+    const parc = gerarParcelas({
+      pedidoId: p.id,
+      companyId: currentCompany?.id ?? '',
+      valorTotal: Number(p.valor_total_real || 0),
+      condPagamento: p.cond_pagamento || '0',
+      dataEntrega: new Date(dataBase + 'T12:00:00'),
+    })
+    setFetchingParcelaId(null)
+    setGerarDialog({ pedido: p, dataBase, parcelas: parc, loading: false, nfDate })
+  }
+
+  const onGerarDataChange = (novaData: string) => {
+    if (!gerarDialog) return
+    const parc = gerarParcelas({
+      pedidoId: gerarDialog.pedido.id,
+      companyId: currentCompany?.id ?? '',
+      valorTotal: Number(gerarDialog.pedido.valor_total_real || 0),
+      condPagamento: gerarDialog.pedido.cond_pagamento || '0',
+      dataEntrega: new Date(novaData + 'T12:00:00'),
+    })
+    setGerarDialog({ ...gerarDialog, dataBase: novaData, parcelas: parc })
+  }
+
+  const gerarParcelasBulk = async () => {
+    const pedidosSemParc = filtered.filter(p => !pedidosComParcela.has(p.id))
+    if (pedidosSemParc.length === 0) return
+    setBulkGerandoParcelas(true)
+    setBulkConfirm(false)
+    try {
+      const todasParcelas: any[] = []
+      for (const p of pedidosSemParc) {
+        const dataBase = p.data_entrega_real || new Date().toISOString().split('T')[0]
+        const parcelas = gerarParcelas({
+          pedidoId: p.id,
+          companyId: currentCompany?.id ?? '',
+          valorTotal: Number(p.valor_total_real || 0),
+          condPagamento: p.cond_pagamento || '0',
+          dataEntrega: new Date(dataBase + 'T12:00:00'),
+        })
+        for (const parc of parcelas) {
+          todasParcelas.push({ ...parc, tipo: 'contratual', data_prevista_pagamento: parc.data_vencimento })
+        }
+      }
+      const { error } = await supabase.from('parcelas').insert(todasParcelas)
+      if (error) throw error
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+      toast.success(`${todasParcelas.length} parcela(s) criadas para ${pedidosSemParc.length} pedido(s)`)
+      setFiltroSemParcela(false)
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setBulkGerandoParcelas(false)
+    }
+  }
+
+  const confirmarGerar = async () => {
+    if (!gerarDialog) return
+    setGerarDialog(s => s ? { ...s, loading: true } : null)
+    try {
+      if (gerarDialog.nfDate && !gerarDialog.pedido.data_entrega_real) {
+        await updatePedido.mutateAsync({ id: gerarDialog.pedido.id, data_entrega_real: gerarDialog.nfDate })
+      }
+      for (const parc of gerarDialog.parcelas) {
+        await createParcela.mutateAsync({ ...parc, tipo: 'contratual', data_prevista_pagamento: parc.data_vencimento } as any)
+      }
+      toast.success(`${gerarDialog.parcelas.length} parcela(s) criada(s) — Pedido #${gerarDialog.pedido.numero_pedido}`)
+      setGerarDialog(null)
+    } catch { setGerarDialog(s => s ? { ...s, loading: false } : null) }
+  }
 
   const emptyGlobal = { fornecedor_id: '', cond_pagamento: '', data_entrega_prevista: '', status: 'planejado' as Pedido['status'], observacoes: '', is_previsao_orcamento: false }
   const [globalForm, setGlobalForm] = useState(emptyGlobal)
@@ -1293,6 +1395,7 @@ function PedidosTab({ search }: { search: string }) {
       if (pedidosComPagamento.has(p.id)) return false
       if ((p.itens ?? []).some(pi => Number(pi.qtd_recebida) > 0)) return false
     }
+    if (filtroSemParcela && pedidosComParcela.has(p.id)) return false
     return true
   })
 
@@ -1500,8 +1603,36 @@ function PedidosTab({ search }: { search: string }) {
             <option value="manual">Manual</option>
             <option value="livre">Sem vínculo</option>
           </select>
-          {(filtroStatus || filtroFornecedor || filtroOrigem !== 'todos') && (
-            <button onClick={() => { setFiltroStatus(''); setFiltroFornecedor(''); setFiltroOrigem('todos') }} className="rounded border px-2 py-1 text-[11px] hover:bg-muted">Limpar filtros</button>
+          <button
+            onClick={() => setFiltroSemParcela(v => !v)}
+            className={`rounded border px-2 py-1 text-[11px] transition-colors ${filtroSemParcela ? 'bg-amber-500 text-white border-amber-500 font-semibold' : 'hover:bg-muted text-muted-foreground'}`}
+            title="Mostrar apenas pedidos sem parcela gerada"
+          >
+            ⚠ Sem parcela
+          </button>
+          {filtroSemParcela && filtered.some(p => !pedidosComParcela.has(p.id)) && (
+            bulkConfirm ? (
+              <span className="flex items-center gap-1.5 rounded border border-amber-400 bg-amber-50 dark:bg-amber-950/20 px-2 py-1 text-[11px]">
+                <span className="text-amber-800 dark:text-amber-300">Gerar para {filtered.filter(p => !pedidosComParcela.has(p.id)).length} pedido(s)?</span>
+                <button onClick={gerarParcelasBulk} disabled={bulkGerandoParcelas} className="font-semibold text-emerald-700 hover:underline disabled:opacity-50">
+                  {bulkGerandoParcelas ? 'Gerando…' : 'Confirmar'}
+                </button>
+                <button onClick={() => setBulkConfirm(false)} className="text-muted-foreground hover:text-foreground">✕</button>
+              </span>
+            ) : (
+              <button
+                onClick={() => setBulkConfirm(true)}
+                disabled={bulkGerandoParcelas}
+                className="flex items-center gap-1 rounded border border-amber-400 bg-amber-500 text-white px-2 py-1 text-[11px] font-semibold hover:bg-amber-600 disabled:opacity-50 transition-colors"
+              >
+                {bulkGerandoParcelas
+                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Gerando…</>
+                  : <><CalendarDays className="h-3 w-3" /> Gerar parcelas ({filtered.filter(p => !pedidosComParcela.has(p.id)).length})</>}
+              </button>
+            )
+          )}
+          {(filtroStatus || filtroFornecedor || filtroOrigem !== 'todos' || filtroSemParcela) && (
+            <button onClick={() => { setFiltroStatus(''); setFiltroFornecedor(''); setFiltroOrigem('todos'); setFiltroSemParcela(false) }} className="rounded border px-2 py-1 text-[11px] hover:bg-muted">Limpar filtros</button>
           )}
           <span className="text-[10px] text-muted-foreground ml-auto">{filtered.length} pedido(s)</span>
           <button onClick={expandirTodosPedidos} className="rounded border px-2 py-1 text-[11px] hover:bg-muted" title="Expandir todos os pedidos visíveis"><ChevronDown className="inline h-3 w-3" /> Expandir todos</button>
@@ -1865,6 +1996,75 @@ function PedidosTab({ search }: { search: string }) {
         </div>
       )}
 
+      {/* ── Dialog: gerar parcelas ───────────────────────────────────────────── */}
+      {gerarDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[1px]">
+          <div className="w-full max-w-sm rounded-2xl border bg-card shadow-2xl p-5 space-y-4 mx-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-sm font-bold">Gerar parcelas</h3>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Pedido #{gerarDialog.pedido.numero_pedido} · {(gerarDialog.pedido as any).fornecedor_nome ?? ''}
+                </p>
+              </div>
+              <button onClick={() => setGerarDialog(null)} className="rounded-lg p-1 hover:bg-muted"><X className="h-4 w-4" /></button>
+            </div>
+
+            {gerarDialog.nfDate && (
+              <div className="flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-400">
+                <CheckCircle2 className="h-3 w-3 shrink-0" />
+                Data base obtida da NF de origem ({gerarDialog.nfDate})
+              </div>
+            )}
+            {!gerarDialog.nfDate && !gerarDialog.pedido.data_entrega_real && (
+              <div className="flex items-center gap-1.5 text-[11px] text-amber-600">
+                <AlertTriangle className="h-3 w-3 shrink-0" />
+                Sem data de entrada — usando hoje como base. Ajuste se necessário.
+              </div>
+            )}
+
+            <div>
+              <label className={LABEL}>Data de entrada (base dos vencimentos)</label>
+              <input
+                type="date"
+                value={gerarDialog.dataBase}
+                onChange={e => onGerarDataChange(e.target.value)}
+                className={INPUT}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {gerarDialog.parcelas.length} parcela(s) · cond. {gerarDialog.pedido.cond_pagamento || '0 dias'}
+              </div>
+              {gerarDialog.parcelas.map(pa => (
+                <div key={pa.numero_parcela} className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-1.5 text-xs">
+                  <span className="text-muted-foreground">Parc. {pa.numero_parcela}</span>
+                  <span className="flex items-center gap-1.5 text-muted-foreground">
+                    <CalendarDays className="h-3 w-3" />
+                    {new Date(pa.data_vencimento + 'T12:00:00').toLocaleDateString('pt-BR')}
+                  </span>
+                  <span className="font-semibold tabular-nums">{formatCurrency(pa.valor)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => setGerarDialog(null)} className="flex-1 rounded-lg border px-3 py-2 text-xs hover:bg-muted">Cancelar</button>
+              <button
+                onClick={confirmarGerar}
+                disabled={gerarDialog.loading || !gerarDialog.dataBase || gerarDialog.parcelas.length === 0}
+                className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-primary text-primary-foreground px-3 py-2 text-xs font-semibold hover:bg-primary/90 disabled:opacity-50"
+              >
+                {gerarDialog.loading
+                  ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Criando…</>
+                  : <><CheckCircle2 className="h-3.5 w-3.5" /> Confirmar</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isLoading ? <Spinner /> : filtered.length === 0 ? <EmptyState msg="Nenhum pedido encontrado" /> : pedidoViewMode === 'pedido' ? (
         <div className="overflow-x-auto rounded-xl border">
           <table className="tbl-bf w-full text-sm">
@@ -2052,6 +2252,18 @@ function PedidosTab({ search }: { search: string }) {
                           <td className="px-3 py-2 text-center">
                             {isPrimeira && (
                               <div className="flex items-center justify-center gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
+                                {!pedidosComParcela.has(p.id) && (
+                                  <button
+                                    onClick={() => iniciarGerar(p)}
+                                    disabled={fetchingParcelaId === p.id}
+                                    className="rounded-md p-1 hover:bg-amber-500/10 text-amber-600"
+                                    title="Gerar parcelas para este pedido"
+                                  >
+                                    {fetchingParcelaId === p.id
+                                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      : <CalendarDays className="h-3.5 w-3.5" />}
+                                  </button>
+                                )}
                                 <button onClick={() => startEdit(p)} className="rounded-md p-1 hover:bg-accent text-foreground" title="Editar">
                                   <Pencil className="h-3.5 w-3.5" />
                                 </button>

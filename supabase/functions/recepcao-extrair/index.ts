@@ -129,6 +129,80 @@ FIDELIDADE — NÃO INVENTE
 - Descrição: copie LITERALMENTE o que está no documento. Não substitua palavras. Não complete abreviações ("ENGATE" continua "ENGATE", não vira "ANEL VEDACAO"). Não troque marcas. Se o nome está em CAIXA ALTA, mantenha em CAIXA ALTA.
 - Quantidade, valor unitário, valor total: leia o que está escrito. Se um valor parece improvável (R$ 36864 numa torneira), provavelmente você confundiu coluna — refaça a leitura ANTES de devolver.`
 
+// Structured Outputs (strict=true): OpenAI garante JSON válido conforme schema quando
+// finish_reason=stop. Elimina erros de parse e força o modelo a fechar o JSON corretamente
+// antes de truncar — muito mais robusto que json_object para respostas longas.
+const RESPONSE_SCHEMA = {
+  name: 'extracao_documento',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: {
+      fornecedor: {
+        type: 'object',
+        properties: {
+          nome:  { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          cnpj:  { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          ie:    { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        },
+        required: ['nome', 'cnpj', 'ie'],
+        additionalProperties: false,
+      },
+      documento: {
+        type: 'object',
+        properties: {
+          numero:          { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          serie:           { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          chave_acesso:    { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          data_emissao:    { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          data_vencimento: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          valor_total:     { anyOf: [{ type: 'number' }, { type: 'null' }] },
+          tipo: { type: 'string', enum: ['NFE', 'NFSE', 'CTE', 'BOLETO', 'PIX', 'RECIBO', 'OUTRO'] },
+        },
+        required: ['numero', 'serie', 'chave_acesso', 'data_emissao', 'data_vencimento', 'valor_total', 'tipo'],
+        additionalProperties: false,
+      },
+      pagamento: {
+        type: 'object',
+        properties: {
+          forma:               { anyOf: [{ type: 'string', enum: ['BOLETO', 'PIX', 'TED', 'DINHEIRO', 'CARTAO', 'DESCONHECIDO'] }, { type: 'null' }] },
+          linha_digitavel:     { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          codigo_barras:       { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          chave_pix:           { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          tipo_chave_pix:      { anyOf: [{ type: 'string', enum: ['CPF', 'CNPJ', 'EMAIL', 'TELEFONE', 'ALEATORIA'] }, { type: 'null' }] },
+          banco:               { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          agencia:             { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          conta:               { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          beneficiario_nome:       { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          beneficiario_cnpj_cpf:   { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        },
+        required: ['forma', 'linha_digitavel', 'codigo_barras', 'chave_pix', 'tipo_chave_pix', 'banco', 'agencia', 'conta', 'beneficiario_nome', 'beneficiario_cnpj_cpf'],
+        additionalProperties: false,
+      },
+      itens: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            ordem:          { type: 'number' },
+            descricao:      { type: 'string' },
+            ncm:            { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            unidade:        { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            quantidade:     { anyOf: [{ type: 'number' }, { type: 'null' }] },
+            valor_unitario: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+            valor_total:    { anyOf: [{ type: 'number' }, { type: 'null' }] },
+          },
+          required: ['ordem', 'descricao', 'ncm', 'unidade', 'quantidade', 'valor_unitario', 'valor_total'],
+          additionalProperties: false,
+        },
+      },
+      observacoes: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    },
+    required: ['fornecedor', 'documento', 'pagamento', 'itens', 'observacoes'],
+    additionalProperties: false,
+  },
+} as const
+
 async function callOpenAI(messages: any[]): Promise<{ json: any; usage: any }> {
   const MAX_RETRIES = 3
   const RETRY_DELAYS = [1000, 2000, 4000] // exponential backoff in ms
@@ -144,11 +218,11 @@ async function callOpenAI(messages: any[]): Promise<{ json: any; usage: any }> {
       body: JSON.stringify({
         model: MODEL,
         messages,
-        response_format: { type: 'json_object' },
+        response_format: { type: 'json_schema', json_schema: RESPONSE_SCHEMA },
         temperature: 0,
-        // max_tokens generoso pra cobrir NF de até ~80 itens. Sem isso, resposta
-        // pode vir truncada e quebrar o JSON.parse com erro genérico.
-        max_tokens: 8000,
+        // Máximo de output do gpt-4o (16.384). NFs com 100+ itens + descrições longas
+        // ultrapassavam 8.000 e vinham truncadas com finish_reason=length.
+        max_tokens: 16384,
       }),
     })
 
@@ -165,13 +239,18 @@ async function callOpenAI(messages: any[]): Promise<{ json: any; usage: any }> {
     }
 
     const data = await resp.json()
-    const content = data.choices?.[0]?.message?.content
+    const message = data.choices?.[0]?.message
+    // Structured Outputs: modelo pode recusar por policy (ex.: documento com dados sensíveis)
+    if (message?.refusal) {
+      throw new Error(`OpenAI recusou extração: ${message.refusal}`)
+    }
+    const content = message?.content
     if (typeof content !== 'string') {
       throw new Error(`OpenAI retornou conteúdo inesperado: ${JSON.stringify(data).slice(0, 500)}`)
     }
     const finishReason = data.choices?.[0]?.finish_reason
     if (finishReason && finishReason !== 'stop') {
-      // length, content_filter, tool_calls — qualquer um diferente de 'stop' indica resposta incompleta
+      // length = ainda truncou mesmo com 16384 tokens (NF muito grande); content_filter = bloqueado
       console.warn(`[recepcao-extrair] finish_reason=${finishReason} — resposta possivelmente incompleta`)
     }
     try {

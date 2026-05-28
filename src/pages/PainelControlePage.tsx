@@ -10,12 +10,14 @@
  */
 
 import { useState, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { InconsistenciasTable } from '@/components/financeiro/InconsistenciasTable'
 import { AuditoriaContabilCard } from '@/components/financeiro/AuditoriaContabilCard'
 import {
   Gauge, ChevronDown, ChevronRight, TrendingUp, TrendingDown,
   Package, CreditCard, Wallet, FileCheck2, Landmark, AlertTriangle,
+  CheckCircle2, XCircle, ArrowRight,
 } from 'lucide-react'
 import { useItensCompra, usePedidos } from '@/hooks/useCompras'
 import { useParcelas } from '@/hooks/useFinanceiro'
@@ -26,6 +28,9 @@ import { useEtapas } from '@/hooks/useEtapas'
 import { useProject } from '@/contexts/ProjectContext'
 import { formatCurrency } from '@/lib/utils'
 import { useHealthChecks } from '@/hooks/useHealthChecks'
+import { useConciliacaoLinks } from '@/hooks/useConciliacao'
+import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
+import { GapInspectorDrawer, type GapOrigin } from '@/components/painel/GapInspectorDrawer'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -98,12 +103,40 @@ export default function PainelControlePage() {
   const { data: medicoes = [] } = useMedicoes()
   const { data: movimentacoes = [] } = useMovimentacoes()
   const { data: etapas = [] } = useEtapas()
+  const { data: linksData } = useConciliacaoLinks()
+  const linksMovs = linksData?.rawRows ?? []
+
+  // Totais exatos por categoria do FC — fonte de verdade para a grade de integridade.
+  // Usa os mesmos eventos que SimuladorPanel/CashFlowChart exibem (viewMode 'completo').
+  const { events: fcEvents } = useCashFlowEvents('completo')
+  const fcTotals = useMemo(() => {
+    const t = { medicoes: 0, capitalMutuo: 0, pedidosObra: 0, despesasIndiretas: 0, mutuoDevolucoes: 0 }
+    for (const ev of fcEvents) {
+      const origem = ev.meta?.origem
+      const cat = ev.meta?.cat ?? ''
+      const etapa = ev.meta?.etapa ?? ''
+      if ((origem as string) === 'transferencia' || cat === 'Transferência Interna') continue
+      // Exclui 'bruto' (estimativas de itens sem pedido) — o FC exibe bruto separado de firme.
+      // A grade de integridade compara com o que está FIRME no FC (pedidos/parcelas/banco).
+      if (ev.type === 'bruto') continue
+      if (ev.type === 'entrada') {
+        if (origem === 'medicao') t.medicoes += ev.valor
+        else if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) t.capitalMutuo += ev.valor
+      } else {
+        if (origem === 'despesa') t.despesasIndiretas += ev.valor
+        else if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) t.mutuoDevolucoes += ev.valor
+        else if (cat !== 'Banco') t.pedidosObra += ev.valor
+      }
+    }
+    return t
+  }, [fcEvents])
 
   const { checks } = useHealthChecks()
   const checkEntradasSV = checks.find(c => c.id === 'entradas-sem-vinculo')
   const checkSaidasSV = checks.find(c => c.id === 'saidas-sem-vinculo')
   const checkGapMed = checks.find(c => c.id === 'gap-wbs-medicoes')
 
+  const [inspectOrigin, setInspectOrigin] = useState<GapOrigin | null>(null)
   const [expandedSection, setExpandedSection] = useState<'diretos' | 'indiretos' | 'capital' | null>('diretos')
   const [showMacro, setShowMacro] = useState(false)
   const qtdCasas = currentCompany?.qtd_casas ?? 1
@@ -196,6 +229,34 @@ export default function PainelControlePage() {
     const pagoTotal = pagoDiretos + pagoIndiretos + capitalPagoTotal + pagoOrfas
     const gap = pagoTotal - conciliado
 
+    // ─── GRADE DE INTEGRIDADE POR ORIGEM ───────────────────────────────────────
+    // Para cada origem, calcula quanto está registrado na tela-fonte e quanto
+    // efetivamente tem representação no fluxo de caixa (via parcela/data/evento).
+    // Gap > 0 = itens na tela que o FC não conhece.
+
+    // Medições: sem data_prevista → invisíveis ao FC (seção 1 filtra !data_prevista)
+    const medicoesComData = medicoes
+      .filter(m => !!m.data_prevista)
+      .reduce((s, m) => s + (Number(m.valor_planejado) || 0), 0)
+    const medicoesGap = medicoesPlanejadas - medicoesComData
+
+    // Pedidos: sem parcela → aparecem no FC via seção 5 (simplificado, sem data precisa)
+    const pedidosSemParcela = Math.max(0, pedidosTotal - previstoDiretosParcelas)
+
+    // Custos indiretos: despesas sem parcela → INVISÍVEIS ao FC (não há seção equivalente à seção 5)
+    const despesasGap = Math.max(0, orcadoIndiretos - previstoIndiretos)
+
+    // Capital de giro — captação: sem data_captacao → invisível ao FC
+    const mutuosCaptacaoComData = mutuos
+      .filter(m => !!m.data_captacao && String(m.categoria ?? '').toUpperCase() !== 'STUB_DEDUPE')
+      .reduce((s, m) => s + (Number(m.valor_captado) || 0), 0)
+    const mutuosCaptacaoGap = Math.max(0, capitalCaptado - mutuosCaptacaoComData)
+
+    // Devoluções: parcelas de mútuo sem data_vencimento → invisíveis ao FC
+    const mutuosDevolucoesComData = mutuos.reduce((s, m) =>
+      s + (m.parcelas ?? []).filter((p: any) => !!p.data_vencimento).reduce((ss: number, p: any) => ss + (Number(p.valor) || 0), 0), 0)
+    const mutuosDevolucoesGap = Math.max(0, capitalContratadoParcelas - mutuosDevolucoesComData)
+
     return {
       orcadoDiretos, orcadoIndiretos,
       orcadoOperacional, orcadoComFinanceiro,
@@ -210,6 +271,12 @@ export default function PainelControlePage() {
       previstoPedidos, previstoIndiretos, previstoCapital, previstoOrfas,
       previstoTotalFontes, totalParcelasGeradas, gapPrevisto,
       pagoOrfas, pagoTotal,
+      // Grade de integridade
+      medicoesComData, medicoesGap,
+      pedidosSemParcela, previstoDiretosParcelas,
+      despesasGap,
+      mutuosCaptacaoComData, mutuosCaptacaoGap,
+      mutuosDevolucoesComData, mutuosDevolucoesGap,
     }
   }, [itens, pedidos, parcelas, despesas, mutuos, medicoes, movimentacoes])
 
@@ -294,8 +361,91 @@ export default function PainelControlePage() {
         icon={Gauge}
       />
 
+      {/* ─── GRADE DE INTEGRIDADE POR ORIGEM ─── */}
+      <OrigemIntegridadeGrid
+        onInspect={setInspectOrigin}
+        rows={[
+          {
+            label: 'Medições',
+            sublabel: 'entradas do contrato',
+            dot: 'bg-purple-500',
+            route: '/recebimentos',
+            inspectKey: 'medicoes',
+            registrado: agg.medicoesPlanejadas,
+            noFC: agg.medicoesComData,
+            gap: agg.medicoesGap,
+            gapNote: agg.medicoesGap > 0 ? 'sem data prevista → invisíveis ao FC' : undefined,
+            severity: agg.medicoesGap > 0.5 ? 'gap' : 'ok',
+          },
+          {
+            label: 'Pedidos de Obra',
+            sublabel: 'saídas diretas',
+            dot: 'bg-blue-500',
+            route: '/compras',
+            inspectKey: 'pedidos',
+            registrado: agg.pedidosTotal,
+            noFC: fcTotals.pedidosObra,
+            gap: Math.abs(agg.pedidosTotal - fcTotals.pedidosObra),
+            gapNote: Math.abs(agg.pedidosTotal - fcTotals.pedidosObra) > 0.5
+              ? (fcTotals.pedidosObra > agg.pedidosTotal
+                  ? 'FC inclui parcelas avulsas além dos pedidos'
+                  : 'pedidos sem parcela → FC usa cond. simplificada (seção 5)')
+              : undefined,
+            severity: Math.abs(agg.pedidosTotal - fcTotals.pedidosObra) > 0.5 ? 'warn' : 'ok',
+          },
+          {
+            label: 'Custos Indiretos',
+            sublabel: 'saídas indiretas',
+            dot: 'bg-rose-500',
+            route: '/custos-indiretos',
+            inspectKey: 'indiretos',
+            registrado: agg.orcadoIndiretos,
+            noFC: fcTotals.despesasIndiretas,
+            gap: Math.abs(agg.orcadoIndiretos - fcTotals.despesasIndiretas),
+            gapNote: Math.abs(agg.orcadoIndiretos - fcTotals.despesasIndiretas) > 0.5
+              ? (fcTotals.despesasIndiretas > agg.orcadoIndiretos
+                  ? 'banco pagou acima do orçado (verificar parcelas de despesa)'
+                  : 'sem parcela gerada → AUSENTES do FC')
+              : undefined,
+            severity: Math.abs(agg.orcadoIndiretos - fcTotals.despesasIndiretas) > 0.5 ? 'warn' : 'ok',
+          },
+          {
+            label: 'Capital de Giro',
+            sublabel: 'captações (entradas)',
+            dot: 'bg-indigo-500',
+            route: '/mutuos',
+            inspectKey: 'capital',
+            registrado: agg.capitalCaptado,
+            noFC: fcTotals.capitalMutuo,
+            gap: Math.abs(agg.capitalCaptado - fcTotals.capitalMutuo),
+            gapNote: Math.abs(agg.capitalCaptado - fcTotals.capitalMutuo) > 0.5
+              ? (fcTotals.capitalMutuo > agg.capitalCaptado
+                  ? 'banco creditou acima do valor_captado planejado'
+                  : 'banco creditou abaixo do planejado ou sem data de captação')
+              : undefined,
+            severity: Math.abs(agg.capitalCaptado - fcTotals.capitalMutuo) > 0.5 ? 'warn' : 'ok',
+          },
+          {
+            label: 'Devoluções de Mútuo',
+            sublabel: 'saídas financeiras',
+            dot: 'bg-amber-500',
+            route: '/mutuos',
+            inspectKey: 'devolucoes',
+            registrado: agg.capitalContratadoParcelas,
+            noFC: fcTotals.mutuoDevolucoes,
+            gap: Math.abs(agg.capitalContratadoParcelas - fcTotals.mutuoDevolucoes),
+            gapNote: Math.abs(agg.capitalContratadoParcelas - fcTotals.mutuoDevolucoes) > 0.5
+              ? (fcTotals.mutuoDevolucoes > agg.capitalContratadoParcelas
+                  ? 'banco pagou acima do planejado (juros / correção monetária)'
+                  : 'sem data de vencimento → invisíveis ao FC')
+              : undefined,
+            severity: Math.abs(agg.capitalContratadoParcelas - fcTotals.mutuoDevolucoes) > 0.5 ? 'warn' : 'ok',
+          },
+        ]}
+      />
+
       {/* ─── CAMADA 0: AUDITORIA CONTÁBIL (3 equações que devem fechar) ─── */}
-      <AuditoriaContabilCard />
+      <AuditoriaContabilCard onOrfasClick={() => setInspectOrigin('orfas')} />
 
       {/* ─── CAMADA 0.5: RASTREABILIDADE BANCÁRIA ─── */}
       {(() => {
@@ -647,6 +797,154 @@ export default function PainelControlePage() {
       </div>
       </div>
       )}
+      {/* ─── DRAWER DE INSPEÇÃO ─── */}
+      <GapInspectorDrawer
+        origin={inspectOrigin}
+        onClose={() => setInspectOrigin(null)}
+        medicoes={medicoes}
+        pedidos={pedidos as any}
+        parcelas={parcelas}
+        mutuos={mutuos}
+        despesas={despesas as any}
+        fcTotalPedidos={fcTotals.pedidosObra}
+        pedidosTotal={agg.pedidosTotal}
+      />
+    </div>
+  )
+}
+
+// ─── Grade de Integridade por Origem ─────────────────────────────────────────
+
+interface OrigemRow {
+  label: string
+  sublabel: string
+  dot: string
+  route: string
+  inspectKey: GapOrigin
+  registrado: number
+  noFC: number
+  gap: number
+  gapNote?: string
+  severity: 'ok' | 'warn' | 'gap'
+}
+
+function OrigemIntegridadeGrid({
+  rows,
+  onInspect,
+}: {
+  rows: OrigemRow[]
+  onInspect: (key: GapOrigin) => void
+}) {
+  const totalGap = rows.reduce((s, r) => s + r.gap, 0)
+  const nOk = rows.filter(r => r.severity === 'ok').length
+
+  return (
+    <div className="rounded-xl border bg-card">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b">
+        <div>
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            {nOk === rows.length
+              ? <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+              : <AlertTriangle className="h-4 w-4 text-amber-500" />}
+            Integridade por Origem
+          </h2>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            Se cada real da tela-fonte tem representação no fluxo de caixa —
+            {nOk === rows.length
+              ? <span className="text-emerald-600 font-semibold ml-1">todas {rows.length} origens OK</span>
+              : <span className="text-amber-600 font-semibold ml-1">{rows.length - nOk} origem(ns) com gap · {formatCurrency(totalGap)} fora do FC</span>}
+          </p>
+        </div>
+      </div>
+
+      {/* Tabela */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              <th className="px-4 py-2 text-left">Origem</th>
+              <th className="px-4 py-2 text-right">Registrado na tela</th>
+              <th className="px-4 py-2 text-right">Com entrada no FC</th>
+              <th className="px-4 py-2 text-right">Gap (fora do FC)</th>
+              <th className="px-4 py-2 text-center">Status</th>
+              <th className="px-2 py-2" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/40">
+            {rows.map(row => {
+              const pct = row.registrado > 0 ? (row.noFC / row.registrado) * 100 : 100
+              const isOk = row.severity === 'ok'
+              const isWarn = row.severity === 'warn'
+              return (
+                <tr key={row.label} className={`hover:bg-muted/20 transition-colors ${row.severity === 'gap' ? 'bg-red-500/3' : ''}`}>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-block h-2 w-2 rounded-full shrink-0 ${row.dot}`} />
+                      <div>
+                        <div className="font-medium">{row.label}</div>
+                        <div className="text-[10px] text-muted-foreground">{row.sublabel}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums font-medium">
+                    {formatCurrency(row.registrado)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    <span className={isOk ? 'text-emerald-700 dark:text-emerald-400 font-semibold' : 'text-muted-foreground'}>
+                      {formatCurrency(row.noFC)}
+                    </span>
+                    <div className="mt-0.5 h-1 w-full rounded-full bg-muted overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${isOk ? 'bg-emerald-500' : isWarn ? 'bg-amber-500' : 'bg-red-500'}`}
+                        style={{ width: `${Math.min(pct, 100)}%` }}
+                      />
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {row.gap < 0.5
+                      ? <span className="text-muted-foreground/40">—</span>
+                      : (
+                        <div>
+                          <span className={`font-semibold ${row.severity === 'gap' ? 'text-red-600' : 'text-amber-600'}`}>
+                            {formatCurrency(row.gap)}
+                          </span>
+                          {row.gapNote && (
+                            <div className="text-[10px] text-muted-foreground max-w-[220px] text-right leading-tight mt-0.5">
+                              {row.gapNote}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    {isOk
+                      ? <CheckCircle2 className="h-4 w-4 text-emerald-500 mx-auto" />
+                      : isWarn
+                        ? <AlertTriangle className="h-4 w-4 text-amber-500 mx-auto" />
+                        : <XCircle className="h-4 w-4 text-red-500 mx-auto" />}
+                  </td>
+                  <td className="px-2 py-3">
+                    <button
+                      onClick={() => onInspect(row.inspectKey)}
+                      className="inline-flex items-center gap-0.5 rounded px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                    >
+                      Inspecionar <ArrowRight className="h-3 w-3" />
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Legenda */}
+      <div className="flex items-center gap-5 px-4 py-2.5 border-t bg-muted/20 text-[10px] text-muted-foreground">
+        <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3 text-emerald-500" /> Tudo incluído no FC</span>
+        <span className="flex items-center gap-1.5"><AlertTriangle className="h-3 w-3 text-amber-500" /> Incluído via cálculo simplificado</span>
+        <span className="flex items-center gap-1.5"><XCircle className="h-3 w-3 text-red-500" /> Itens ausentes do FC — ação necessária</span>
+      </div>
     </div>
   )
 }

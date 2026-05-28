@@ -14,7 +14,7 @@ import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { formatCurrency } from '@/lib/utils'
 
 interface Props {
-  origem: 'parcela' | 'medicao' | 'mutuo_parcela'
+  origem: 'parcela' | 'medicao' | 'mutuo_parcela' | 'mutuo'
   origemId: string
   titulo: string
   subtitulo?: string
@@ -56,6 +56,7 @@ export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, 
         if (origem === 'parcela' && l.parcela_id === origemId) match = true
         else if (origem === 'medicao' && l.medicao_id === origemId) match = true
         else if (origem === 'mutuo_parcela' && l.mutuo_parcela_id === origemId) match = true
+        else if (origem === 'mutuo' && l.mutuo_id === origemId) match = true
         if (match) {
           const mov = (movs as any[]).find(m => m.id === conc.movimentacao_id)
           if (mov) {
@@ -80,7 +81,7 @@ export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, 
         <div className="flex items-start justify-between border-b p-4">
           <div className="flex-1 min-w-0">
             <p className="text-[10px] font-bold uppercase text-muted-foreground">
-              {origem === 'parcela' ? 'Parcela' : origem === 'medicao' ? 'Medição' : 'Parcela de Mútuo'}
+              {origem === 'parcela' ? 'Parcela' : origem === 'medicao' ? 'Medição' : origem === 'mutuo' ? 'Capital de Giro' : 'Parcela de Mútuo'}
             </p>
             <p className="text-sm font-semibold truncate mt-0.5" title={titulo}>{titulo}</p>
             {subtitulo && <p className="text-[11px] text-muted-foreground">{subtitulo}</p>}

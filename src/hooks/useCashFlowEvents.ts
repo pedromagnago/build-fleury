@@ -249,20 +249,37 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // ═══════════════════════════════════════════════════════════
     medicoes.forEach(m => {
       if (!m.data_prevista) return
-      // Realizado ou Planejado: só inclui medição paga (firme é coisa de pedido, não de planejado).
       if (apenasRealizado && m.status !== 'paga') return
-      // Medição já coberta por mov bancária vinculada: a mov virou evento no bloco de movs.
-      // Suprime o evento agregado para evitar dupla contagem.
-      if ((movsByMedicaoId.get(m.id)?.size ?? 0) > 0) return
+
+      // Medição com movs bancárias vinculadas:
+      // - Se totalmente paga (banco cobre 100%): suprime — as movs já viraram eventos.
+      // - Se parcialmente paga: emite apenas o RESÍDUO (valor_planejado - somaMovs)
+      //   na data prevista. As movs cobrem o que entrou; o resíduo representa o que
+      //   ainda deve entrar. Sem isso, o saldo a receber desaparece do fluxo.
+      const medicaoMovCount = movsByMedicaoId.get(m.id)?.size ?? 0
+      if (medicaoMovCount > 0) {
+        const somaMovsMed = movsValueByMedicaoId.get(m.id) ?? 0
+        const residual = Math.max(0, m.valor_planejado - somaMovsMed)
+        if (residual <= 0.5 || apenasRealizado) return  // coberta ou modo realizado
+        let residualDate = addDaysISO(m.data_prevista, prazoRecebimento)
+        if (residualDate < today) residualDate = amanha
+        all.push({
+          id: `med-${m.id}-residual`,
+          date: residualDate,
+          type: 'entrada',
+          valor: residual,
+          meta: { cat: 'Cliente', desc: `Medição nº ${m.numero} (saldo a receber)`, orig: residual, origem: 'medicao' }
+        })
+        return
+      }
 
       // Recebimento = data fim da medição + prazo configurado.
-      // Sem distribuições, "data fim" = data_prevista da medição (marco de conclusão).
       let baseDate = m.data_prevista
       if (baseDate) {
         baseDate = addDaysISO(baseDate, prazoRecebimento)
       }
 
-      // Vencida e não-paga: move para AMANHA (não hoje) — saldo de hoje fica igual ao Realizado.
+      // Vencida e não-paga: move para AMANHA — saldo de hoje fica igual ao Realizado.
       if (m.status !== 'paga' && baseDate < today && !apenasRealizado) {
         baseDate = amanha
       }
@@ -441,19 +458,40 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
 
     // Mutuos SEM mov bancaria vinculada — previsao do plano (data_captacao).
     // Mutuos COM mov vinculada NAO emitem evento agregado: as movs ja viram eventos no bloco acima.
+    // Regra de supressao estendida: se QUALQUER mov de entrada estiver conciliada a qualquer
+    // parcela deste mutuo (via mutuo_parcela_id), considera que a captacao ja esta representada
+    // e suprime o evento agregado — evita dupla contagem quando a conciliacao usou mutuo_parcela_id
+    // em vez de mutuo_id para a captacao.
     mutuos.forEach(m => {
       if (!m.data_captacao) return
       if (mutuosLixoIds.has(m.id)) return
-      if ((movsByMutuoId.get(m.id)?.size ?? 0) > 0) return // ja representado pelas movs
+      // Suprime captacao apenas se ha mov de ENTRADA vinculada ao header (mutuo_id).
+      // Saida conciliada ao header (devolucao mal vinculada) nao deve suprimir a captacao.
+      const captacaoViaHeader = [...(movsByMutuoId.get(m.id) ?? new Set<string>())].some(
+        movId => movByIdLookup.get(movId)?.tipo === 'entrada'
+      )
+      if (captacaoViaHeader) return
+      // ...ou se ha mov de ENTRADA vinculada a qualquer parcela (captacao conciliada via parcela_id)
+      const captacaoViaParcel = (m.parcelas ?? []).some((p: any) => {
+        const movIds = movsByMutuoParcelaId.get(p.id)
+        if (!movIds || movIds.size === 0) return false
+        return [...movIds].some(movId => movByIdLookup.get(movId)?.tipo === 'entrada')
+      })
+      if (captacaoViaParcel) return
 
       if (apenasRealizado && m.data_captacao > today) return
       const val = Number(m.valor_captado)
       if (!(val > 0)) return
+
+      // Vencido e nao recebido: empurra para amanha (consistente com parcelas e medicoes)
+      let captDate = m.data_captacao
+      if (captDate < today && !apenasRealizado) captDate = amanha
+
       const isAdi = isAdiantamentoFeito(m)
       if (isAdi) {
         all.push({
           id: `mutadi-${m.id}`,
-          date: m.data_captacao,
+          date: captDate,
           type: 'firme',
           valor: val,
           meta: { cat: m.tipo || 'Mútuo', etapa: 'Capital', forn: m.instituicao || m.nome, item: m.nome, desc: `Adiantamento feito: ${m.nome}`, orig: val, origem: 'mutuo' },
@@ -461,7 +499,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       } else {
         all.push({
           id: `mutcap-${m.id}`,
-          date: m.data_captacao,
+          date: captDate,
           type: 'entrada',
           valor: val,
           meta: { cat: m.tipo, desc: `Mútuo: ${m.nome}`, orig: val, origem: 'mutuo' },

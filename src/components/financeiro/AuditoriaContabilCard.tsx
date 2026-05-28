@@ -47,8 +47,9 @@ function actionForBucket(bucketId: string, item: BucketItem): { label: string; r
     case 'despesa-gap':
       return { label: 'Editar despesa', route: '/custos-indiretos' }
     case 'adiantamento-orfao':
+      return { label: 'Ver pagamentos', route: `/pagamentos?search=${desc}` }
     case 'parcela-orfa-contratual':
-      return { label: 'Vincular parcela', route: `/pagamentos?search=${desc}` }
+      return { label: 'Vincular ao pedido', route: '__orfas__' }  // tratado pelo onOrfasClick
     case 'b-pago-sem-mov':
       return { label: 'Conciliar', route: '/conciliacao' }
     case 'b-mov-sem-pago':
@@ -77,7 +78,7 @@ const STATUS_CFG = {
   error: { icon: XCircle,        pill: 'bg-red-500/15 text-red-700 border-red-500/30 dark:text-red-400',                card: 'border-red-500/40 bg-red-500/5',         label: 'Erro' },
 } as const
 
-export function AuditoriaContabilCard() {
+export function AuditoriaContabilCard({ onOrfasClick }: { onOrfasClick?: () => void } = {}) {
   const { equacoes, isLoading } = useEquacoesContabeis()
   const { currentCompany } = useProject()
   const qc = useQueryClient()
@@ -322,9 +323,13 @@ function BucketRow({
                     <td className="px-3 py-1 w-20">
                       {action && (
                         <button
-                          onClick={(e) => { e.stopPropagation(); navigate(action.route) }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (action.route === '__orfas__') { onOrfasClick?.(); return }
+                            navigate(action.route)
+                          }}
                           className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary hover:bg-primary/20 opacity-0 group-hover:opacity-100 transition-all"
-                          title={`${action.label} → ${action.route}`}
+                          title={action.label}
                         >
                           <ExternalLink className="h-2.5 w-2.5" />
                           {action.label}

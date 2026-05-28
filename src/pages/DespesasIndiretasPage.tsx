@@ -1,38 +1,65 @@
+/**
+ * Build Fleury — Gestão de Custos Indiretos
+ *
+ * Despesas recorrentes e pontuais que compõem os custos indiretos do projeto.
+ * Tabs: Todos | Recorrentes | Pontuais | Por Categoria
+ */
 import { useState, useMemo } from 'react'
-import { Plus, Search, Calendar, RefreshCcw, Building2, Edit2, Trash2, LayoutGrid, List, ChevronDown, ChevronRight, FileText, Eye, X, CheckSquare, Square, Tags } from 'lucide-react'
+import { PageHeader } from '@/components/ui/PageHeader'
+import {
+  Building2, Plus, Search, Calendar, RefreshCcw,
+  ChevronDown, ChevronRight, FileText, Eye,
+  X, Tags, Trash2, Pencil, AlertTriangle,
+} from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { useDespesasIndiretas, DespesaIndireta } from '@/hooks/useDespesasIndiretas'
 import { DespesaIndiretaModal } from '@/components/despesas-indiretas/DespesaIndiretaModal'
+import { useParcelas } from '@/hooks/useFinanceiro'
+import { formatCurrency } from '@/lib/utils'
+import { useSelection } from '@/hooks/useSelection'
+import BulkActionBar from '@/components/BulkActionBar'
 
-function formatCurrency(v: number | string | null | undefined): string {
-  if (v == null || isNaN(Number(v))) return 'R$ 0,00'
-  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(v))
-}
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-const tableHeader = 'text-[10px] font-semibold tracking-wider text-muted-foreground uppercase py-3 px-3 text-left border-b bg-muted/30'
-const tableCell = 'px-3 py-2.5 align-middle text-sm border-b'
-const INPUT = 'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary'
+type Tab = 'todos' | 'recorrentes' | 'pontuais' | 'por_categoria'
+type StatusFilter = 'todos' | 'positivo' | 'negativo' | 'consumido' | 'sem_parcela'
 
-type ViewMode = 'grouped' | 'flat'
+const INPUT = 'w-full rounded-lg border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary'
+const LABEL = 'mb-1 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground'
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function DespesasIndiretasPage() {
   const { despesas, isLoading, deleteDespesa, bulkUpdateFields, bulkDelete } = useDespesasIndiretas()
+  const { data: parcelas = [] } = useParcelas()
+
+  // ── Navigation ──────────────────────────────────────────────────────────────
+  const [tab, setTab] = useState<Tab>('todos')
+
+  // ── Filters ─────────────────────────────────────────────────────────────────
   const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('todos')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [filterCategoria, setFilterCategoria] = useState('')
+
+  // ── Modal / Drawer ───────────────────────────────────────────────────────────
   const [modalOpen, setModalOpen] = useState(false)
   const [editingDespesa, setEditingDespesa] = useState<DespesaIndireta | null>(null)
-  const [viewMode, setViewMode] = useState<ViewMode>('grouped')
-  const [filterCategoria, setFilterCategoria] = useState<string>('')
-  const [filterStatus, setFilterStatus] = useState<string>('')
-  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
   const [detailDespesa, setDetailDespesa] = useState<DespesaIndireta | null>(null)
 
-  // Batch selection
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // ── Group collapse ───────────────────────────────────────────────────────────
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
+
+  // ── Batch state ──────────────────────────────────────────────────────────────
   const [batchAction, setBatchAction] = useState<'categoria' | 'delete' | null>(null)
   const [batchCategoria, setBatchCategoria] = useState('')
   const [isBatchProcessing, setIsBatchProcessing] = useState(false)
 
+  // ── Selection ────────────────────────────────────────────────────────────────
+  const selection = useSelection()
+
+  // ── Derived data ─────────────────────────────────────────────────────────────
   const categorias = useMemo(() => {
     const cats = new Set(despesas.map(d => d.categoria))
     return Array.from(cats).sort()
@@ -40,83 +67,69 @@ export default function DespesasIndiretasPage() {
 
   const filteredDespesas = useMemo(() => {
     let result = despesas
+
+    // Tab filter
+    if (tab === 'recorrentes') result = result.filter(d => d.recorrente === true)
+    else if (tab === 'pontuais') result = result.filter(d => d.recorrente === false)
+    // 'por_categoria' uses all filtered results (same as 'todos')
+
+    // Text search
     if (search) {
       const q = search.toLowerCase()
       result = result.filter(d =>
         d.descricao.toLowerCase().includes(q) ||
         d.categoria.toLowerCase().includes(q) ||
         d.fornecedor_nome?.toLowerCase().includes(q) ||
-        d.observacoes?.toLowerCase().includes(q)
+        d.observacoes?.toLowerCase().includes(q),
       )
     }
-    if (filterCategoria) {
-      result = result.filter(d => d.categoria === filterCategoria)
-    }
-    if (filterStatus === 'positivo') {
-      result = result.filter(d => Number(d.valor_saldo) > 0)
-    } else if (filterStatus === 'negativo') {
-      result = result.filter(d => Number(d.valor_saldo) < 0)
-    } else if (filterStatus === 'consumido') {
-      result = result.filter(d => Number(d.valor_consumido) > 0)
-    }
+
+    // Advanced: categoria
+    if (filterCategoria) result = result.filter(d => d.categoria === filterCategoria)
+
+    // Quick status filter
+    if (statusFilter === 'positivo') result = result.filter(d => Number(d.valor_saldo) > 0)
+    else if (statusFilter === 'negativo') result = result.filter(d => Number(d.valor_saldo) < 0)
+    else if (statusFilter === 'consumido') result = result.filter(d => Number(d.valor_consumido) > 0)
+    else if (statusFilter === 'sem_parcela') result = result.filter(d => !parcelas.some(p => p.despesa_indireta_id === d.id))
+
     return result
-  }, [despesas, search, filterCategoria, filterStatus])
+  }, [despesas, parcelas, tab, search, filterCategoria, statusFilter])
 
   const grouped = useMemo(() => {
-    const groups = new Map<string, typeof filteredDespesas>()
+    const groups = new Map<string, DespesaIndireta[]>()
     filteredDespesas.forEach(d => {
-      const g = groups.get(d.categoria) || []
+      const g = groups.get(d.categoria) ?? []
       g.push(d)
       groups.set(d.categoria, g)
     })
     return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]))
   }, [filteredDespesas])
 
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
+  // ── KPIs ─────────────────────────────────────────────────────────────────────
+  const totalOrcado = filteredDespesas.reduce((s, d) => s + Number(d.valor_orcado), 0)
+  const totalConsumido = filteredDespesas.reduce((s, d) => s + Number(d.valor_consumido), 0)
+  const saldo = totalOrcado - totalConsumido
+  const categoriasCount = new Set(filteredDespesas.map(d => d.categoria)).size
+  const recorrentesCount = filteredDespesas.filter(d => d.recorrente).length
+  const pontuaisCount = filteredDespesas.length - recorrentesCount
+  const pctConsumido = totalOrcado > 0 ? Math.round((totalConsumido / totalOrcado) * 100) : 0
 
+  // ── Selection KPIs ───────────────────────────────────────────────────────────
+  const selectedDespesas = filteredDespesas.filter(d => selection.selected.has(d.id))
+  const selOrcado = selectedDespesas.reduce((s, d) => s + Number(d.valor_orcado), 0)
+  const selConsumido = selectedDespesas.reduce((s, d) => s + Number(d.valor_consumido), 0)
+
+  // ── Advanced filter count ─────────────────────────────────────────────────────
+  const advancedActiveCount = [filterCategoria].filter(Boolean).length
+
+  const clearAdvanced = () => { setFilterCategoria('') }
+
+  // ── Handlers ─────────────────────────────────────────────────────────────────
   const toggleGroup = (cat: string) => {
     setCollapsedGroups(prev => {
       const next = new Set(prev)
       next.has(cat) ? next.delete(cat) : next.add(cat)
-      return next
-    })
-  }
-
-  const toggleRowExpand = (id: string) => {
-    setExpandedRows(prev => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-  }
-
-  // Selection helpers
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-  }
-
-  const toggleSelectAll = () => {
-    if (selectedIds.size === filteredDespesas.length) {
-      setSelectedIds(new Set())
-    } else {
-      setSelectedIds(new Set(filteredDespesas.map(d => d.id)))
-    }
-  }
-
-  const selectGroupItems = (items: DespesaIndireta[]) => {
-    const ids = items.map(d => d.id)
-    const allSelected = ids.every(id => selectedIds.has(id))
-    setSelectedIds(prev => {
-      const next = new Set(prev)
-      if (allSelected) {
-        ids.forEach(id => next.delete(id))
-      } else {
-        ids.forEach(id => next.add(id))
-      }
       return next
     })
   }
@@ -132,13 +145,12 @@ export default function DespesasIndiretasPage() {
     }
   }
 
-  // Batch handlers
   const handleBatchCategoria = async () => {
     if (!batchCategoria.trim()) return
     setIsBatchProcessing(true)
     try {
-      await bulkUpdateFields(Array.from(selectedIds), { categoria: batchCategoria.trim() })
-      setSelectedIds(new Set())
+      await bulkUpdateFields(Array.from(selection.selected), { categoria: batchCategoria.trim() })
+      selection.clear()
       setBatchAction(null)
       setBatchCategoria('')
     } finally {
@@ -149,372 +161,368 @@ export default function DespesasIndiretasPage() {
   const handleBatchDelete = async () => {
     setIsBatchProcessing(true)
     try {
-      await bulkDelete(Array.from(selectedIds))
-      setSelectedIds(new Set())
+      await bulkDelete(Array.from(selection.selected))
+      selection.clear()
       setBatchAction(null)
     } finally {
       setIsBatchProcessing(false)
     }
   }
 
-  const hasActiveFilters = filterCategoria || filterStatus
-  const hasSelection = selectedIds.size > 0
-
-  // KPIs
-  const totalOrcado = filteredDespesas.reduce((s, d) => s + Number(d.valor_orcado), 0)
-  const totalConsumido = filteredDespesas.reduce((s, d) => s + Number(d.valor_consumido), 0)
-  const saldo = totalOrcado - totalConsumido
-  const categoriasCount = new Set(filteredDespesas.map(d => d.categoria)).size
-  const recorrentes = filteredDespesas.filter(d => d.recorrente).length
-  const comFornecedor = filteredDespesas.filter(d => d.fornecedor_nome).length
-
-  // Selection KPIs
-  const selectedDespesas = filteredDespesas.filter(d => selectedIds.has(d.id))
-  const selOrcado = selectedDespesas.reduce((s, d) => s + Number(d.valor_orcado), 0)
-  const selConsumido = selectedDespesas.reduce((s, d) => s + Number(d.valor_consumido), 0)
-
-  // Checkbox component
-  const Checkbox = ({ checked, onChange, className = '' }: { checked: boolean; onChange: () => void; className?: string }) => (
-    <button onClick={(e) => { e.stopPropagation(); onChange() }} className={`shrink-0 p-0.5 rounded hover:bg-muted text-muted-foreground ${className}`}>
-      {checked ? <CheckSquare className="h-4 w-4 text-primary" /> : <Square className="h-4 w-4" />}
-    </button>
-  )
-
-  // Row renderer
-  const renderRow = (d: DespesaIndireta, showCategoria = false) => {
-    const isExpanded = expandedRows.has(d.id)
-    const isSelected = selectedIds.has(d.id)
-    const saldoRow = Number(d.valor_saldo)
-    return (
-      <tr key={d.id} className={`hover:bg-muted/10 transition-colors group ${isSelected ? 'bg-primary/5' : ''}`}>
-        <td className={`${tableCell} w-10`}>
-          <Checkbox checked={isSelected} onChange={() => toggleSelect(d.id)} />
-        </td>
-        {showCategoria && (
-          <td className={`${tableCell} text-xs`}>
-            <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-              {d.categoria}
-            </span>
-          </td>
-        )}
-        <td className={tableCell}>
-          <div className="flex items-start gap-2">
-            <button onClick={() => toggleRowExpand(d.id)} className="mt-0.5 shrink-0 p-0.5 rounded hover:bg-muted text-muted-foreground">
-              {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            </button>
-            <div className="min-w-0">
-              <div className="font-medium text-foreground truncate max-w-[280px]">{d.descricao}</div>
-              {d.fornecedor_nome && <div className="text-xs text-muted-foreground mt-0.5">{d.fornecedor_nome}</div>}
-              {isExpanded && d.observacoes && (
-                <div className="mt-2 rounded-md border bg-muted/20 p-2.5 text-xs text-muted-foreground max-w-sm">
-                  <p className="font-semibold text-foreground text-[10px] uppercase mb-1">Observações</p>
-                  {d.observacoes.split(' | ').map((part, i) => (
-                    <div key={i} className="py-0.5">{part}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </td>
-        <td className={tableCell}>
-          <div className="flex flex-col gap-1">
-            {d.recorrente ? (
-              <span className="inline-flex w-fit items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-700/10 dark:bg-blue-900/30 dark:text-blue-300">
-                <RefreshCcw className="h-3 w-3" />
-                {d.frequencia}
-              </span>
-            ) : (
-              <span className="inline-flex w-fit items-center gap-1 rounded bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 ring-1 ring-inset ring-slate-500/10 dark:bg-slate-800 dark:text-slate-400">
-                Pontual
-              </span>
-            )}
-            {d.data_inicio && (
-              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                {format(parseISO(d.data_inicio), 'dd/MM/yy', { locale: ptBR })}
-              </div>
-            )}
-          </div>
-        </td>
-        <td className={`${tableCell} w-[220px]`}>
-          {d.observacoes ? (
-             <div className="max-w-[220px] max-h-16 overflow-y-auto text-xs text-muted-foreground pr-1 shrink-scrollbar">
-                {d.observacoes.split(' | ').map((part, i) => (
-                  <div key={i} className="py-0.5 leading-tight truncate" title={part}>{part}</div>
-                ))}
-             </div>
-          ) : (
-            <span className="text-xs text-muted-foreground">-</span>
-          )}
-        </td>
-        <td className={`${tableCell} tabular-nums font-medium text-right`}>{formatCurrency(d.valor_orcado)}</td>
-        <td className={`${tableCell} tabular-nums text-right`}>{formatCurrency(d.valor_consumido)}</td>
-        <td className={`${tableCell} tabular-nums font-medium text-right ${saldoRow < 0 ? 'text-red-500' : 'text-emerald-600'}`}>{formatCurrency(d.valor_saldo)}</td>
-        <td className={tableCell}>
-          <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            {d.observacoes && (
-              <button onClick={() => setDetailDespesa(d)} className="p-1 hover:bg-muted rounded text-muted-foreground hover:text-foreground" title="Ver detalhes">
-                <Eye className="h-4 w-4" />
-              </button>
-            )}
-            <button onClick={() => handleEdit(d)} className="p-1 hover:bg-muted rounded text-muted-foreground hover:text-foreground" title="Editar">
-              <Edit2 className="h-4 w-4" />
-            </button>
-            <button onClick={() => handleDelete(d)} className="p-1 hover:bg-red-50 rounded text-muted-foreground hover:text-red-500" title="Excluir">
-              <Trash2 className="h-4 w-4" />
-            </button>
-          </div>
-        </td>
-      </tr>
-    )
-  }
+  const TABS: Array<{ key: Tab; label: string; count?: number }> = [
+    { key: 'todos', label: 'Todos', count: despesas.length },
+    { key: 'recorrentes', label: 'Recorrentes', count: despesas.filter(d => d.recorrente).length },
+    { key: 'pontuais', label: 'Pontuais', count: despesas.filter(d => !d.recorrente).length },
+    { key: 'por_categoria', label: 'Por Categoria' },
+  ]
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b px-4 lg:px-8 bg-background/50 backdrop-blur-sm z-10 sticky top-0">
-        <h1 className="text-lg font-semibold tracking-tight">Custos Indiretos</h1>
+    <div>
+      <PageHeader
+        title="Custos Indiretos"
+        description="Despesas recorrentes e pontuais do projeto"
+        icon={Building2}
+      >
         <button
           onClick={() => { setEditingDespesa(null); setModalOpen(true) }}
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[10px] font-bold text-primary-foreground hover:bg-primary/90"
         >
-          <Plus className="h-4 w-4" />
-          <span className="hidden sm:inline">Nova Despesa</span>
+          <Plus className="h-3.5 w-3.5" /> Nova Despesa
         </button>
-      </header>
+      </PageHeader>
 
-      <div className="flex-1 overflow-auto p-4 lg:p-8">
-        <div className="mx-auto max-w-6xl space-y-6">
-
-          {/* ─── BATCH ACTIONS TOOLBAR ─── */}
-          {hasSelection && (
-            <div className="sticky top-0 z-20 flex items-center gap-3 rounded-xl border bg-primary/5 border-primary/20 px-4 py-3 shadow-lg backdrop-blur-sm animate-in slide-in-from-top-2">
-              <div className="flex items-center gap-2">
-                <CheckSquare className="h-4 w-4 text-primary" />
-                <span className="text-sm font-semibold">{selectedIds.size} selecionados</span>
-                <span className="text-xs text-muted-foreground">
-                  (Orçado: {formatCurrency(selOrcado)} · Consumido: {formatCurrency(selConsumido)})
-                </span>
-              </div>
-              <div className="ml-auto flex items-center gap-2">
-                <button
-                  onClick={() => setBatchAction('categoria')}
-                  className="inline-flex items-center gap-1.5 rounded-lg border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors"
-                >
-                  <Tags className="h-3.5 w-3.5" /> Alterar Categoria
-                </button>
-                <button
-                  onClick={() => setBatchAction('delete')}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-white hover:bg-destructive/90 transition-colors"
-                >
-                  <Trash2 className="h-3.5 w-3.5" /> Excluir
-                </button>
-                <button
-                  onClick={() => setSelectedIds(new Set())}
-                  className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground"
-                  title="Limpar seleção"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Toolbar: Search + Filters + View */}
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="relative flex-1 min-w-[200px] max-w-md">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Buscar por descrição, categoria, fornecedor ou observação..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="h-9 w-full rounded-md border border-input pl-9 pr-4 text-sm bg-background shadow-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all"
-              />
-            </div>
-
-            <select
-              value={filterCategoria}
-              onChange={e => setFilterCategoria(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none"
-            >
-              <option value="">Todas categorias</option>
-              {categorias.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-
-            <select
-              value={filterStatus}
-              onChange={e => setFilterStatus(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none"
-            >
-              <option value="">Todos status</option>
-              <option value="positivo">Saldo positivo</option>
-              <option value="negativo">Saldo negativo</option>
-              <option value="consumido">Com consumo</option>
-            </select>
-
-            {hasActiveFilters && (
-              <button
-                onClick={() => { setFilterCategoria(''); setFilterStatus('') }}
-                className="inline-flex items-center gap-1 rounded-md border border-dashed px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              >
-                <X className="h-3 w-3" /> Limpar filtros
-              </button>
-            )}
-
-            <div className="ml-auto flex items-center gap-1 rounded-md border p-0.5">
-              <button
-                onClick={() => setViewMode('grouped')}
-                className={`rounded p-1.5 text-xs transition-colors ${viewMode === 'grouped' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                title="Agrupado por categoria"
-              >
-                <LayoutGrid className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => setViewMode('flat')}
-                className={`rounded p-1.5 text-xs transition-colors ${viewMode === 'flat' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                title="Lista plana"
-              >
-                <List className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* KPI Summary */}
-          {filteredDespesas.length > 0 && (
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
-              <div className="rounded-xl border bg-card p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Itens</p>
-                <p className="mt-1 text-lg font-bold">{filteredDespesas.length}</p>
-                <p className="text-[10px] text-muted-foreground">{categoriasCount} categorias</p>
-              </div>
-              <div className="rounded-xl border bg-card p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orçado Total</p>
-                <p className="mt-1 text-lg font-bold">{formatCurrency(totalOrcado)}</p>
-              </div>
-              <div className="rounded-xl border bg-amber-50/50 dark:bg-amber-950/10 p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-600">Consumido</p>
-                <p className="mt-1 text-lg font-bold text-amber-700">{formatCurrency(totalConsumido)}</p>
-                <p className="text-[10px] text-muted-foreground">{totalOrcado > 0 ? Math.round((totalConsumido / totalOrcado) * 100) : 0}% do orçado</p>
-              </div>
-              <div className={`rounded-xl border p-3 ${saldo >= 0 ? 'bg-emerald-50/50 dark:bg-emerald-950/10' : 'bg-red-50/50 dark:bg-red-950/10'}`}>
-                <p className={`text-[10px] font-semibold uppercase tracking-wider ${saldo >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>Saldo</p>
-                <p className={`mt-1 text-lg font-bold ${saldo >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{formatCurrency(saldo)}</p>
-              </div>
-              <div className="rounded-xl border bg-blue-50/50 dark:bg-blue-950/10 p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-600">Recorrentes</p>
-                <p className="mt-1 text-lg font-bold text-blue-700">{recorrentes}</p>
-                <p className="text-[10px] text-muted-foreground">{filteredDespesas.length - recorrentes} pontuais</p>
-              </div>
-              <div className="rounded-xl border bg-card p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">C/ Fornecedor</p>
-                <p className="mt-1 text-lg font-bold">{comFornecedor}</p>
-                <p className="text-[10px] text-muted-foreground">{filteredDespesas.length - comFornecedor} sem vínculo</p>
-              </div>
-            </div>
-          )}
-
-          {/* Table content */}
-          {!isLoading && filteredDespesas.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed p-12 text-center text-muted-foreground bg-muted/10">
-              <Building2 className="mb-4 h-8 w-8 opacity-20" />
-              <p className="mb-1 text-sm font-medium text-foreground">Nenhuma despesa encontrada</p>
-              <p className="text-xs">
-                {hasActiveFilters ? 'Tente ajustar os filtros.' : 'Clique no botão acima para adicionar um custo indireto.'}
-              </p>
-            </div>
-          ) : viewMode === 'flat' ? (
-            /* ─── FLAT VIEW ─── */
-            <div className="rounded-xl border bg-card shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="tbl-bf w-full text-left border-collapse">
-                  <thead>
-                    <tr>
-                      <th className={`${tableHeader} w-10`}>
-                        <Checkbox
-                          checked={filteredDespesas.length > 0 && selectedIds.size === filteredDespesas.length}
-                          onChange={toggleSelectAll}
-                        />
-                      </th>
-                      <th className={tableHeader}>Categoria</th>
-                      <th className={tableHeader}>Descrição</th>
-                      <th className={tableHeader}>Período</th>
-                      <th className={tableHeader}>Observações</th>
-                      <th className={`${tableHeader} text-right`}>Orçado</th>
-                      <th className={`${tableHeader} text-right`}>Consumido</th>
-                      <th className={`${tableHeader} text-right`}>Saldo</th>
-                      <th className={`${tableHeader} w-24`}></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredDespesas.map(d => renderRow(d, true))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ) : (
-            /* ─── GROUPED VIEW ─── */
-            <div className="space-y-4">
-              {grouped.map(([categoria, items]) => {
-                const orcadoGrp = items.reduce((s, i) => s + Number(i.valor_orcado), 0)
-                const consumGrp = items.reduce((s, i) => s + Number(i.valor_consumido), 0)
-                const saldoGrp = orcadoGrp - consumGrp
-                const isCollapsed = collapsedGroups.has(categoria)
-                const allGroupSelected = items.every(d => selectedIds.has(d.id))
-
-                return (
-                  <div key={categoria} className="rounded-xl border bg-card shadow-sm overflow-hidden">
-                    <div className="flex items-center justify-between border-b bg-muted/20 px-4 py-3 cursor-pointer hover:bg-muted/30 transition-colors">
-                      <h3 className="font-semibold text-sm flex items-center gap-2">
-                        <Checkbox checked={allGroupSelected} onChange={() => selectGroupItems(items)} />
-                        <button onClick={() => toggleGroup(categoria)} className="flex items-center gap-2">
-                          {isCollapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-                          <span className="w-2 h-2 rounded-full bg-primary/60"></span>
-                          {categoria}
-                          <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground ml-1">
-                            {items.length} {items.length === 1 ? 'item' : 'itens'}
-                          </span>
-                        </button>
-                      </h3>
-                      <div className="flex gap-6 text-xs" onClick={() => toggleGroup(categoria)}>
-                        <span className="text-muted-foreground">Orçado: <span className="font-medium text-foreground">{formatCurrency(orcadoGrp)}</span></span>
-                        <span className="text-muted-foreground">Consumido: <span className="font-medium text-foreground">{formatCurrency(consumGrp)}</span></span>
-                        <span className={`font-medium ${saldoGrp < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
-                          Saldo: {formatCurrency(saldoGrp)}
-                        </span>
-                      </div>
-                    </div>
-                    {!isCollapsed && (
-                      <div className="overflow-x-auto">
-                        <table className="tbl-bf w-full text-left border-collapse">
-                          <thead>
-                            <tr>
-                              <th className={`${tableHeader} w-10`}>
-                                <Checkbox checked={allGroupSelected} onChange={() => selectGroupItems(items)} />
-                              </th>
-                              <th className={tableHeader}>Descrição</th>
-                              <th className={tableHeader}>Período</th>
-                              <th className={tableHeader}>Observações</th>
-                              <th className={`${tableHeader} text-right`}>Orçado</th>
-                              <th className={`${tableHeader} text-right`}>Consumido</th>
-                              <th className={`${tableHeader} text-right`}>Saldo</th>
-                              <th className={`${tableHeader} w-24`}></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {items.map(d => renderRow(d, false))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
+      {/* KPI cards */}
+      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-5">
+        <div className="rounded-xl border bg-card p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Itens</p>
+          <p className="mt-1 text-lg font-bold">{filteredDespesas.length}</p>
+          <p className="text-[10px] text-muted-foreground">{categoriasCount} categorias</p>
+        </div>
+        <div className="rounded-xl border bg-card p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Orçado Total</p>
+          <p className="mt-1 text-lg font-bold tabular-nums">{formatCurrency(totalOrcado)}</p>
+        </div>
+        <div className="rounded-xl border bg-card p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-amber-600">Consumido</p>
+          <p className="mt-1 text-lg font-bold tabular-nums text-amber-700">{formatCurrency(totalConsumido)}</p>
+          <p className="text-[10px] text-muted-foreground">{pctConsumido}% do orçado</p>
+        </div>
+        <div className={`rounded-xl border p-3 ${saldo >= 0 ? 'bg-card' : 'bg-card'}`}>
+          <p className={`text-[10px] font-bold uppercase tracking-wider ${saldo >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>Saldo</p>
+          <p className={`mt-1 text-lg font-bold tabular-nums ${saldo >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{formatCurrency(saldo)}</p>
+        </div>
+        <div className="rounded-xl border bg-card p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Recorrentes</p>
+          <p className="mt-1 text-lg font-bold text-blue-700">{recorrentesCount}</p>
+          <p className="text-[10px] text-muted-foreground">{pontuaisCount} pontuais</p>
         </div>
       </div>
 
-      {/* ─── BATCH ACTION DIALOGS ─── */}
+      {/* Tabs */}
+      <div className="mb-5 flex gap-1 overflow-x-auto rounded-lg border bg-card p-1">
+        {TABS.map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors ${
+              tab === t.key ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+            }`}>
+            {t.label}
+            {t.count !== undefined && (
+              <span className={`rounded-full px-1.5 text-[9px] font-bold ${
+                tab === t.key ? 'bg-primary-foreground/20' : 'bg-muted'
+              }`}>{t.count}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Filter bar */}
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        {/* Search */}
+        <div className="relative min-w-[200px] flex-1">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Buscar descrição, categoria, fornecedor..."
+            className="w-full rounded-lg border bg-background pl-10 pr-3 py-2 text-sm"
+          />
+        </div>
+
+        {/* Quick status pills */}
+        <div className="flex gap-1 rounded-lg border bg-muted/40 p-0.5">
+          {([
+            ['todos', 'Todos'],
+            ['positivo', 'Positivo'],
+            ['negativo', 'Negativo'],
+            ['consumido', 'Consumido'],
+            ['sem_parcela', '⚠ Sem Parcela'],
+          ] as const).map(([k, label]) => (
+            <button key={k} onClick={() => setStatusFilter(k)}
+              className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${
+                statusFilter === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              } ${k === 'negativo' && statusFilter === k ? 'text-red-600' : ''} ${k === 'positivo' && statusFilter === k ? 'text-emerald-600' : ''} ${k === 'sem_parcela' && statusFilter === k ? 'text-amber-600' : ''}`}
+            >{label}</button>
+          ))}
+        </div>
+
+        {/* ml-auto actions */}
+        <div className="ml-auto flex gap-1.5">
+          <button
+            onClick={() => setShowAdvanced(v => !v)}
+            className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[10px] font-semibold transition-colors ${
+              showAdvanced || advancedActiveCount > 0
+                ? 'border-primary/50 bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <ChevronDown className={`h-3 w-3 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
+            Filtros avançados
+            {advancedActiveCount > 0 && (
+              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[9px] font-bold text-primary-foreground">
+                {advancedActiveCount}
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Advanced filters panel */}
+      {showAdvanced && (
+        <div className="mb-4 rounded-xl border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <span className="text-xs font-semibold">Filtros avançados</span>
+            {advancedActiveCount > 0 && (
+              <button onClick={clearAdvanced}
+                className="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground">
+                <X className="h-3 w-3" />Limpar filtros ({advancedActiveCount})
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+            <div>
+              <label className={LABEL}>Categoria</label>
+              <select value={filterCategoria} onChange={e => setFilterCategoria(e.target.value)} className={INPUT}>
+                <option value="">Todas</option>
+                {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+          {advancedActiveCount > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {filterCategoria && (
+                <span className="flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-[10px] font-medium text-primary">
+                  Categoria: {filterCategoria}
+                  <button type="button" onClick={() => setFilterCategoria('')} className="rounded-full hover:bg-primary/20 p-0.5">
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!isLoading && filteredDespesas.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed p-12 text-center text-muted-foreground bg-muted/10">
+          <Building2 className="mb-4 h-8 w-8 opacity-20" />
+          <p className="mb-1 text-sm font-medium text-foreground">Nenhuma despesa encontrada</p>
+          <p className="text-xs">
+            {search || filterCategoria || statusFilter !== 'todos'
+              ? 'Ajuste os filtros para ver mais itens.'
+              : 'Clique em "Nova Despesa" para adicionar um custo indireto.'}
+          </p>
+        </div>
+      ) : tab === 'por_categoria' ? (
+        /* ─── POR CATEGORIA TAB ─── */
+        <div className="space-y-3">
+          {grouped.map(([categoria, items]) => {
+            const orcadoGrp = items.reduce((s, i) => s + Number(i.valor_orcado), 0)
+            const consumGrp = items.reduce((s, i) => s + Number(i.valor_consumido), 0)
+            const saldoGrp = orcadoGrp - consumGrp
+            const isCollapsed = collapsedGroups.has(categoria)
+
+            return (
+              <div key={categoria} className="rounded-xl border overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(categoria)}
+                  className="w-full flex items-center justify-between border-b bg-muted/30 px-4 py-3 text-left hover:bg-muted/50 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    {isCollapsed
+                      ? <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                      : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />}
+                    <span className="text-sm font-semibold">{categoria}</span>
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {items.length} {items.length === 1 ? 'item' : 'itens'}
+                    </span>
+                  </div>
+                  <div className="flex gap-6 text-xs text-right" onClick={e => e.stopPropagation()}>
+                    <div>
+                      <div className="text-[9px] text-muted-foreground uppercase">Orçado</div>
+                      <div className="font-bold tabular-nums">{formatCurrency(orcadoGrp)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-muted-foreground uppercase">Consumido</div>
+                      <div className="font-semibold tabular-nums text-amber-600">{formatCurrency(consumGrp)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-muted-foreground uppercase">Saldo</div>
+                      <div className={`font-semibold tabular-nums ${saldoGrp < 0 ? 'text-red-600' : 'text-emerald-600'}`}>{formatCurrency(saldoGrp)}</div>
+                    </div>
+                  </div>
+                </button>
+
+                {!isCollapsed && (
+                  <div className="overflow-auto">
+                    <table className="tbl-bf w-full text-xs">
+                      <thead className="sticky top-0 z-30 bg-muted/95 backdrop-blur shadow-[0_1px_0_0_hsl(var(--border))]">
+                        <tr>
+                          <th className="px-2 py-2.5 text-center">
+                            <input type="checkbox"
+                              checked={items.length > 0 && items.every(d => selection.isSelected(d.id))}
+                              onChange={() => {
+                                const ids = items.map(d => d.id)
+                                const allSel = ids.every(id => selection.isSelected(id))
+                                if (allSel) ids.forEach(id => selection.toggle(id))
+                                else ids.filter(id => !selection.isSelected(id)).forEach(id => selection.toggle(id))
+                              }}
+                              className="h-3.5 w-3.5 rounded accent-primary"
+                            />
+                          </th>
+                          <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Status</th>
+                          <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Tipo</th>
+                          <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Descrição</th>
+                          <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Período</th>
+                          <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orçado</th>
+                          <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Consumido</th>
+                          <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Saldo</th>
+                          <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {items.map(d => (
+                          <DespesaRow
+                            key={d.id}
+                            d={d}
+                            isSelected={selection.isSelected(d.id)}
+                            onToggle={() => selection.toggle(d.id)}
+                            hasParcela={parcelas.some(p => p.despesa_indireta_id === d.id)}
+                            onDetail={() => setDetailDespesa(d)}
+                            onEdit={() => handleEdit(d)}
+                            onDelete={() => handleDelete(d)}
+                          />
+                        ))}
+                      </tbody>
+                      <tfoot className="bg-muted/30 font-bold">
+                        <tr>
+                          <td colSpan={5} className="px-3 py-2 text-right text-xs">
+                            SUBTOTAL ({items.length} itens)
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums">{formatCurrency(orcadoGrp)}</td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-amber-600">{formatCurrency(consumGrp)}</td>
+                          <td className={`px-3 py-2 text-right font-mono tabular-nums ${saldoGrp < 0 ? 'text-red-600' : 'text-emerald-600'}`}>{formatCurrency(saldoGrp)}</td>
+                          <td />
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        /* ─── FLAT VIEW (todos / recorrentes / pontuais) ─── */
+        <div className="overflow-auto rounded-xl border bg-card max-h-[calc(100vh-380px)]">
+          <table className="tbl-bf w-full text-xs">
+            <thead className="sticky top-0 z-30 bg-muted/95 backdrop-blur shadow-[0_1px_0_0_hsl(var(--border))]">
+              <tr>
+                <th className="px-2 py-2.5 text-center">
+                  <input type="checkbox"
+                    checked={selection.count === filteredDespesas.length && filteredDespesas.length > 0}
+                    onChange={() => selection.toggleAll(filteredDespesas.map(d => d.id))}
+                    className="h-3.5 w-3.5 rounded accent-primary"
+                  />
+                </th>
+                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Status</th>
+                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Tipo</th>
+                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Categoria</th>
+                <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Descrição</th>
+                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Período</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orçado</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Consumido</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Saldo</th>
+                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ações</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {filteredDespesas.map(d => (
+                <DespesaRow
+                  key={d.id}
+                  d={d}
+                  showCategoria
+                  isSelected={selection.isSelected(d.id)}
+                  onToggle={() => selection.toggle(d.id)}
+                  hasParcela={parcelas.some(p => p.despesa_indireta_id === d.id)}
+                  onDetail={() => setDetailDespesa(d)}
+                  onEdit={() => handleEdit(d)}
+                  onDelete={() => handleDelete(d)}
+                />
+              ))}
+            </tbody>
+            <tfoot className="bg-muted/30 font-bold">
+              <tr>
+                <td colSpan={6} className="px-3 py-2 text-right text-xs">
+                  TOTAL FILTRADO ({filteredDespesas.length} itens)
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
+                  {formatCurrency(totalOrcado)}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums text-amber-600">
+                  {formatCurrency(totalConsumido)}
+                </td>
+                <td className={`px-3 py-2 text-right font-mono tabular-nums ${saldo < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                  {formatCurrency(saldo)}
+                </td>
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      {/* BulkActionBar */}
+      <BulkActionBar
+        count={selection.count}
+        onClear={selection.clear}
+        summary={
+          selection.count > 0
+            ? [
+                { label: 'Orçado', value: formatCurrency(selOrcado), tone: 'primary' as const },
+                { label: 'Consumido', value: formatCurrency(selConsumido), tone: 'amber' as const },
+              ]
+            : undefined
+        }
+      >
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setBatchAction('categoria')}
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
+          >
+            <Tags className="h-3.5 w-3.5" /> Alterar Categoria
+          </button>
+          <button
+            onClick={() => setBatchAction('delete')}
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-red-500 hover:bg-red-500/10 transition-colors"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Excluir
+          </button>
+        </div>
+      </BulkActionBar>
+
+      {/* ─── Batch: Alterar Categoria ─── */}
       {batchAction === 'categoria' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="mx-4 w-full max-w-md rounded-xl border bg-card p-6 shadow-2xl">
@@ -524,7 +532,7 @@ export default function DespesasIndiretasPage() {
               </div>
               <div>
                 <h3 className="text-base font-semibold">Alterar Categoria em Lote</h3>
-                <p className="text-xs text-muted-foreground">{selectedIds.size} itens selecionados</p>
+                <p className="text-xs text-muted-foreground">{selection.count} itens selecionados</p>
               </div>
             </div>
             <div className="mb-5 space-y-3">
@@ -536,7 +544,7 @@ export default function DespesasIndiretasPage() {
                   autoFocus
                   value={batchCategoria}
                   onChange={e => setBatchCategoria(e.target.value)}
-                  className={INPUT}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
                   placeholder="Ex: Capital de Giro"
                 />
                 <datalist id="batch-cat-list">
@@ -569,9 +577,9 @@ export default function DespesasIndiretasPage() {
                 className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
               >
                 {isBatchProcessing ? (
-                  <><div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> Atualizando...</>
+                  <><div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />Atualizando...</>
                 ) : (
-                  <><Tags className="h-4 w-4" /> Aplicar a {selectedIds.size} itens</>
+                  <><Tags className="h-4 w-4" />Aplicar a {selection.count} itens</>
                 )}
               </button>
             </div>
@@ -579,6 +587,7 @@ export default function DespesasIndiretasPage() {
         </div>
       )}
 
+      {/* ─── Batch: Excluir ─── */}
       {batchAction === 'delete' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="mx-4 w-full max-w-md rounded-xl border bg-card p-6 shadow-2xl">
@@ -592,7 +601,7 @@ export default function DespesasIndiretasPage() {
               </div>
             </div>
             <div className="mb-5 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-muted-foreground">
-              <p className="font-medium text-destructive mb-1">{selectedIds.size} itens serão excluídos:</p>
+              <p className="font-medium text-destructive mb-1">{selection.count} itens serão excluídos:</p>
               <div className="max-h-40 overflow-y-auto space-y-0.5 mt-2">
                 {selectedDespesas.map(d => (
                   <div key={d.id} className="flex items-center justify-between py-0.5">
@@ -601,9 +610,7 @@ export default function DespesasIndiretasPage() {
                   </div>
                 ))}
               </div>
-              <p className="mt-2 font-medium text-destructive">
-                Total orçado: {formatCurrency(selOrcado)}
-              </p>
+              <p className="mt-2 font-medium text-destructive">Total orçado: {formatCurrency(selOrcado)}</p>
             </div>
             <div className="flex gap-2 justify-end">
               <button
@@ -619,9 +626,9 @@ export default function DespesasIndiretasPage() {
                 className="flex items-center gap-2 rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-destructive/90 disabled:opacity-50"
               >
                 {isBatchProcessing ? (
-                  <><div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> Excluindo...</>
+                  <><div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />Excluindo...</>
                 ) : (
-                  <><Trash2 className="h-4 w-4" /> Confirmar Exclusão</>
+                  <><Trash2 className="h-4 w-4" />Confirmar Exclusão</>
                 )}
               </button>
             </div>
@@ -629,7 +636,7 @@ export default function DespesasIndiretasPage() {
         </div>
       )}
 
-      {/* Detail drawer */}
+      {/* ─── Detail Drawer ─── */}
       {detailDespesa && (
         <div className="fixed inset-0 z-50 flex items-center justify-end">
           <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => setDetailDespesa(null)} />
@@ -644,7 +651,7 @@ export default function DespesasIndiretasPage() {
                   onClick={() => { handleEdit(detailDespesa); setDetailDespesa(null) }}
                   className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
                 >
-                  <Edit2 className="h-3.5 w-3.5" /> Editar
+                  <Pencil className="h-3.5 w-3.5" /> Editar
                 </button>
                 <button onClick={() => setDetailDespesa(null)} className="rounded-md p-2 hover:bg-muted text-muted-foreground">
                   <X className="h-4 w-4" />
@@ -662,15 +669,15 @@ export default function DespesasIndiretasPage() {
               <div className="grid grid-cols-3 gap-3">
                 <div className="rounded-lg border bg-muted/10 p-3 text-center">
                   <p className="text-[10px] font-semibold uppercase text-muted-foreground">Orçado</p>
-                  <p className="mt-1 text-base font-bold">{formatCurrency(detailDespesa.valor_orcado)}</p>
+                  <p className="mt-1 text-base font-bold tabular-nums">{formatCurrency(detailDespesa.valor_orcado)}</p>
                 </div>
                 <div className="rounded-lg border bg-amber-50/50 dark:bg-amber-950/10 p-3 text-center">
                   <p className="text-[10px] font-semibold uppercase text-amber-600">Consumido</p>
-                  <p className="mt-1 text-base font-bold text-amber-700">{formatCurrency(detailDespesa.valor_consumido)}</p>
+                  <p className="mt-1 text-base font-bold tabular-nums text-amber-700">{formatCurrency(detailDespesa.valor_consumido)}</p>
                 </div>
                 <div className={`rounded-lg border p-3 text-center ${Number(detailDespesa.valor_saldo) < 0 ? 'bg-red-50/50 dark:bg-red-950/10' : 'bg-emerald-50/50 dark:bg-emerald-950/10'}`}>
                   <p className={`text-[10px] font-semibold uppercase ${Number(detailDespesa.valor_saldo) < 0 ? 'text-red-600' : 'text-emerald-600'}`}>Saldo</p>
-                  <p className={`mt-1 text-base font-bold ${Number(detailDespesa.valor_saldo) < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{formatCurrency(detailDespesa.valor_saldo)}</p>
+                  <p className={`mt-1 text-base font-bold tabular-nums ${Number(detailDespesa.valor_saldo) < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{formatCurrency(detailDespesa.valor_saldo)}</p>
                 </div>
               </div>
 
@@ -728,12 +735,133 @@ export default function DespesasIndiretasPage() {
         </div>
       )}
 
+      {/* Modal */}
       {modalOpen && (
         <DespesaIndiretaModal
-          onClose={() => setModalOpen(false)}
+          onClose={() => { setModalOpen(false); setEditingDespesa(null) }}
           initialData={editingDespesa}
         />
       )}
     </div>
+  )
+}
+
+// ─── DespesaRow ───────────────────────────────────────────────────────────────
+
+function DespesaRow({
+  d, showCategoria = false, isSelected, onToggle, hasParcela, onDetail, onEdit, onDelete,
+}: {
+  d: DespesaIndireta
+  showCategoria?: boolean
+  isSelected: boolean
+  onToggle: () => void
+  hasParcela: boolean
+  onDetail: () => void
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const saldoRow = Number(d.valor_saldo)
+  const semParcela = !hasParcela
+
+  return (
+    <tr className={`group transition-colors hover:bg-muted/20 ${isSelected ? 'bg-primary/5' : ''}`}>
+      <td className="px-2 py-2.5 text-center">
+        <input type="checkbox" checked={isSelected} onChange={onToggle}
+          className="h-3.5 w-3.5 rounded accent-primary" />
+      </td>
+      {/* Status */}
+      <td className="px-3 py-2.5 text-center">
+        {semParcela ? (
+          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold bg-amber-500/10 text-amber-600">
+            <AlertTriangle className="h-3 w-3" />Sem Parcela
+          </span>
+        ) : saldoRow < 0 ? (
+          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold bg-red-500/10 text-red-600">
+            Extrapolado
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold bg-emerald-500/10 text-emerald-600">
+            Saldo OK
+          </span>
+        )}
+      </td>
+      {/* Tipo */}
+      <td className="px-3 py-2.5 text-center">
+        {d.recorrente ? (
+          <span className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold bg-blue-500/10 text-blue-600">
+            <RefreshCcw className="h-3 w-3" />Recorrente
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold bg-slate-500/10 text-slate-600">
+            Pontual
+          </span>
+        )}
+      </td>
+      {/* Categoria (flat view only) */}
+      {showCategoria && (
+        <td className="px-3 py-2.5">
+          <span className="inline-block rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium">
+            {d.categoria}
+          </span>
+        </td>
+      )}
+      {/* Descrição + Fornecedor */}
+      <td className="px-3 py-2.5 max-w-[240px]">
+        <div className="font-medium truncate" title={d.descricao}>{d.descricao}</div>
+        {d.fornecedor_nome && (
+          <div className="text-[10px] text-muted-foreground mt-0.5 truncate">{d.fornecedor_nome}</div>
+        )}
+      </td>
+      {/* Período */}
+      <td className="px-3 py-2.5 text-center">
+        {d.data_inicio ? (
+          <div className="flex flex-col items-center gap-0.5">
+            <div className="flex items-center gap-1 text-[10px] tabular-nums">
+              <Calendar className="h-3 w-3 text-muted-foreground" />
+              {format(parseISO(d.data_inicio), 'dd/MM/yy', { locale: ptBR })}
+            </div>
+            {d.recorrente && d.frequencia && (
+              <span className="text-[9px] text-muted-foreground">{d.frequencia}</span>
+            )}
+          </div>
+        ) : (
+          <span className="text-[10px] text-muted-foreground">—</span>
+        )}
+      </td>
+      {/* Orçado */}
+      <td className="px-3 py-2.5 text-right font-mono font-semibold tabular-nums">
+        {formatCurrency(d.valor_orcado)}
+      </td>
+      {/* Consumido */}
+      <td className="px-3 py-2.5 text-right font-mono tabular-nums text-amber-600">
+        {formatCurrency(d.valor_consumido)}
+      </td>
+      {/* Saldo */}
+      <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular-nums ${saldoRow < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+        {formatCurrency(d.valor_saldo)}
+      </td>
+      {/* Ações */}
+      <td className="px-3 py-2.5 text-center">
+        <div className="flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {d.observacoes && (
+            <button onClick={onDetail}
+              className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+              title="Ver detalhes">
+              <Eye className="h-3 w-3" />
+            </button>
+          )}
+          <button onClick={onEdit}
+            className="rounded-md bg-primary/10 p-1.5 text-primary hover:bg-primary/20 transition-colors"
+            title="Editar">
+            <Pencil className="h-3 w-3" />
+          </button>
+          <button onClick={onDelete}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-red-500/10 hover:text-red-500 transition-colors"
+            title="Excluir">
+            <Trash2 className="h-3 w-3" />
+          </button>
+        </div>
+      </td>
+    </tr>
   )
 }

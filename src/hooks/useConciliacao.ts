@@ -806,7 +806,7 @@ async function buscarCategoriaOrigem(origem: VinculoOrigem, origemId: string): P
 }
 
 // Aplica delta (pode ser negativo ao desfazer) no valor_pago da origem e atualiza status
-async function aplicarDeltaOrigem(
+export async function aplicarDeltaOrigem(
   origem: VinculoOrigem,
   origemId: string,
   delta: number,

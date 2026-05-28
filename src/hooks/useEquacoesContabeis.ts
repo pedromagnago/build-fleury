@@ -104,9 +104,15 @@ export function useEquacoesContabeis() {
     // ═════════════════════════════════════════════════════════════════════════
     // EQUAÇÃO A — PLANO: Σ origens não-canceladas = Σ parcelas
     // ═════════════════════════════════════════════════════════════════════════
+    // Desconta valor coberto por NF/realização — esse saldo não precisa de parcela,
+    // pois o FC o projeta via seção 5 (saldo de qtd não recebida do pedido).
     const sigmaPedidos = pedidos
       .filter(p => p.status !== 'cancelado')
-      .reduce((s, p) => s + Number(p.valor_total_real || 0), 0)
+      .reduce((s, p) => {
+        const v = Number(p.valor_total_real || 0)
+        const coberto = Number(p.valor_coberto_por_realizacao || 0)
+        return s + Math.max(0, v - coberto)
+      }, 0)
     const sigmaDespesas = (despesas as any[])
       .reduce((s, d) => s + Number(d.valor_orcado || 0), 0)
     const sigmaParcelas = parcelas.reduce((s, p) => s + Number(p.valor || 0), 0)
@@ -118,8 +124,13 @@ export function useEquacoesContabeis() {
     const bPedExcesso: BucketItem[] = []
     for (const ped of pedidos) {
       if (ped.status === 'cancelado') continue
-      const valor = Number(ped.valor_total_real || 0)
-      if (valor <= 0.5) continue
+      const valorBruto = Number(ped.valor_total_real || 0)
+      if (valorBruto <= 0.5) continue
+      // Desconta valor já coberto por NF/realização — esse saldo fica no FC
+      // via seção 5 (projeção de saldo não faturado) e não precisa de parcela.
+      const coberto = Number(ped.valor_coberto_por_realizacao || 0)
+      const valor = Math.max(0, valorBruto - coberto)
+      if (valor <= 0.5) continue  // 100% coberto por realização — não gera gap
       const soma = parcelasPorPedido.get(ped.id) ?? 0
       const dif = soma - valor
       const label = `Pedido #${ped.numero_pedido ?? '?'} — ${ped.fornecedor_nome ?? 'Sem forn.'}`
@@ -128,7 +139,9 @@ export function useEquacoesContabeis() {
       } else if (dif < -0.5) {
         bPedParcial.push({ id: ped.id, label, description: `Pedido ${fmtBRL(valor)} • Parcelas ${fmtBRL(soma)} (faltam ${fmtBRL(-dif)})`, value: dif })
       } else if (dif > 0.5) {
-        bPedExcesso.push({ id: ped.id, label, description: `Pedido ${fmtBRL(valor)} • Parcelas ${fmtBRL(soma)} (excesso ${fmtBRL(dif)})`, value: dif })
+        // Excesso: parcelas > pedido. Pode ser overrun autorizado — registra como
+        // informativo (não bloqueia o fechamento; o responsável já aprovou).
+        bPedExcesso.push({ id: ped.id, label, description: `Pedido ${fmtBRL(valor)} • Parcelas ${fmtBRL(soma)} (overrun ${fmtBRL(dif)} — verificar se autorizado)`, value: dif })
       }
     }
 
@@ -177,6 +190,10 @@ export function useEquacoesContabeis() {
     ].filter(b => b.qtd > 0)
 
     const gapA = sigmaParcelas - origensTotal
+    // Para classificar o status, exclui overruns autorizados (bPedExcesso):
+    // parcelas a mais que o pedido são permitidas se aprovadas — não devem
+    // travar a equação como erro. O bucket ainda aparece para visibilidade.
+    const gapAParaStatus = gapA - sumValor(bPedExcesso)
 
     // ═════════════════════════════════════════════════════════════════════════
     // EQUAÇÃO B — EXECUÇÃO: para cada parcela, valor_pago = Σ saídas vinculadas
@@ -395,7 +412,7 @@ export function useEquacoesContabeis() {
         esquerdo: { label: 'Σ Origens', value: origensTotal },
         direito:  { label: 'Σ Parcelas', value: sigmaParcelas },
         gap: gapA,
-        status: classify(gapA),
+        status: classify(gapAParaStatus),
         buckets: bucketsA,
       },
       {
