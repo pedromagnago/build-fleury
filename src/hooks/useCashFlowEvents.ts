@@ -479,7 +479,11 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       })
       if (captacaoViaParcel) return
 
-      if (apenasRealizado && m.data_captacao > today) return
+      // Em 'realizado': captação sem nenhuma mov bancária = não confirmada pelo banco.
+      // Consistente com parcelas (requer isPaga) e medições (requer status=paga).
+      // Em modos de projeção: captações passadas são incluídas (empurradas para amanhã
+      // abaixo); futuras mantêm sua data original.
+      if (apenasRealizado) return
       const val = Number(m.valor_captado)
       if (!(val > 0)) return
 
