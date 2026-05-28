@@ -151,6 +151,7 @@ export function AuditoriaContabilCard({ onOrfasClick }: { onOrfasClick?: () => v
             onToggleBucket={(id) => setExpandedBucket(expandedBucket === id ? null : id)}
             onBulkRegenerar={handleBulkRegenerar}
             bulkRegen={bulkRegen}
+            onOrfasClick={onOrfasClick}
           />
         ))}
       </div>
@@ -159,7 +160,7 @@ export function AuditoriaContabilCard({ onOrfasClick }: { onOrfasClick?: () => v
 }
 
 function EquacaoCard({
-  eq, isOpen, onToggle, expandedBucket, onToggleBucket, onBulkRegenerar, bulkRegen,
+  eq, isOpen, onToggle, expandedBucket, onToggleBucket, onBulkRegenerar, bulkRegen, onOrfasClick,
 }: {
   eq: Equacao
   isOpen: boolean
@@ -168,6 +169,7 @@ function EquacaoCard({
   onToggleBucket: (id: string) => void
   onBulkRegenerar: (bucket: EquacaoBucket) => void
   bulkRegen: { bucketId: string; done: number; total: number } | null
+  onOrfasClick?: () => void
 }) {
   const cfg = STATUS_CFG[eq.status]
   const Icon = cfg.icon
