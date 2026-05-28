@@ -249,6 +249,7 @@ function EquacaoCard({
                 canRegen={BUCKETS_REGENERAVEIS.has(b.id)}
                 onBulkRegenerar={() => onBulkRegenerar(b)}
                 bulkRegen={bulkRegen?.bucketId === b.id ? bulkRegen : null}
+                onOrfasClick={onOrfasClick}
               />
             ))}
           </div>
@@ -259,7 +260,7 @@ function EquacaoCard({
 }
 
 function BucketRow({
-  bucket, isOpen, onToggle, canRegen, onBulkRegenerar, bulkRegen,
+  bucket, isOpen, onToggle, canRegen, onBulkRegenerar, bulkRegen, onOrfasClick,
 }: {
   bucket: EquacaoBucket
   isOpen: boolean
@@ -267,6 +268,7 @@ function BucketRow({
   canRegen: boolean
   onBulkRegenerar: () => void
   bulkRegen: { bucketId: string; done: number; total: number } | null
+  onOrfasClick?: () => void
 }) {
   const navigate = useNavigate()
   const running = !!bulkRegen

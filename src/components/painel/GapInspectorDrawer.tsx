@@ -10,7 +10,7 @@ import { toast } from 'sonner'
 import { formatCurrency } from '@/lib/utils'
 import { useUpdateMedicao, type Medicao } from '@/hooks/useOperacional'
 import { useUpdateMutuo, useUpdateMutuoParcela, type Mutuo, type MutuoParcela } from '@/hooks/useMutuos'
-import { useParcelas, useCreateParcela, useUpdateParcela, type Parcela } from '@/hooks/useFinanceiro'
+import { useCreateParcela, useUpdateParcela, type Parcela } from '@/hooks/useFinanceiro'
 import { useUpdatePedido } from '@/hooks/useCompras'
 import { supabase } from '@/lib/supabase'
 import { PedidoDrilldownModal } from '@/components/financeiro/PedidoDrilldownModal'
@@ -43,7 +43,7 @@ function parseCond(cond: string | null | undefined): number[] {
 function addDaysISO(base: string, days: number): string {
   const d = new Date(base + 'T12:00:00')
   d.setDate(d.getDate() + days)
-  return d.toISOString().split('T')[0]
+  return d.toISOString().split('T')[0]!
 }
 
 function calcParcelas(
