@@ -458,20 +458,20 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
 
     // Mutuos SEM mov bancaria vinculada — previsao do plano (data_captacao).
     // Mutuos COM mov vinculada NAO emitem evento agregado: as movs ja viram eventos no bloco acima.
-    // Regra de supressao estendida: se QUALQUER mov de entrada estiver conciliada a qualquer
-    // parcela deste mutuo (via mutuo_parcela_id), considera que a captacao ja esta representada
-    // e suprime o evento agregado — evita dupla contagem quando a conciliacao usou mutuo_parcela_id
-    // em vez de mutuo_id para a captacao.
+    // Supressao em dois niveis:
+    //   1. Header (mutuo_id): qualquer mov (entrada ou saida) suprime — saida no header e
+    //      adiantamento feito; entrada no header e captacao ja representada pela mov real.
+    //   2. Parcela (mutuo_parcela_id): apenas ENTRADA suprime — captacao conciliada via parcela
+    //      em vez do header direto.
     mutuos.forEach(m => {
       if (!m.data_captacao) return
       if (mutuosLixoIds.has(m.id)) return
-      // Suprime captacao apenas se ha mov de ENTRADA vinculada ao header (mutuo_id).
-      // Saida conciliada ao header (devolucao mal vinculada) nao deve suprimir a captacao.
-      const captacaoViaHeader = [...(movsByMutuoId.get(m.id) ?? new Set<string>())].some(
-        movId => movByIdLookup.get(movId)?.tipo === 'entrada'
-      )
-      if (captacaoViaHeader) return
-      // ...ou se ha mov de ENTRADA vinculada a qualquer parcela (captacao conciliada via parcela_id)
+      // Qualquer mov no header (entrada OU saída) suprime o evento de captação planejado —
+      // a mov real já representa o dinheiro no fluxo. Saída no header = adiantamento feito
+      // (dinheiro que saiu da empresa); a mov de saída já virou evento no bloco de movs.
+      if ((movsByMutuoId.get(m.id)?.size ?? 0) > 0) return
+      // Entrada vinculada a qualquer parcela (captação conciliada via mutuo_parcela_id
+      // em vez do header) — evita dupla contagem nesse padrão de conciliação.
       const captacaoViaParcel = (m.parcelas ?? []).some((p: any) => {
         const movIds = movsByMutuoParcelaId.get(p.id)
         if (!movIds || movIds.size === 0) return false
