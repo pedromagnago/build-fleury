@@ -383,8 +383,8 @@ export default function PainelControlePage() {
             gap: Math.abs(agg.pedidosTotal - fcTotals.pedidosObra),
             gapNote: Math.abs(agg.pedidosTotal - fcTotals.pedidosObra) > 0.5
               ? (fcTotals.pedidosObra > agg.pedidosTotal
-                  ? 'FC inclui parcelas avulsas além dos pedidos'
-                  : 'pedidos sem parcela → FC usa cond. simplificada (seção 5)')
+                  ? 'FC inclui overrun/parcelas avulsas além do valor_total_real — ver Eq A → pedido-excesso'
+                  : 'parcelas cobrem menos que o valor contratado — ver Eq A → pedidos-parcial')
               : undefined,
             severity: Math.abs(agg.pedidosTotal - fcTotals.pedidosObra) > 0.5 ? 'warn' : 'ok',
           },
