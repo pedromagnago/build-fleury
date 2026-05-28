@@ -752,7 +752,7 @@ function PedidosTab({ search }: { search: string }) {
       const { data } = await supabase.from('recepcao_docs').select('data_emissao').eq('id', p.nf_origem_id).single()
       if (data?.data_emissao) { nfDate = data.data_emissao; dataBase = data.data_emissao }
     }
-    if (!dataBase) dataBase = new Date().toISOString().split('T')[0]
+    if (!dataBase) dataBase = new Date().toISOString().split('T')[0]!
     const parc = gerarParcelas({
       pedidoId: p.id,
       companyId: currentCompany?.id ?? '',

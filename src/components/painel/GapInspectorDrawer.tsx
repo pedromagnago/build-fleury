@@ -191,7 +191,7 @@ function SecaoPedidos({ pedidos, parcelas }: { pedidos: Pedido[]; parcelas: Parc
       }
     }
 
-    if (!dataBase) dataBase = new Date().toISOString().split('T')[0]
+    if (!dataBase) dataBase = new Date().toISOString().split('T')[0]!
 
     setFetchingId(null)
     setGerar({
@@ -427,7 +427,7 @@ function SecaoCapital({ mutuos }: { mutuos: Mutuo[] }) {
   )
 }
 
-function SecaoDevolucoes({ mutuos, parcelas }: { mutuos: Mutuo[]; parcelas: Parcela[] }) {
+function SecaoDevolucoes({ mutuos }: { mutuos: Mutuo[]; parcelas?: Parcela[] }) {
   const [openParcela, setOpenParcela] = useState<Parcela | null>(null)
   const updateParcela = useUpdateMutuoParcela()
 

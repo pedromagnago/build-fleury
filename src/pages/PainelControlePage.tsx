@@ -10,7 +10,6 @@
  */
 
 import { useState, useMemo } from 'react'
-import { Link } from 'react-router-dom'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { InconsistenciasTable } from '@/components/financeiro/InconsistenciasTable'
 import { AuditoriaContabilCard } from '@/components/financeiro/AuditoriaContabilCard'
@@ -28,7 +27,6 @@ import { useEtapas } from '@/hooks/useEtapas'
 import { useProject } from '@/contexts/ProjectContext'
 import { formatCurrency } from '@/lib/utils'
 import { useHealthChecks } from '@/hooks/useHealthChecks'
-import { useConciliacaoLinks } from '@/hooks/useConciliacao'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
 import { GapInspectorDrawer, type GapOrigin } from '@/components/painel/GapInspectorDrawer'
 
@@ -103,9 +101,6 @@ export default function PainelControlePage() {
   const { data: medicoes = [] } = useMedicoes()
   const { data: movimentacoes = [] } = useMovimentacoes()
   const { data: etapas = [] } = useEtapas()
-  const { data: linksData } = useConciliacaoLinks()
-  const linksMovs = linksData?.rawRows ?? []
-
   // Totais exatos por categoria do FC — fonte de verdade para a grade de integridade.
   // Usa os mesmos eventos que SimuladorPanel/CashFlowChart exibem (viewMode 'completo').
   const { events: fcEvents } = useCashFlowEvents('completo')
