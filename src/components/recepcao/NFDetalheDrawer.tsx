@@ -77,15 +77,50 @@ export function NFDetalheDrawer({ doc, companyId, onClose, onEstornoSuccess }: P
 
   const { data: parcelas = [], isLoading: parcelasLoading } = useQuery<ParcelaRow[]>({
     queryKey: ['parcelas_por_nf', doc.id],
+    staleTime: 0,
     queryFn: async () => {
-      const { data, error } = await supabase
+      // Caminho 1: parcelas com nf_origem_id direto (RPC nova ou backfill)
+      const { data: p1 } = await supabase
         .from('parcelas')
-        .select('id, numero_parcela, valor, data_vencimento, status, valor_pago, descricao, tipo, pedido_id, pedidos(numero)')
+        .select('id, numero_parcela, valor, data_vencimento, status, valor_pago, descricao, tipo, pedido_id, pedidos(numero_pedido)')
         .eq('nf_origem_id', doc.id)
         .eq('company_id', companyId)
-        .order('data_vencimento', { nullsFirst: false })
-      if (error) throw error
-      return (data ?? []) as unknown as ParcelaRow[]
+
+      // Caminho 2: via pedidos âncora/consumidos que têm nf_origem_id (RPC antiga)
+      // Embutimos as parcelas dentro de pedidos — uma única query, sem roundtrip extra.
+      const { data: pedidosVinc } = await supabase
+        .from('pedidos')
+        .select('id, numero_pedido, parcelas(id, numero_parcela, valor, data_vencimento, status, valor_pago, descricao, tipo, pedido_id)')
+        .eq('nf_origem_id', doc.id)
+        .eq('company_id', companyId)
+
+      const p2 = (pedidosVinc ?? []).flatMap((ped: any) =>
+        ((ped.parcelas ?? []) as any[]).map((p: any) => ({
+          ...p,
+          // Adapta para o shape esperado pelo drawer (pedidos.numero)
+          pedidos: { numero: ped.numero_pedido },
+        }))
+      )
+
+      // Merge e deduplica por ID
+      const seen = new Set<string>()
+      const merged = [...(p1 ?? []).map((p: any) => ({
+        ...p,
+        pedidos: p.pedidos ? { numero: (p.pedidos as any).numero_pedido } : null,
+      })), ...p2].filter((p: any) => {
+        if (seen.has(p.id)) return false
+        seen.add(p.id)
+        return true
+      })
+
+      merged.sort((a: any, b: any) => {
+        if (!a.data_vencimento && !b.data_vencimento) return 0
+        if (!a.data_vencimento) return 1
+        if (!b.data_vencimento) return -1
+        return a.data_vencimento.localeCompare(b.data_vencimento)
+      })
+
+      return merged as unknown as ParcelaRow[]
     },
   })
 

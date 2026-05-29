@@ -15,6 +15,7 @@ import {
 type ParcelaResumida = {
   id: string
   nf_origem_id: string | null
+  pedido_id: string | null
   status: string
   valor: number | string
   valor_pago: number | string | null
@@ -95,7 +96,11 @@ export function CentralNotas({
   // Row selection
   const selection = useSelection()
 
-  // ── Query: recepcao_docs + parcelas (two-step, no N+1) ──────────────────────
+  // ── Query: recepcao_docs + parcelas (três passos, sem N+1) ──────────────────
+  // A RPC antiga não preenchia nf_origem_id nas parcelas — elas existem
+  // somente via pedido âncora que tem nf_origem_id. Buscamos pelos dois caminhos:
+  //   1) parcelas.nf_origem_id IN docIds  (RPC nova / backfill)
+  //   2) parcelas.pedido_id IN pedidos que têm nf_origem_id IN docIds  (RPC antiga)
   const { data: docs = [], isLoading } = useQuery<DocRow[]>({
     queryKey: ['central_notas', companyId],
     staleTime: 30_000,
@@ -112,19 +117,48 @@ export function CentralNotas({
       const docIds = (docsRaw ?? []).map(d => d.id)
       if (docIds.length === 0) return []
 
-      const { data: parcelasRaw, error: e2 } = await supabase
-        .from('parcelas')
-        .select('id, nf_origem_id, status, valor, valor_pago, data_vencimento')
+      // Passo 2: pedidos âncora linkados a esses docs
+      const { data: pedidosVinc } = await supabase
+        .from('pedidos')
+        .select('id, nf_origem_id')
         .in('nf_origem_id', docIds)
         .eq('company_id', companyId)
+
+      const pedidoToDoc = new Map<string, string>()
+      const allPedidoIds: string[] = []
+      for (const p of (pedidosVinc ?? []) as any[]) {
+        if (!p.nf_origem_id) continue
+        pedidoToDoc.set(p.id, p.nf_origem_id)
+        allPedidoIds.push(p.id)
+      }
+
+      // Passo 3: parcelas por nf_origem_id (novo) OU por pedido_id (antigo)
+      let parcelasQuery = supabase
+        .from('parcelas')
+        .select('id, nf_origem_id, pedido_id, status, valor, valor_pago, data_vencimento')
+        .eq('company_id', companyId)
+
+      if (allPedidoIds.length > 0) {
+        parcelasQuery = parcelasQuery.or(
+          `nf_origem_id.in.(${docIds.join(',')}),pedido_id.in.(${allPedidoIds.join(',')})`
+        )
+      } else {
+        parcelasQuery = parcelasQuery.in('nf_origem_id', docIds)
+      }
+
+      const { data: parcelasRaw, error: e2 } = await parcelasQuery
       if (e2) throw e2
 
       const byDoc = new Map<string, ParcelaResumida[]>()
-      for (const p of (parcelasRaw ?? []) as ParcelaResumida[]) {
-        if (!p.nf_origem_id) continue
-        const arr = byDoc.get(p.nf_origem_id) ?? []
-        arr.push(p)
-        byDoc.set(p.nf_origem_id, arr)
+      const seenParcela = new Set<string>()
+      for (const p of (parcelasRaw ?? []) as any[]) {
+        // Resolve qual doc esta parcela pertence (por nf_origem_id direto ou via pedido)
+        const docId = (p.nf_origem_id as string | null) ?? pedidoToDoc.get(p.pedido_id as string)
+        if (!docId || seenParcela.has(p.id)) continue
+        seenParcela.add(p.id)
+        const arr = byDoc.get(docId) ?? []
+        arr.push(p as ParcelaResumida)
+        byDoc.set(docId, arr)
       }
 
       return (docsRaw ?? []).map(d => {
