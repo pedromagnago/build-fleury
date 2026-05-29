@@ -84,17 +84,11 @@ function ExcluirLoteModal({ pedidos, onClose, onDone }: { pedidos: Pedido[]; onC
   )
 
   const handleConfirm = async () => {
-    if (preview.bloqueio) {
-      toast.error('Existem parcelas pagas. Estorne antes de excluir.')
-      return
-    }
     setSaving(true)
     try {
       const ids = pedidos.map(p => p.id)
 
-      // 1. Snapshot completo ANTES de qualquer delete. Inclui fornecedor e item
-      //    via join pra que o audit_log seja auto-suficiente (não depende de
-      //    dados que vão sumir junto com o delete).
+      // 1. Snapshot completo ANTES de qualquer delete.
       const { data: snapshotPedidos } = await supabase.from('pedidos')
         .select('*, fornecedores(nome), itens_compra(descricao)')
         .in('id', ids)
@@ -102,23 +96,12 @@ function ExcluirLoteModal({ pedidos, onClose, onDone }: { pedidos: Pedido[]; onC
         .select('id, pedido_id, numero_parcela, valor, valor_pago, status, data_vencimento, data_pagamento_real')
         .in('pedido_id', ids)
 
-      // 2. Re-checa bloqueio com o snapshot fresco (preview pode estar stale).
-      const pagasNoSnapshot = (snapshotParcelas ?? []).filter(
-        (p: any) => p.status === 'paga' || Number(p.valor_pago || 0) > 0.01
-      )
-      if (pagasNoSnapshot.length > 0) {
-        toast.error(`Abortado: ${pagasNoSnapshot.length} parcela(s) com pagamento registrado.`)
-        return
-      }
-
       const { data: { user } } = await supabase.auth.getUser()
-      const valorPendenteSnap = (snapshotParcelas ?? []).reduce(
-        (s: number, p: any) => s + Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0)),
-        0
+      const valorTotalSnap = (snapshotParcelas ?? []).reduce(
+        (s: number, p: any) => s + Number(p.valor || 0), 0
       )
 
-      // 3. Audit ANTES do delete. Se algum chunk falhar adiante, o snapshot
-      //    fica preservado pra investigação/restauração manual.
+      // 2. Audit ANTES do delete.
       await supabase.from('audit_logs').insert({
         company_id: currentCompany?.id,
         user_id: user?.id,
@@ -130,26 +113,30 @@ function ExcluirLoteModal({ pedidos, onClose, onDone }: { pedidos: Pedido[]; onC
           type: 'bulk_delete',
           qtd_pedidos: ids.length,
           qtd_parcelas_removidas: snapshotParcelas?.length ?? 0,
-          valor_pendente_removido: valorPendenteSnap,
+          valor_total_removido: valorTotalSnap,
           motivo: motivo.trim() || null,
           pedidos: snapshotPedidos,
           parcelas: snapshotParcelas,
         },
-        resumo: `Bulk delete: ${ids.length} pedido(s), ${snapshotParcelas?.length ?? 0} parcela(s) pendente(s), ${formatCurrency(valorPendenteSnap)}${motivo.trim() ? ` — Motivo: ${motivo.trim()}` : ''}`,
+        resumo: `Bulk delete: ${ids.length} pedido(s), ${snapshotParcelas?.length ?? 0} parcela(s), ${formatCurrency(valorTotalSnap)}${motivo.trim() ? ` — Motivo: ${motivo.trim()}` : ''}`,
       })
 
-      // 4. Delete em chunks
-      const chunkSize = 50
-      for (let i = 0; i < ids.length; i += chunkSize) {
-        const chunk = ids.slice(i, i + chunkSize)
-        await supabase.from('parcelas').delete().in('pedido_id', chunk)
-        const { error } = await supabase.from('pedidos').delete().in('id', chunk)
-        if (error) throw error
-      }
+      // 3. RPC que aplica a mesma regra de estorno:
+      //    - pedido com NF → estorna a NF (reverte consumo + parcelas)
+      //    - pedido manual → desvincula movimentacoes e deleta direto
+      const { data: result, error } = await supabase.rpc('excluir_pedidos_lote', {
+        p_company_id: currentCompany?.id,
+        p_pedido_ids: ids,
+      })
+      if (error) throw error
+
+      const { excluidos, erros } = (result ?? {}) as { excluidos: number; erros: string[] }
 
       qc.invalidateQueries({ queryKey: ['pedidos'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
-      toast.success(`${ids.length} pedidos excluídos`)
+      qc.invalidateQueries({ queryKey: ['central_notas'] })
+      if (excluidos > 0) toast.success(`${excluidos} pedido(s) excluído(s)`)
+      if (erros?.length > 0) toast.warning(`${erros.length} pedido(s) não excluído(s) — verifique o console`)
       onDone()
       onClose()
     } catch (err: any) {
@@ -171,10 +158,13 @@ function ExcluirLoteModal({ pedidos, onClose, onDone }: { pedidos: Pedido[]; onC
           {preview.loading ? (
             <p className="text-muted-foreground">Carregando impacto…</p>
           ) : preview.bloqueio ? (
-            <p className="text-destructive font-medium">
-              {preview.bloqueio.pagas} parcela(s) já pagas ({formatCurrency(preview.bloqueio.valorPago)}).
-              Estorne antes de excluir — apagar agora destruiria o histórico de pagamento.
-            </p>
+            <>
+              <p className="text-amber-600 font-medium">
+                {preview.bloqueio.pagas} parcela(s) com pagamento ({formatCurrency(preview.bloqueio.valorPago)}).
+                A conciliação será desfeita — os movimentos do extrato ficam sem vínculo para reuso.
+              </p>
+              <p className="mt-1"><strong>{preview.parcelas.length}</strong> parcela(s) no total serão removidas.</p>
+            </>
           ) : (
             <>
               <p><strong>{preview.parcelas.length}</strong> parcela(s) vinculada(s) serão removidas.</p>
@@ -205,7 +195,7 @@ function ExcluirLoteModal({ pedidos, onClose, onDone }: { pedidos: Pedido[]; onC
           </button>
           <button
             onClick={handleConfirm}
-            disabled={saving || preview.loading || !!preview.bloqueio}
+            disabled={saving || preview.loading}
             className="flex items-center gap-2 rounded-lg bg-destructive px-4 py-2 text-sm font-bold text-destructive-foreground hover:opacity-90 disabled:opacity-50"
           >
             {saving ? 'Excluindo…' : 'Excluir Permanentemente'}
