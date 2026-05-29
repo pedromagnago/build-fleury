@@ -23,7 +23,7 @@ import BulkActionBar from '@/components/BulkActionBar'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Tab = 'todos' | 'recorrentes' | 'pontuais' | 'por_categoria'
-type StatusFilter = 'todos' | 'positivo' | 'negativo' | 'consumido' | 'sem_parcela'
+type StatusFilter = 'todos' | 'positivo' | 'negativo' | 'consumido' | 'sem_parcela' | 'ultrapassado'
 
 const INPUT = 'w-full rounded-lg border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary'
 const LABEL = 'mb-1 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground'
@@ -59,6 +59,16 @@ export default function DespesasIndiretasPage() {
   // ── Selection ────────────────────────────────────────────────────────────────
   const selection = useSelection()
 
+  // ── Pago por despesa (valor_pago real das parcelas) ──────────────────────────
+  const pagoPorDespesa = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const p of parcelas) {
+      if (!p.despesa_indireta_id) continue
+      map.set(p.despesa_indireta_id, (map.get(p.despesa_indireta_id) ?? 0) + Number(p.valor_pago || 0))
+    }
+    return map
+  }, [parcelas])
+
   // ── Derived data ─────────────────────────────────────────────────────────────
   const categorias = useMemo(() => {
     const cats = new Set(despesas.map(d => d.categoria))
@@ -92,6 +102,7 @@ export default function DespesasIndiretasPage() {
     else if (statusFilter === 'negativo') result = result.filter(d => Number(d.valor_saldo) < 0)
     else if (statusFilter === 'consumido') result = result.filter(d => Number(d.valor_consumido) > 0)
     else if (statusFilter === 'sem_parcela') result = result.filter(d => !parcelas.some(p => p.despesa_indireta_id === d.id))
+    else if (statusFilter === 'ultrapassado') result = result.filter(d => (pagoPorDespesa.get(d.id) ?? 0) > Number(d.valor_orcado) + 0.5)
 
     return result
   }, [despesas, parcelas, tab, search, filterCategoria, statusFilter])
@@ -109,6 +120,11 @@ export default function DespesasIndiretasPage() {
   // ── KPIs ─────────────────────────────────────────────────────────────────────
   const totalOrcado = filteredDespesas.reduce((s, d) => s + Number(d.valor_orcado), 0)
   const totalConsumido = filteredDespesas.reduce((s, d) => s + Number(d.valor_consumido), 0)
+  const totalPago = filteredDespesas.reduce((s, d) => s + (pagoPorDespesa.get(d.id) ?? 0), 0)
+  const totalUltrapassado = filteredDespesas.reduce((s, d) => {
+    const pago = pagoPorDespesa.get(d.id) ?? 0
+    return s + Math.max(0, pago - Number(d.valor_orcado))
+  }, 0)
   const saldo = totalOrcado - totalConsumido
   const categoriasCount = new Set(filteredDespesas.map(d => d.categoria)).size
   const recorrentesCount = filteredDespesas.filter(d => d.recorrente).length
@@ -216,6 +232,13 @@ export default function DespesasIndiretasPage() {
           <p className="mt-1 text-lg font-bold text-blue-700">{recorrentesCount}</p>
           <p className="text-[10px] text-muted-foreground">{pontuaisCount} pontuais</p>
         </div>
+        <div className={`rounded-xl border p-3 col-span-2 md:col-span-1 ${totalUltrapassado > 0.5 ? 'border-red-400/40 bg-red-500/5' : 'bg-card'}`}>
+          <p className={`text-[10px] font-bold uppercase tracking-wider ${totalUltrapassado > 0.5 ? 'text-red-600' : 'text-muted-foreground'}`}>Pago no banco</p>
+          <p className={`mt-1 text-lg font-bold tabular-nums ${totalUltrapassado > 0.5 ? 'text-red-700' : ''}`}>{formatCurrency(totalPago)}</p>
+          {totalUltrapassado > 0.5 && (
+            <p className="text-[10px] text-red-600 font-semibold">+{formatCurrency(totalUltrapassado)} acima do orçado</p>
+          )}
+        </div>
       </div>
 
       {/* Tabs */}
@@ -256,6 +279,7 @@ export default function DespesasIndiretasPage() {
             ['negativo', 'Negativo'],
             ['consumido', 'Consumido'],
             ['sem_parcela', '⚠ Sem Parcela'],
+            ['ultrapassado', '🔴 Ultrapassado'],
           ] as const).map(([k, label]) => (
             <button key={k} onClick={() => setStatusFilter(k)}
               className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${
@@ -397,6 +421,7 @@ export default function DespesasIndiretasPage() {
                           <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Período</th>
                           <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orçado</th>
                           <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Consumido</th>
+                          <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-red-500">Pago (banco)</th>
                           <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Saldo</th>
                           <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ações</th>
                         </tr>
@@ -406,6 +431,7 @@ export default function DespesasIndiretasPage() {
                           <DespesaRow
                             key={d.id}
                             d={d}
+                            totalPago={pagoPorDespesa.get(d.id) ?? 0}
                             isSelected={selection.isSelected(d.id)}
                             onToggle={() => selection.toggle(d.id)}
                             hasParcela={parcelas.some(p => p.despesa_indireta_id === d.id)}
@@ -453,6 +479,7 @@ export default function DespesasIndiretasPage() {
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Período</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Orçado</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Consumido</th>
+                <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-red-500">Pago (banco)</th>
                 <th className="px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Saldo</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ações</th>
               </tr>
@@ -463,6 +490,7 @@ export default function DespesasIndiretasPage() {
                   key={d.id}
                   d={d}
                   showCategoria
+                  totalPago={pagoPorDespesa.get(d.id) ?? 0}
                   isSelected={selection.isSelected(d.id)}
                   onToggle={() => selection.toggle(d.id)}
                   hasParcela={parcelas.some(p => p.despesa_indireta_id === d.id)}
@@ -482,6 +510,12 @@ export default function DespesasIndiretasPage() {
                 </td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums text-amber-600">
                   {formatCurrency(totalConsumido)}
+                </td>
+                <td className={`px-3 py-2 text-right font-mono tabular-nums ${totalUltrapassado > 0.5 ? 'text-red-600' : ''}`}>
+                  {formatCurrency(totalPago)}
+                  {totalUltrapassado > 0.5 && (
+                    <div className="text-[9px] text-red-500">+{formatCurrency(totalUltrapassado)}</div>
+                  )}
                 </td>
                 <td className={`px-3 py-2 text-right font-mono tabular-nums ${saldo < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                   {formatCurrency(saldo)}
@@ -749,10 +783,11 @@ export default function DespesasIndiretasPage() {
 // ─── DespesaRow ───────────────────────────────────────────────────────────────
 
 function DespesaRow({
-  d, showCategoria = false, isSelected, onToggle, hasParcela, onDetail, onEdit, onDelete,
+  d, showCategoria = false, totalPago = 0, isSelected, onToggle, hasParcela, onDetail, onEdit, onDelete,
 }: {
   d: DespesaIndireta
   showCategoria?: boolean
+  totalPago?: number
   isSelected: boolean
   onToggle: () => void
   hasParcela: boolean
@@ -762,6 +797,7 @@ function DespesaRow({
 }) {
   const saldoRow = Number(d.valor_saldo)
   const semParcela = !hasParcela
+  const ultrapassado = totalPago - Number(d.valor_orcado)
 
   return (
     <tr className={`group transition-colors hover:bg-muted/20 ${isSelected ? 'bg-primary/5' : ''}`}>
@@ -835,6 +871,13 @@ function DespesaRow({
       {/* Consumido */}
       <td className="px-3 py-2.5 text-right font-mono tabular-nums text-amber-600">
         {formatCurrency(d.valor_consumido)}
+      </td>
+      {/* Pago (banco) */}
+      <td className={`px-3 py-2.5 text-right font-mono tabular-nums ${ultrapassado > 0.5 ? 'text-red-600 font-semibold' : 'text-muted-foreground'}`}>
+        {totalPago > 0 ? formatCurrency(totalPago) : '—'}
+        {ultrapassado > 0.5 && (
+          <div className="text-[9px] font-normal">+{formatCurrency(ultrapassado)}</div>
+        )}
       </td>
       {/* Saldo */}
       <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular-nums ${saldoRow < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
