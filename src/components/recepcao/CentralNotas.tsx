@@ -90,10 +90,12 @@ export function CentralNotas({
         p_doc_ids: docIds,
       })
       if (error) throw error
-      return (data as any)?.estornados ?? docIds.length
+      return data as { estornados: number; erros: string[] }
     },
-    onSuccess: (estornados: number) => {
-      toast.success(`${estornados} NF(s) estornada(s) · consumo revertido`)
+    onSuccess: (result) => {
+      const { estornados, erros } = result ?? { estornados: 0, erros: [] }
+      if (estornados > 0) toast.success(`${estornados} NF(s) estornada(s) · consumo revertido`)
+      if (erros?.length > 0) toast.warning(`${erros.length} NF(s) não estornada(s) — verifique conciliações vinculadas`)
       selection.clear()
       setConfirmandoLote(false)
       qc.invalidateQueries({ queryKey: ['central_notas', companyId] })
