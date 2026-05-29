@@ -8,7 +8,7 @@ import { useItensCompra, usePedidos, type ItemCompra, type Pedido } from '@/hook
 import { useDistribuicao, type Distribuicao } from '@/hooks/useOperacional'
 import { useParcelas, type Parcela } from '@/hooks/useFinanceiro'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
-import { useMutuos } from '@/hooks/useMutuos'
+import { useMutuos, mutuoDirecao } from '@/hooks/useMutuos'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { formatCurrency } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
@@ -191,9 +191,11 @@ export default function CronogramaPage() {
       }
     })
 
-    // Capital (mútuos)
+    // Capital (mútuos) — apenas direção 'entrada' (empresa tomou dinheiro)
+    // mútuos 'saida' (empresa emprestou) são ativos e não entram no custo de capital
     let capitalCaptado = 0, capitalDevolucao = 0, capitalPago = 0
     mutuos.forEach(m => {
+      if (mutuoDirecao(m) !== 'entrada') return
       capitalCaptado += Number(m.valor_captado || 0)
       ;(m.parcelas ?? []).forEach((mp: any) => {
         capitalDevolucao += Number(mp.valor || 0)
@@ -209,25 +211,26 @@ export default function CronogramaPage() {
     const margemRS = receitaCEF - totalOrc
     const margemPct = receitaCEF > 0 ? ((receitaCEF - totalOrc) / receitaCEF) * 100 : 0
     const execPct = totalOrc > 0 ? (totalCon / totalOrc) * 100 : 0
-    
-    return { 
-      etapasCount: etapas.length, 
-      receitaCEF, 
-      custoOrcado: custoOrc, 
+
+    return {
+      etapasCount: etapas.length,
+      receitaCEF,
+      custoOrcado: custoOrc,
       custoIndiretoOrcado: custoIndOrc,
-      custoConsumido: custoCon, 
+      custoConsumido: custoCon,
       custoIndiretoConsumido: custoIndCon,
-      custoPago, 
+      aPagarDireto: Math.max(0, custoCon - custoPago),
+      custoPago,
       custoIndiretoPago: custoIndPago,
       capitalCaptado,
       capitalDevolucao,
       capitalPago,
       capitalPendente,
       custoFinanceiro,
-      saldo, 
-      execucaoPct: execPct, 
-      margemRS, 
-      margemPct 
+      saldo,
+      execucaoPct: execPct,
+      margemRS,
+      margemPct
     }
   }, [etapas, itemsByEtapa, pedidosByItem, parcelasByPedido, despesas, parcelas, mutuos])
 
@@ -250,7 +253,7 @@ export default function CronogramaPage() {
       <PageHeader title="Painel de Bordo" description="Gestão centralizada do projeto — planejamento, medições e simulação" icon={LayoutGrid} onHelp={restartTour} />
 
       {/* Dashboard KPIs */}
-      <WBSDashboardCards {...dashTotals} />
+      <WBSDashboardCards {...dashTotals} activeFilterCount={activeFilterCount} />
 
       {/* Cash Flow Chart */}
       <CashFlowChart
@@ -367,7 +370,8 @@ function KanbanView({ etapas, itemsByEtapa, itensCompra: _itensCompra, updateEta
   }
 
   return (
-    <div className="grid grid-cols-4 gap-3">
+    <div className="overflow-x-auto">
+    <div className="grid grid-cols-4 gap-3 min-w-[700px]">
       {STATUSES.map(status => {
         const cfg = STATUS_CFG[status]
         const cols = etapas.filter(e => e.status === status)
@@ -414,6 +418,7 @@ function KanbanView({ etapas, itemsByEtapa, itensCompra: _itensCompra, updateEta
           </div>
         )
       })}
+    </div>
     </div>
   )
 }

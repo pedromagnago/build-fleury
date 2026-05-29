@@ -558,7 +558,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
                       <AlertTriangle className="h-3.5 w-3.5" />
                       Previsões financeiras com cobertura por NFs externas
                     </div>
-                    <div className="grid grid-cols-4 gap-2 text-[11px]">
+                    <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
                       <div>
                         <p className="text-[9px] uppercase text-muted-foreground">Total contratado</p>
                         <p className="font-mono font-bold">{formatCurrency(totValor)}</p>

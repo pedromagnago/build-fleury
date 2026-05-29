@@ -8,6 +8,7 @@ import {
   useMutuos, useCreateMutuo, useDeleteMutuo, useUpdateMutuo,
   useUpdateMutuoParcela, useCreateMutuoParcela, useDeleteMutuoParcela,
   useBatchDeleteMutuos, useBatchUpdateMutuosCategory,
+  mutuoDirecao,
 } from '@/hooks/useMutuos'
 import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { useFornecedores } from '@/hooks/useCompras'
@@ -50,13 +51,6 @@ function parseParcelasText(text: string) {
   }).filter((p): p is { data_vencimento: string; valor: number } => p !== null && p.valor > 0)
 }
 
-export function mutuoDirecao(m: { categoria?: string | null; tipo?: string | null }): 'entrada' | 'saida' {
-  const cat = String(m.categoria ?? '').toLowerCase()
-  if (cat.includes('adiantamento a receber') || cat.includes('adiantamento feito') || cat.includes('emprestimo concedido') || cat.includes('empréstimo concedido')) {
-    return 'saida'
-  }
-  return 'entrada'
-}
 
 const CATEGORIAS_ENTRADA = ['Capital de Giro', 'Mútuo Captação', 'Empréstimo Tomado', 'Financiamento', 'Cartão', 'Adiantamento Recebido']
 const CATEGORIAS_SAIDA   = ['Adiantamento Feito', 'Empréstimo Concedido', 'Adiantamento a Receber']
@@ -200,7 +194,7 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Fornecedor (Opcional)</label>
               <select value={form.fornecedor_id} onChange={e => setForm({ ...form, fornecedor_id: e.target.value })} className={inputCls}>
@@ -221,7 +215,7 @@ function MutuoFormModal({ open, onClose, initialData }: { open: boolean; onClose
               <input type="date" required value={form.data_captacao} onChange={e => setForm({ ...form, data_captacao: e.target.value })} className={inputCls} />
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Taxa Juros Mensal (%)</label>
               <input type="text" value={form.taxa_juros_mensal} onChange={e => setForm({ ...form, taxa_juros_mensal: e.target.value })} className={inputCls} placeholder="1,5" />

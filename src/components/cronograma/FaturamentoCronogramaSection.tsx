@@ -188,7 +188,7 @@ export default function FaturamentoCronogramaSection({ etapa, dists, updateEtapa
       )}
 
       {/* ─── KPI Strip ─── */}
-      <div className="grid grid-cols-6 gap-2 mb-3">
+      <div className="grid grid-cols-2 gap-2 mb-3 sm:grid-cols-3 md:grid-cols-6">
         <KPI label="Receita Total" value={formatCurrency(effectiveReceita)} color={receitaTotal > 0 ? 'text-blue-600' : 'text-amber-500'} />
         <KPI label="Receita Distribuída" value={formatCurrency(totalFatDist)} color={receitaTotal > 0 && Math.abs(fatGap) < 1 ? 'text-emerald-600' : totalFatDist > 0 ? 'text-blue-600' : ''} />
         {receitaTotal > 0 && <KPI label="Saldo p/ Distribuir" value={formatCurrency(fatGap)} color={fatGap > 1 ? 'text-amber-500' : fatGap < -1 ? 'text-red-500' : 'text-emerald-600'} />}
@@ -204,7 +204,7 @@ export default function FaturamentoCronogramaSection({ etapa, dists, updateEtapa
       </button>
 
       {showFatConfig && (
-        <div className="grid grid-cols-6 gap-2 bg-muted/20 p-3 rounded-lg border border-dashed mb-3">
+        <div className="grid grid-cols-2 gap-2 bg-muted/20 p-3 rounded-lg border border-dashed mb-3 sm:grid-cols-3 md:grid-cols-6">
           <div>
             <p className="text-[10px] uppercase text-muted-foreground font-semibold">Qtd/Casa</p>
             {editingFat ? (

@@ -1512,7 +1512,8 @@ function AgendaTab({ onPickDay }: { onPickDay?: (isoDate: string) => void }) {
       </div>
 
       {/* Calendar grid */}
-      <div className={`grid gap-2 ${view === 'semana' ? 'grid-cols-7' : 'grid-cols-7'}`}>
+      <div className="overflow-x-auto">
+      <div className={`grid gap-2 min-w-[560px] ${view === 'semana' ? 'grid-cols-7' : 'grid-cols-7'}`}>
         {view === 'mes' && dayNames.map((n) => (
           <div key={n} className="text-center text-[9px] font-semibold uppercase text-muted-foreground py-1">{n}</div>
         ))}
@@ -1560,6 +1561,7 @@ function AgendaTab({ onPickDay }: { onPickDay?: (isoDate: string) => void }) {
             </div>
           )
         })}
+      </div>
       </div>
     </>
   )
@@ -1860,6 +1862,7 @@ function PorPedidoTab() {
                         </button>
                       )}
                     </div>
+                    <div className="overflow-x-auto">
                     <table className="tbl-bf w-full text-xs">
                       <thead>
                         <tr className="text-[9px] uppercase text-muted-foreground">
@@ -1948,6 +1951,7 @@ function PorPedidoTab() {
                         })}
                       </tbody>
                     </table>
+                    </div>
                   </div>
                 )}
               </div>
@@ -2223,6 +2227,7 @@ function PorFornecedorTab() {
                             )}
                           </div>
                         </div>
+                        <div className="overflow-x-auto">
                         <table className="tbl-bf w-full text-xs">
                           <thead>
                             <tr className="text-[9px] uppercase text-muted-foreground">
@@ -2257,6 +2262,7 @@ function PorFornecedorTab() {
                             })}
                           </tbody>
                         </table>
+                        </div>
                       </div>
                     )
                   })

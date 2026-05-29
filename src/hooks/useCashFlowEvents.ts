@@ -173,17 +173,55 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     const movByIdLookup = new Map<string, any>()
     for (const mv of (movs as any[])) movByIdLookup.set(mv.id, mv)
 
-    // Soma do valor real (extrato) das movs vinculadas a cada parcela.
-    // Usado para emitir SOMENTE o residuo da parcela quando ela ainda tem
-    // saldo aberto: residuo = valor_da_parcela - soma_das_movs.
+    // Soma do valor ALOCADO (valor_aplicado) de cada mov à parcela.
+    // valor_aplicado é o rateio correto quando 1 mov bancária cobre N parcelas —
+    // usar o valor total da mov (mv.valor) causaria dupla contagem: a mesma mov
+    // seria subtraída do saldo de cada parcela vinculada, suprimindo parcelas
+    // que não foram realmente quitadas por aquele pagamento.
+    // Fallback para mv.valor quando valor_aplicado não está configurado (links
+    // legados / conciliações 1-para-1 onde mv.valor = valor_aplicado).
     const movsValueByParcelaId = new Map<string, number>()
-    for (const [parcelaId, movIds] of movsByParcelaId.entries()) {
-      let soma = 0
-      for (const movId of movIds) {
-        const mv = movByIdLookup.get(movId)
-        if (mv) soma += Math.abs(Number(mv.valor || 0))
+    for (const c of (linksMovs as any[])) {
+      for (const l of (c.conciliacao_parcelas ?? [])) {
+        if (!l.parcela_id) continue
+        const valorAplicado = Number(l.valor_aplicado || 0)
+        let valorEfetivo: number
+        if (valorAplicado > 0) {
+          valorEfetivo = valorAplicado
+        } else {
+          const mv = movByIdLookup.get(c.movimentacao_id)
+          valorEfetivo = mv ? Math.abs(Number(mv.valor || 0)) : 0
+        }
+        if (valorEfetivo > 0) {
+          movsValueByParcelaId.set(
+            l.parcela_id,
+            (movsValueByParcelaId.get(l.parcela_id) ?? 0) + valorEfetivo
+          )
+        }
       }
-      movsValueByParcelaId.set(parcelaId, soma)
+    }
+
+    // Mesmo padrão de valor_aplicado para mutuo_parcelas — evita suprimir a parcela
+    // inteira quando o banco cobriu apenas parte do valor (por rateio ou pagamento parcial).
+    const movsValueByMutuoParcelaIdValues = new Map<string, number>()
+    for (const c of (linksMovs as any[])) {
+      for (const l of (c.conciliacao_parcelas ?? [])) {
+        if (!l.mutuo_parcela_id) continue
+        const valorAplicado = Number(l.valor_aplicado || 0)
+        let valorEfetivo: number
+        if (valorAplicado > 0) {
+          valorEfetivo = valorAplicado
+        } else {
+          const mv = movByIdLookup.get(c.movimentacao_id)
+          valorEfetivo = mv ? Math.abs(Number(mv.valor || 0)) : 0
+        }
+        if (valorEfetivo > 0) {
+          movsValueByMutuoParcelaIdValues.set(
+            l.mutuo_parcela_id,
+            (movsValueByMutuoParcelaIdValues.get(l.mutuo_parcela_id) ?? 0) + valorEfetivo
+          )
+        }
+      }
     }
 
     // Mesmo padrão para medições: soma do extrato bancário vinculado a cada medição.
@@ -639,12 +677,22 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       ;(m.parcelas || []).forEach((p: any) => {
         if (!p.data_vencimento) return
         const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
-        // Se ja tem mov bancaria vinculada, a mov ja virou evento — pula SEMPRE
-        // (mesmo se valor_pago/data_pagamento_real nao foi sincronizado pela baixa)
-        if ((movsByMutuoParcelaId.get(p.id)?.size ?? 0) > 0) return
+        const mutuoMovsCount = movsByMutuoParcelaId.get(p.id)?.size ?? 0
+        const mutuoSomaMovs = movsValueByMutuoParcelaIdValues.get(p.id) ?? 0
+        // Parcela totalmente coberta pelo banco (paga ou somaMovs >= valor): mov já virou
+        // evento — não emite para evitar dupla contagem.
+        // Parcela PARCIALMENTE coberta: emite apenas o resíduo não coberto (análogo à
+        // seção 3 para parcelas normais), evitando que o saldo a pagar desapareça do FC.
+        if (mutuoMovsCount > 0 && (isPaga || mutuoSomaMovs >= Number(p.valor) - 0.005)) return
         if (apenasRealizado && !isPaga) return
 
-        const calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
+        let calcVal: number
+        if (mutuoMovsCount > 0) {
+          // Resíduo: banco cobriu apenas parte — emite o saldo descoberto
+          calcVal = Math.max(0, Number(p.valor) - mutuoSomaMovs)
+        } else {
+          calcVal = isPaga ? Number(p.valor_pago || p.valor || 0) : Number(p.valor) - Number(p.valor_pago || 0)
+        }
         if (calcVal <= 0) return
 
         let date = (dataEfetivaParcela(p) || p.data_vencimento) as string

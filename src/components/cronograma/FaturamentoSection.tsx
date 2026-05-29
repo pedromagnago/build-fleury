@@ -89,7 +89,7 @@ export default function FaturamentoSection({ etapa, dists, updateEtapa }: Fatura
         )}
       </div>
 
-      <div className="grid grid-cols-6 gap-2 bg-muted/20 p-3 rounded-lg border border-dashed mb-3">
+      <div className="grid grid-cols-2 gap-2 bg-muted/20 p-3 rounded-lg border border-dashed mb-3 sm:grid-cols-3 md:grid-cols-6">
         <div>
           <p className="text-[10px] uppercase text-muted-foreground font-semibold">Qtd/Casa</p>
           {editing ? (

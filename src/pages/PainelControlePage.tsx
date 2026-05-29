@@ -120,7 +120,7 @@ export default function PainelControlePage() {
       } else {
         if (origem === 'despesa') t.despesasIndiretas += ev.valor
         else if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) t.mutuoDevolucoes += ev.valor
-        else if (cat !== 'Banco') t.pedidosObra += ev.valor
+        else if (cat !== 'Banco' && origem !== 'avulsa') t.pedidosObra += ev.valor
       }
     }
     return t
@@ -140,7 +140,13 @@ export default function PainelControlePage() {
   const agg = useMemo(() => {
     // Diretos
     const orcadoDiretos = itens.reduce((s, i) => s + (Number(i.valor_total_orcado) || 0), 0)
-    const pedidosTotal = pedidos.reduce((s, p) => s + (Number(p.valor_total_real) || 0), 0)
+    const pedidosTotal = pedidos
+      .filter(p => p.status !== 'cancelado')
+      .reduce((s, p) => {
+        const v = Number(p.valor_total_real || 0)
+        const coberto = Number((p as any).valor_coberto_por_realizacao || 0)
+        return s + Math.max(0, v - coberto)
+      }, 0)
     const previstoDiretosParcelas = parcelas
       .filter(p => p.pedido_id != null)
       .reduce((s, p) => s + (Number(p.valor) || 0), 0)
@@ -252,6 +258,22 @@ export default function PainelControlePage() {
       s + (m.parcelas ?? []).filter((p: any) => !!p.data_vencimento).reduce((ss: number, p: any) => ss + (Number(p.valor) || 0), 0), 0)
     const mutuosDevolucoesGap = Math.max(0, capitalContratadoParcelas - mutuosDevolucoesComData)
 
+    // ─── Adiantamentos feitos — ajuste semântico para a grade de integridade ──
+    // Adiantamentos feitos são SAÍDAS (dinheiro enviado a terceiros) com RETORNO
+    // esperado via parcelas (ENTRADAs). Misturar suas parcelas com devoluções de
+    // mútuo (SAÍDAs) e seu valor_captado com captações (ENTRADAs) distorce a grade.
+    // Separamos o montante para subtrair de cada lado antes da comparação.
+    const isAdiFeito = (m: any) => {
+      const cat = String(m.categoria ?? '').toLowerCase()
+      return cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
+    }
+    const adiantamentosParcelasValor = mutuos
+      .filter(m => isAdiFeito(m))
+      .reduce((s, m) => s + (m.parcelas ?? []).reduce((ss: number, mp: any) => ss + (Number(mp.valor) || 0), 0), 0)
+    const adiantamentosCaptadoValor = mutuos
+      .filter(m => isAdiFeito(m))
+      .reduce((s, m) => s + (Number(m.valor_captado) || 0), 0)
+
     return {
       orcadoDiretos, orcadoIndiretos,
       orcadoOperacional, orcadoComFinanceiro,
@@ -272,6 +294,7 @@ export default function PainelControlePage() {
       despesasGap,
       mutuosCaptacaoComData, mutuosCaptacaoGap,
       mutuosDevolucoesComData, mutuosDevolucoesGap,
+      adiantamentosParcelasValor, adiantamentosCaptadoValor,
     }
   }, [itens, pedidos, parcelas, despesas, mutuos, medicoes, movimentacoes])
 

@@ -495,7 +495,7 @@ export default function ConciliacaoPage() {
               className="rounded-lg border px-3 py-1.5 text-xs hover:bg-muted">Descartar</button>
           </div>
 
-          <div className="grid grid-cols-4 gap-3 p-4 border-b">
+          <div className="grid grid-cols-2 gap-3 p-4 border-b sm:grid-cols-4">
             <div className="rounded-lg bg-emerald-500/5 p-3 text-center">
               <TrendingUp className="mx-auto h-4 w-4 text-emerald-500 mb-1" />
               <p className="text-xs font-bold text-emerald-600">{fmt(parseResult.transactions.filter(t => t.amount >= 0).reduce((s, t) => s + t.amount, 0))}</p>

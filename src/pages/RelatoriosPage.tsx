@@ -409,7 +409,7 @@ export default function RelatoriosPage() {
               </div>
             </div>
             {/* Cards de totais filtrados */}
-            <div className="mb-3 grid grid-cols-3 gap-3">
+            <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="rounded-xl border bg-card p-3">
                 <p className="text-[10px] uppercase text-muted-foreground">Parcelas no filtro</p>
                 <p className="mt-0.5 text-base font-bold">{parcelasFiltradas.length} / {parcelasUnificadas.length}</p>

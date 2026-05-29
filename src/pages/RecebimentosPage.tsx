@@ -1045,7 +1045,8 @@ function AgendaRecebimentosTab({ items }: { items: RecebimentoItem[] }) {
         </div>
       </div>
 
-      <div className={`grid gap-2 ${view === 'semana' ? 'grid-cols-7' : 'grid-cols-7'}`}>
+      <div className="overflow-x-auto">
+      <div className={`grid gap-2 min-w-[560px] ${view === 'semana' ? 'grid-cols-7' : 'grid-cols-7'}`}>
         {days.map(day => {
           const slot = byDate.get(day)!
           const isToday = day === todayISO
@@ -1081,6 +1082,7 @@ function AgendaRecebimentosTab({ items }: { items: RecebimentoItem[] }) {
             </div>
           )
         })}
+      </div>
       </div>
 
       {/* Legenda */}
