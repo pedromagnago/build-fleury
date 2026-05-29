@@ -390,21 +390,19 @@ export default function PainelControlePage() {
           },
           {
             label: 'Custos Indiretos',
-            sublabel: `pago no banco · orçado ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 }).format(agg.orcadoIndiretos)}`,
+            sublabel: 'saídas indiretas',
             dot: 'bg-rose-500',
             route: '/custos-indiretos',
             inspectKey: 'indiretos',
-            registrado: agg.pagoIndiretos,
+            registrado: agg.orcadoIndiretos,
             noFC: fcTotals.despesasIndiretas,
-            gap: Math.abs(agg.pagoIndiretos - fcTotals.despesasIndiretas),
-            gapNote: Math.abs(agg.pagoIndiretos - fcTotals.despesasIndiretas) > 0.5
-              ? (fcTotals.despesasIndiretas > agg.pagoIndiretos
-                  ? 'FC conta mov bancária; pago tem valor_pago das parcelas — divergência de rateio'
-                  : 'parcelas registradas como pagas mas sem mov bancária conciliada')
-              : agg.pagoIndiretos > agg.orcadoIndiretos + 0.5
-                ? `ultrapassado em ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 }).format(agg.pagoIndiretos - agg.orcadoIndiretos)} vs orçado`
-                : undefined,
-            severity: Math.abs(agg.pagoIndiretos - fcTotals.despesasIndiretas) > 0.5 ? 'warn' : 'ok',
+            gap: Math.abs(agg.orcadoIndiretos - fcTotals.despesasIndiretas),
+            gapNote: Math.abs(agg.orcadoIndiretos - fcTotals.despesasIndiretas) > 0.5
+              ? (fcTotals.despesasIndiretas > agg.orcadoIndiretos
+                  ? 'banco pagou acima do orçado (verificar parcelas de despesa)'
+                  : 'sem parcela gerada → AUSENTES do FC')
+              : undefined,
+            severity: Math.abs(agg.orcadoIndiretos - fcTotals.despesasIndiretas) > 0.5 ? 'warn' : 'ok',
           },
           {
             label: 'Capital de Giro',
