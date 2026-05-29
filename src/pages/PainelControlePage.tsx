@@ -163,18 +163,8 @@ export default function PainelControlePage() {
     const capitalCaptado = mutuos.reduce((s, m) => s + (Number(m.valor_captado) || 0), 0)
     const capitalPagoTotal = mutuos.reduce((s, m) =>
       s + (m.parcelas ?? []).reduce((ss, mp) => ss + (Number(mp.valor_pago) || 0), 0), 0)
-    // Parcelas de devoluções = apenas mútuos que NÃO são adiantamentos feitos.
-    // Adiantamentos feitos geram parcelas de RETORNO (entrada futura) — não são
-    // saídas financeiras — e iam para fcTotals.capitalMutuo no FC, nunca para
-    // mutuoDevolucoes. Excluí-los alinha o "Registrado" com o bucket correto do FC.
-    const isAdiantamentoFeitoMutuo = (m: any) => {
-      const cat = String(m.categoria ?? '').toLowerCase()
-      return cat.includes('adiantamento a receber') || cat.includes('adiantamento feito')
-    }
-    const capitalContratadoParcelas = mutuos.reduce((s, m) => {
-      if (isAdiantamentoFeitoMutuo(m)) return s
-      return s + (m.parcelas ?? []).reduce((ss: number, mp: any) => ss + (Number(mp.valor) || 0), 0)
-    }, 0)
+    const capitalContratadoParcelas = mutuos.reduce((s, m) =>
+      s + (m.parcelas ?? []).reduce((ss, mp) => ss + (Number(mp.valor) || 0), 0), 0)
     // Juros total projetado = soma das parcelas contratadas − valor captado
     const custoFinanceiroProjetado = Math.max(0, capitalContratadoParcelas - capitalCaptado)
     // Juros pago até hoje = amortização acima do principal proporcional pago
