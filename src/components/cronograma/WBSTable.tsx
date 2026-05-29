@@ -101,17 +101,20 @@ export default function WBSTable({
     const receita = etapa.faturamento_valor_total || distReceita
     const orcado  = items.reduce((s, i) => s + (i.valor_total_orcado ?? 0), 0)
 
-    let consumido = 0, pago = 0
+    let consumido = 0, pago = 0, aPagar = 0
     items.forEach(i => {
       const peds = pedidosByItem.get(i.id) ?? []
       peds.forEach(p => {
         consumido += (p.valor_total_real || 0)
         const parcs = parcelasByPedido.get(p.id) ?? []
-        parcs.forEach(parc => { pago += (parc.valor_pago || 0) })
+        parcs.forEach(parc => {
+          pago += (parc.valor_pago || 0)
+          if (parc.status !== 'paga') {
+            aPagar += Math.max(0, (parc.valor || 0) - (parc.valor_pago || 0))
+          }
+        })
       })
     })
-
-    const aPagar    = Math.max(0, consumido - pago)
     const saldo     = orcado - consumido
     const margem    = receita - orcado
     const margemPct = receita > 0 ? ((receita - orcado) / receita) * 100 : 0

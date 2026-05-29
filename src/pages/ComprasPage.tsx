@@ -1979,22 +1979,34 @@ function PedidosTab({ search }: { search: string }) {
       )}
 
       {/* Delete confirmation modal */}
-      {confirmDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-xl border bg-card p-5 shadow-xl">
-            <h3 className="mb-2 text-sm font-semibold">Excluir pedido?</h3>
-            <p className="mb-4 text-xs text-muted-foreground">
-              O pedido será excluído (soft delete). Parcelas não pagas vinculadas também serão removidas. Parcelas já pagas serão mantidas.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setConfirmDelete(null)} className="rounded-lg border px-3 py-1.5 text-xs hover:bg-accent">Cancelar</button>
-              <button onClick={() => handleDelete(confirmDelete)} disabled={deletePedido.isPending} className="flex items-center gap-1 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50">
-                <Trash2 className="h-3 w-3" /> {deletePedido.isPending ? 'Excluindo...' : 'Excluir'}
-              </button>
+      {confirmDelete && (() => {
+        const pedidoParaDeletar = pedidos.find(p => p.id === confirmDelete)
+        const temNF = !!(pedidoParaDeletar as any)?.nf_origem_id
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-xl border bg-card p-5 shadow-xl">
+              <h3 className="mb-2 text-sm font-semibold">Excluir pedido?</h3>
+              {temNF ? (
+                <p className="mb-4 text-xs text-muted-foreground">
+                  Este pedido foi gerado a partir de uma NF.{' '}
+                  <span className="font-medium text-destructive">A NF será revertida integralmente</span>
+                  {' '}— quantidades recebidas em pedidos existentes serão restauradas e pedidos criados pela mesma NF também serão removidos.
+                </p>
+              ) : (
+                <p className="mb-4 text-xs text-muted-foreground">
+                  O pedido será excluído. Parcelas não pagas vinculadas também serão removidas. Parcelas já pagas serão mantidas.
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setConfirmDelete(null)} className="rounded-lg border px-3 py-1.5 text-xs hover:bg-accent">Cancelar</button>
+                <button onClick={() => handleDelete(confirmDelete)} disabled={deletePedido.isPending} className="flex items-center gap-1 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50">
+                  <Trash2 className="h-3 w-3" /> {deletePedido.isPending ? 'Excluindo...' : 'Excluir'}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* ── Dialog: gerar parcelas ───────────────────────────────────────────── */}
       {gerarDialog && (

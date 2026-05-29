@@ -161,7 +161,7 @@ export default function CronogramaPage() {
 
   // Dashboard totals
   const dashTotals = useMemo(() => {
-    let custoOrc = 0, custoCon = 0, custoPago = 0, receitaCEF = 0
+    let custoOrc = 0, custoCon = 0, custoPago = 0, custoAPagar = 0, receitaCEF = 0
     let custoIndOrc = 0, custoIndCon = 0, custoIndPago = 0
 
     etapas.forEach(e => {
@@ -175,7 +175,12 @@ export default function CronogramaPage() {
         peds.forEach(p => {
           custoCon += (p.valor_total_real || 0)
           const parcs = parcelasByPedido.get(p.id) ?? []
-          parcs.forEach(parc => custoPago += (parc.valor_pago || 0))
+          parcs.forEach(parc => {
+            custoPago += (parc.valor_pago || 0)
+            if (parc.status !== 'paga') {
+              custoAPagar += Math.max(0, (parc.valor || 0) - (parc.valor_pago || 0))
+            }
+          })
         })
       })
     })
@@ -185,9 +190,13 @@ export default function CronogramaPage() {
       custoIndCon += Number(d.valor_consumido || 0)
     })
 
+    let custoIndAPagar = 0
     parcelas.forEach(p => {
       if (p.despesa_indireta_id) {
         custoIndPago += Number(p.valor_pago || 0)
+        if (p.status !== 'paga') {
+          custoIndAPagar += Math.max(0, (p.valor || 0) - (p.valor_pago || 0))
+        }
       }
     })
 
@@ -219,7 +228,8 @@ export default function CronogramaPage() {
       custoIndiretoOrcado: custoIndOrc,
       custoConsumido: custoCon,
       custoIndiretoConsumido: custoIndCon,
-      aPagarDireto: Math.max(0, custoCon - custoPago),
+      aPagarDireto: custoAPagar,
+      aPagarIndireto: custoIndAPagar,
       custoPago,
       custoIndiretoPago: custoIndPago,
       capitalCaptado,

@@ -9,6 +9,7 @@ interface DashboardCardsProps {
   custoConsumido: number
   custoIndiretoConsumido: number
   aPagarDireto?: number
+  aPagarIndireto?: number
   custoPago: number
   custoIndiretoPago: number
   capitalCaptado?: number
@@ -28,6 +29,7 @@ export default function WBSDashboardCards({
   custoOrcado, custoIndiretoOrcado,
   custoConsumido, custoIndiretoConsumido,
   aPagarDireto = 0,
+  aPagarIndireto = 0,
   custoPago, custoIndiretoPago,
   capitalCaptado = 0, capitalPendente = 0, custoFinanceiro = 0,
   saldo, margemRS, margemPct,
@@ -63,10 +65,12 @@ export default function WBSDashboardCards({
           subVal2Label="Ind" subVal2={formatCurrency(custoIndiretoConsumido)}
           accent="amber"
         />
-        <MiniCard
-          label="A Pagar (Dir)"
-          value={aPagarDireto > 0 ? formatCurrency(aPagarDireto) : '—'}
-          accent={aPagarDireto > 0 ? 'orange' : undefined}
+        <DualMiniCard
+          label="A Pagar"
+          mainValue={formatCurrency(aPagarDireto + aPagarIndireto)}
+          subVal1Label="Dir" subVal1={formatCurrency(aPagarDireto)}
+          subVal2Label="Ind" subVal2={formatCurrency(aPagarIndireto)}
+          accent="orange"
         />
         <DualMiniCard
           label="Pago"

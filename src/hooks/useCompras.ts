@@ -483,6 +483,24 @@ export function useDeletePedido() {
 
   return useMutation({
     mutationFn: async (pedidoId: string) => {
+      // Se o pedido tem nf_origem_id, a exclusão deve passar pelo revert completo
+      // da NF para que qtd_recebida seja restaurado e o status dos outros pedidos atualize.
+      const { data: pedido } = await supabase
+        .from('pedidos')
+        .select('nf_origem_id')
+        .eq('id', pedidoId)
+        .single()
+
+      if (pedido?.nf_origem_id) {
+        const { error } = await supabase.rpc('excluir_recepcao_doc', {
+          p_doc_id: pedido.nf_origem_id,
+        })
+        if (error) throw error
+        // O trigger fn_recepcao_doc_revert_consumo já exclui os pedidos âncora em cascade.
+        return
+      }
+
+      // Pedido manual (sem NF): exclui parcelas não pagas e o pedido diretamente.
       const { error: parcelasErr } = await supabase
         .from('parcelas')
         .delete()
@@ -500,6 +518,7 @@ export function useDeletePedido() {
       qc.invalidateQueries({ queryKey: ['pedidos'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['itens_compra'] })
+      qc.invalidateQueries({ queryKey: ['recepcao_docs_aplicadas'] })
       toast.success('Pedido excluído')
     },
     onError: (err: Error) => toast.error(err.message),

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -7,7 +7,7 @@ import { useSelection } from '@/hooks/useSelection'
 import { NFDetalheDrawer, type NFDocRef } from '@/components/recepcao/NFDetalheDrawer'
 import {
   Search, X, Plus, Loader2, Eye, Download, CheckCircle2,
-  SlidersHorizontal, ChevronDown, ChevronUp, AlertCircle, Clock,
+  SlidersHorizontal, ChevronDown, ChevronUp, AlertCircle, Clock, Trash2, AlertTriangle,
 } from 'lucide-react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -80,6 +80,31 @@ export function CentralNotas({
   onProcessarNovaNF: () => void
 }) {
   const qc = useQueryClient()
+
+  // Estorno em lote
+  const [confirmandoLote, setConfirmandoLote] = useState(false)
+  const estornarLote = useMutation({
+    mutationFn: async (docIds: string[]) => {
+      const { data, error } = await supabase.rpc('excluir_recepcao_docs_lote', {
+        p_company_id: companyId,
+        p_doc_ids: docIds,
+      })
+      if (error) throw error
+      return (data as any)?.estornados ?? docIds.length
+    },
+    onSuccess: (estornados: number) => {
+      toast.success(`${estornados} NF(s) estornada(s) · consumo revertido`)
+      selection.clear()
+      setConfirmandoLote(false)
+      qc.invalidateQueries({ queryKey: ['central_notas', companyId] })
+      qc.invalidateQueries({ queryKey: ['pedidos'] })
+      qc.invalidateQueries({ queryKey: ['parcelas'] })
+    },
+    onError: (err: any) => {
+      toast.error('Erro ao estornar: ' + (err?.message ?? String(err)))
+      setConfirmandoLote(false)
+    },
+  })
 
   // Filters
   const [search, setSearch] = useState('')
@@ -401,12 +426,54 @@ export function CentralNotas({
             <Download className="h-3.5 w-3.5" /> Exportar seleção
           </button>
           <button
+            onClick={() => setConfirmandoLote(true)}
+            className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 bg-destructive/10 border border-destructive/30 hover:bg-destructive/20 text-destructive font-medium"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Estornar {selection.count}
+          </button>
+          <button
             onClick={selection.clear}
             className="text-muted-foreground hover:text-foreground"
             title="Limpar seleção"
           >
             <X className="h-4 w-4" />
           </button>
+        </div>
+      )}
+
+      {/* Dialog confirmação estorno em lote */}
+      {confirmandoLote && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-background rounded-xl border shadow-lg p-6 max-w-sm w-full mx-4 space-y-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold text-sm">Estornar {selection.count} nota(s)?</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  O consumo de cada NF será revertido — qtd_recebida, parcelas e pedidos âncora
+                  serão desfeitos. Essa ação não pode ser desfeita em lote.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmandoLote(false)}
+                disabled={estornarLote.isPending}
+                className="rounded px-3 py-1.5 text-xs border hover:bg-muted"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => estornarLote.mutate(filtered.filter(d => selection.isSelected(d.id)).map(d => d.id))}
+                disabled={estornarLote.isPending}
+                className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90 font-medium"
+              >
+                {estornarLote.isPending
+                  ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Estornando…</>
+                  : <><Trash2 className="h-3.5 w-3.5" /> Confirmar estorno</>}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

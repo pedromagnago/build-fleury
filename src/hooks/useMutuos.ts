@@ -42,6 +42,22 @@ export interface MutuoParcela {
   created_at: string
 }
 
+/**
+ * Determina a direção de um mútuo a partir da categoria:
+ * - 'entrada' = empresa tomou dinheiro (passivo: empréstimo recebido, capital de giro…)
+ * - 'saida'   = empresa emprestou/adiantou dinheiro (ativo: adiantamento feito, empréstimo concedido…)
+ */
+export function mutuoDirecao(m: { categoria?: string | null }): 'entrada' | 'saida' {
+  const cat = String(m.categoria ?? '').toLowerCase()
+  if (
+    cat.includes('adiantamento a receber') ||
+    cat.includes('adiantamento feito') ||
+    cat.includes('emprestimo concedido') ||
+    cat.includes('empréstimo concedido')
+  ) return 'saida'
+  return 'entrada'
+}
+
 export function useMutuos() {
   const { currentCompany } = useProject()
   const companyId = currentCompany?.id
