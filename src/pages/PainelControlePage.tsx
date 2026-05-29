@@ -432,7 +432,7 @@ export default function PainelControlePage() {
             gapNote: Math.abs(agg.capitalContratadoParcelas - fcTotals.mutuoDevolucoes) > 0.5
               ? (fcTotals.mutuoDevolucoes > agg.capitalContratadoParcelas
                   ? 'banco pagou acima do planejado (juros / correção monetária)'
-                  : 'sem data de vencimento → invisíveis ao FC')
+                  : 'adiantamentos feitos aguardando retorno — dinheiro enviado ainda não voltou ao caixa')
               : undefined,
             severity: Math.abs(agg.capitalContratadoParcelas - fcTotals.mutuoDevolucoes) > 0.5 ? 'warn' : 'ok',
           },
