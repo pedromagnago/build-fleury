@@ -10,11 +10,6 @@ import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
 import { useHealthChecks } from '@/hooks/useHealthChecks'
 
-function todayISO(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
 export interface AlertCounts {
   // Por módulo (para badges da sidebar)
   pagamentos: number       // parcelas vencidas
@@ -67,8 +62,6 @@ export function useAlertCounts(): AlertCounts {
     const getItems = (id: string) => checks.find(c => c.id === id)?.items.length ?? 0
 
     const parcelasVencidas = getItems('parcelas-vencidas')
-    const saidasSemVinculo = getItems('saidas-sem-vinculo')
-    const entradasSemVinculo = getItems('entradas-sem-vinculo')
     const pedidosSemParcela = getItems('pedidos-sem-parcela')
     const estouroOrcamento = getItems('estouro-orcamento')
     const despesaSemParcela = getItems('despesa-sem-parcela')

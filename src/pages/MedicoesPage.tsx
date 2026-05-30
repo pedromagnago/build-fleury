@@ -38,6 +38,8 @@ const SP: Record<string, { label: string; Icon: typeof Clock; bg: string; text: 
   vencida:               { label:'Vencida',         Icon:AlertTriangle,  bg:'bg-red-100 dark:bg-red-900/30',       text:'text-red-700 dark:text-red-400'       },
   parcialmente_recebida: { label:'Parc. Recebida',  Icon:ChevronDown,    bg:'bg-amber-100 dark:bg-amber-900/30',   text:'text-amber-700 dark:text-amber-400'   },
 }
+const SP_DEFAULT: { label: string; Icon: typeof Clock; bg: string; text: string } =
+  { label:'Futura', Icon:Clock, bg:'bg-slate-100 dark:bg-slate-800', text:'text-slate-600 dark:text-slate-400' }
 
 // Modal de baixa
 function BaixaParcelaModal({ parcela, onClose }: { parcela: MedicaoParcela; onClose: ()=>void }) {
@@ -288,11 +290,10 @@ function ParcelasRecebimentoTab() {
               {filtered.map(p => {
                 const saldo = p.valor - p.valor_recebido
                 const pct   = p.valor > 0 ? (p.valor_recebido / p.valor) * 100 : 0
-                const cfg   = SP[p.status] ?? SP.futura
+                const cfg   = SP[p.status] ?? SP_DEFAULT
                 const Ico   = cfg.Icon
                 const dtVenc= p.data_vencimento
                 const dtPrev= p.data_prevista_recebimento
-                const dtReal= p.data_recebimento_real
                 const vencida = dtVenc && p.status!=='recebida' && dtVenc < today
                 const hojeVenc= dtVenc === today
                 return (

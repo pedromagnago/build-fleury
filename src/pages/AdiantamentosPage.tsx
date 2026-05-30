@@ -8,11 +8,10 @@ import {
   useDeleteAdiantamento, useAbaterAdiantamento, type Adiantamento, type AdiantamentoInsert,
 } from '@/hooks/useAdiantamentos'
 import { usePedidos } from '@/hooks/useCompras'
-import { useFornecedores } from '@/hooks/useCompras'
 import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { formatCurrency } from '@/lib/utils'
 import {
-  HandCoins, Plus, AlertTriangle, CheckCircle2, Clock, X, Check,
+  HandCoins, Plus, AlertTriangle, CheckCircle2, Clock, X,
   Pencil, Trash2, ExternalLink, ChevronDown, ChevronRight,
   Filter, Download, Search,
 } from 'lucide-react'
@@ -59,6 +58,8 @@ const S: Record<string, {label:string; icon: typeof Clock; bg:string; text:strin
   parcialmente_abatido:  { label:'Parc. Abatido',    icon:ChevronDown,   bg:'bg-blue-100   dark:bg-blue-900/30',   text:'text-blue-700   dark:text-blue-400'  },
   abatido:               { label:'Abatido',          icon:CheckCircle2,  bg:'bg-emerald-100 dark:bg-emerald-900/30',text:'text-emerald-700 dark:text-emerald-400'},
 }
+const S_DEFAULT: {label:string; icon: typeof Clock; bg:string; text:string} =
+  { label:'Pendente', icon:Clock, bg:'bg-amber-100 dark:bg-amber-900/30', text:'text-amber-700 dark:text-amber-400' }
 
 // ─── Modais ───────────────────────────────────────────────────────────────────
 
@@ -254,7 +255,7 @@ function Row({
 
   const saldo = a.valor - a.valor_abatido
   const pct = a.valor > 0 ? (a.valor_abatido / a.valor) * 100 : 0
-  const cfg = S[a.status] ?? S.pendente
+  const cfg = S[a.status] ?? S_DEFAULT
   const Ico = cfg.icon
 
   const dtPrev = a.data_prevista_abatimento
@@ -395,11 +396,9 @@ function Row({
 
 function GroupedTable({
   groups,
-  keyFn,
   labelFn,
 }: {
   groups: Map<string, Adiantamento[]>
-  keyFn: (a: Adiantamento) => string
   labelFn: (key: string, items: Adiantamento[]) => { title: string; subtitle: string }
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -441,7 +440,7 @@ function GroupedTable({
                 </thead>
                 <tbody className="divide-y divide-border/40">
                   {items.map(a => {
-                    const cfg = S[a.status] ?? S.pendente
+                    const cfg = S[a.status] ?? S_DEFAULT
                     const Ico = cfg.icon
                     const saldo = a.valor - a.valor_abatido
                     const dtPrev = a.data_prevista_abatimento
@@ -502,8 +501,6 @@ export default function AdiantamentosPage() {
 
   const today = todayISO()
   const in30  = addDays(today, 30)
-
-  const { data: fornecedores = [] } = useFornecedores()
 
   // ── KPI Aggregates ──────────────────────────────────────────────────────────
   const kpi = useMemo(() => {
@@ -643,8 +640,7 @@ export default function AdiantamentosPage() {
       {activeTab === 'por-pedido' && (
         <GroupedTable
           groups={byPedido}
-          keyFn={a=>a.pedido_id}
-          labelFn={(key, items) => ({
+          labelFn={(_key, items) => ({
             title: `Pedido #${items[0]?.pedido?.numero_pedido ?? '—'}`,
             subtitle: items[0]?.fornecedor?.nome ?? items[0]?.pedido?.fornecedores?.nome ?? '—',
           })}
@@ -654,7 +650,6 @@ export default function AdiantamentosPage() {
       {activeTab === 'por-fornecedor' && (
         <GroupedTable
           groups={byFornecedor}
-          keyFn={a=>a.fornecedor?.nome ?? a.pedido?.fornecedores?.nome ?? 'Sem fornecedor'}
           labelFn={(key) => ({ title: key, subtitle: '' })}
         />
       )}

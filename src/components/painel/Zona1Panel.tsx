@@ -151,19 +151,12 @@ export function Zona1Panel() {
   const in30  = addDays(today, 30)
 
   // ─── Saldo e projeção ──────────────────────────────────────────────────────
-  const { saldoAtual, aPagar7d, aPagar30d, aReceber30d, posicaoLiquida30d, vencimentos7d } = useMemo(() => {
+  const { saldoAtual, aPagar30d, aReceber30d, posicaoLiquida30d, vencimentos7d } = useMemo(() => {
     const saldoAtual = saldosContas.reduce((s, c) => s + c.saldo_sistema, 0)
 
     const parcelasAbertas = parcelas.filter(p =>
       p.status !== 'paga' && !((p as any).deleted_at)
     )
-
-    const aPagar7d = parcelasAbertas
-      .filter(p => {
-        const dt = p.data_prevista_pagamento ?? p.data_vencimento
-        return dt >= today && dt <= in7
-      })
-      .reduce((s, p) => s + Math.max(0, (Number(p.valor) || 0) - (Number(p.valor_pago) || 0)), 0)
 
     const aPagar30d = parcelasAbertas
       .filter(p => {
@@ -197,7 +190,7 @@ export function Zona1Panel() {
       .sort((a, b) => a.data_prevista.localeCompare(b.data_prevista))
       .slice(0, 8)
 
-    return { saldoAtual, aPagar7d, aPagar30d, aReceber30d, posicaoLiquida30d, vencimentos7d: { saidas, entradas } }
+    return { saldoAtual, aPagar30d, aReceber30d, posicaoLiquida30d, vencimentos7d: { saidas, entradas } }
   }, [saldosContas, parcelas, medicoes, today, in7, in30])
 
   // ─── Alertas dos health checks ────────────────────────────────────────────
