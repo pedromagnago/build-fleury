@@ -52,6 +52,7 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
     forma_pagamento: parcela.forma_pagamento ?? '',
     conta_bancaria_id: parcela.conta_bancaria_id ?? '',
     status: parcela.status,
+    descricao: parcela.descricao ?? '',
     observacoes: parcela.observacoes ?? '',
   })
   const [saving, setSaving] = useState(false)
@@ -161,6 +162,7 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
         forma_pagamento: form.forma_pagamento || null,
         conta_bancaria_id: form.conta_bancaria_id || null,
         status: newStatus,
+        descricao: form.descricao || null,
         observacoes: form.observacoes || null,
       } as any)
       // Audit log
@@ -393,6 +395,17 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
                   ))}
                 </select>
               </div>
+            </div>
+
+            {/* Descrição */}
+            <div>
+              <label className={LABEL}>Descrição</label>
+              <textarea
+                value={form.descricao}
+                onChange={e => setForm(p => ({ ...p, descricao: e.target.value }))}
+                className={`${INPUT} h-16 resize-none`}
+                placeholder="Descrição da parcela..."
+              />
             </div>
 
             {/* Observações */}

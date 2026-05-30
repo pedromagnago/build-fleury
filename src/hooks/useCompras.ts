@@ -121,6 +121,10 @@ export interface Pedido {
    *  Reduz o saldo efetivo a pagar sem mexer em parcelas. */
   valor_coberto_por_realizacao?: number
   created_at: string
+  /** Eixo de entrega: derivado de pedido_itens.qtd_recebida vs qtd (trigger). */
+  status_entrega?: 'aguardando_entrega' | 'pedido_enviado' | 'parcialmente_entregue' | 'entregue' | null
+  /** Eixo de pagamento: derivado de parcelas.valor_pago vs valor (trigger). */
+  status_pagamento?: 'sem_parcelas' | 'aguardando' | 'parcialmente_pago' | 'vencido' | 'pago' | null
   // Joined
   item_descricao?: string
   item_codigo?: string

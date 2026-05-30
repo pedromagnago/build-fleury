@@ -38,6 +38,8 @@ import RelatoriosPage from '@/pages/RelatoriosPage'
 import MutuosPage from '@/pages/MutuosPage'
 import GestaoUsuariosPage from '@/pages/GestaoUsuariosPage'
 import PerfilPage from '@/pages/PerfilPage'
+import AdiantamentosPage from '@/pages/AdiantamentosPage'
+import MedicoesPage from '@/pages/MedicoesPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -104,7 +106,8 @@ export default function App() {
                 <Route path="/logs" element={<RoleGate route="/logs"><LogsPage /></RoleGate>} />
                 <Route path="/painel-controle" element={<RoleGate route="/painel-controle"><PainelControlePage /></RoleGate>} />
                 <Route path="/avanco" element={<RoleGate route="/avanco"><AvancoFisicoPage /></RoleGate>} />
-                <Route path="/medicoes" element={<Navigate to="/cronograma" replace />} />
+                <Route path="/medicoes" element={<RoleGate route="/medicoes"><MedicoesPage /></RoleGate>} />
+                <Route path="/adiantamentos" element={<RoleGate route="/adiantamentos"><AdiantamentosPage /></RoleGate>} />
                 <Route path="/conciliacao" element={<RoleGate route="/conciliacao"><ConciliacaoPage /></RoleGate>} />
                 <Route path="/simulador" element={<Navigate to="/cronograma" replace />} />
                 <Route path="/relatorios" element={<RoleGate route="/relatorios"><RelatoriosPage /></RoleGate>} />

@@ -1,6 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUserRole, ROLE_LABELS } from '@/hooks/useUserRole'
+import { useAlertCounts } from '@/hooks/useAlertCounts'
 import { cn } from '@/lib/utils'
 import { CompanySwitcher } from './CompanySwitcher'
 import {
@@ -23,45 +24,53 @@ import {
   ChevronRight,
   Gauge,
   Bug,
+  FileInput,
+  HandCoins,
+  ClipboardList,
 } from 'lucide-react'
 
 const sections = [
   {
     label: 'Principal',
     items: [
-      { to: '/cronograma', icon: CalendarRange, label: 'Painel de Bordo' },
+      { to: '/painel-controle', icon: Gauge,         label: 'Painel de Controle', alertKey: 'total' as const },
+      { to: '/cronograma',      icon: CalendarRange,  label: 'Painel de Bordo' },
     ],
   },
   {
     label: 'Operacional',
     items: [
-      { to: '/compras', icon: ShoppingCart, label: 'Compras' },
-      { to: '/avanco', icon: TrendingUp, label: 'Avanço Físico' },
+      { to: '/compras',          icon: ShoppingCart, label: 'Compras',        alertKey: 'compras' as const },
+      { to: '/recepcao',         icon: FileInput,    label: 'Recepção de NF', alertKey: 'recepcao' as const },
+      { to: '/avanco',           icon: TrendingUp,   label: 'Avanço Físico' },
     ],
   },
   {
     label: 'Financeiro',
     items: [
-      { to: '/pagamentos', icon: CreditCard, label: 'Pagamentos' },
-      { to: '/recebimentos', icon: TrendingUp, label: 'Recebimentos' },
-      { to: '/despesas-indiretas', icon: Building2, label: 'Custos Indiretos' },
-      { to: '/mutuos', icon: Landmark, label: 'Capital de Giro' },
-      { to: '/conciliacao', icon: ArrowLeftRight, label: 'Conciliação' },
+      { to: '/pagamentos',        icon: CreditCard,    label: 'Pagamentos',      alertKey: 'pagamentos' as const },
+      { to: '/adiantamentos',    icon: HandCoins,     label: 'Adiantamentos' },
+      { to: '/medicoes',          icon: ClipboardList, label: 'Medições' },
+      { to: '/recebimentos',      icon: TrendingUp,    label: 'Recebimentos' },
+      { to: '/despesas-indiretas',icon: Building2,     label: 'Custos Indiretos', alertKey: 'custosIndiretos' as const },
+      { to: '/mutuos',            icon: Landmark,      label: 'Capital de Giro',  alertKey: 'capital' as const },
+      { to: '/conciliacao',       icon: ArrowLeftRight,label: 'Conciliação',       alertKey: 'extrato' as const },
     ],
   },
   {
     label: 'Gestão',
     items: [
-      { to: '/painel-controle', icon: Gauge, label: 'Painel de Controle' },
-      { to: '/documentos', icon: FileText, label: 'Documentos' },
-      { to: '/auditoria', icon: Shield, label: 'Auditoria' },
-      { to: '/logs', icon: Bug, label: 'Logs' },
-      { to: '/relatorios', icon: BarChart3, label: 'Relatórios' },
-      { to: '/importacao', icon: Upload, label: 'Importação' },
-      { to: '/usuarios', icon: Users, label: 'Usuários' },
+      { to: '/documentos',  icon: FileText,  label: 'Documentos' },
+      { to: '/auditoria',   icon: Shield,    label: 'Auditoria' },
+      { to: '/logs',        icon: Bug,       label: 'Logs' },
+      { to: '/relatorios',  icon: BarChart3, label: 'Relatórios' },
+      { to: '/importacao',  icon: Upload,    label: 'Importação' },
+      { to: '/usuarios',    icon: Users,     label: 'Usuários' },
     ],
   },
 ]
+
+type AlertKey = 'total' | 'pagamentos' | 'extrato' | 'compras' | 'recepcao' | 'custosIndiretos' | 'capital' | 'wbs'
 
 interface SidebarProps {
   open: boolean
@@ -72,6 +81,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const { user, signOut } = useAuth()
   const { role, canAccess } = useUserRole()
   const navigate = useNavigate()
+  const alertCounts = useAlertCounts()
 
   const handleSignOut = async () => {
     await signOut()
@@ -133,25 +143,40 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                 {section.label}
               </p>
               <ul className="space-y-0.5">
-                {section.items.map((item) => (
-                  <li key={item.to}>
-                    <NavLink
-                      to={item.to}
-                      onClick={onClose}
-                      className={({ isActive }) =>
-                        cn(
-                          'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                          isActive
-                            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                            : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
-                        )
-                      }
-                    >
-                      <item.icon className="h-4 w-4 shrink-0" />
-                      {item.label}
-                    </NavLink>
-                  </li>
-                ))}
+                {section.items.map((item) => {
+                  const count = (item as any).alertKey
+                    ? alertCounts[(item as any).alertKey as AlertKey]
+                    : 0
+                  return (
+                    <li key={item.to}>
+                      <NavLink
+                        to={item.to}
+                        onClick={onClose}
+                        className={({ isActive }) =>
+                          cn(
+                            'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                            isActive
+                              ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                              : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+                          )
+                        }
+                      >
+                        <item.icon className="h-4 w-4 shrink-0" />
+                        <span className="flex-1">{item.label}</span>
+                        {count > 0 && (
+                          <span className={cn(
+                            'inline-flex h-4.5 min-w-[1.125rem] items-center justify-center rounded-full px-1 text-[10px] font-bold tabular-nums',
+                            (item as any).alertKey === 'total'
+                              ? 'bg-red-500 text-white'
+                              : 'bg-amber-500 text-white'
+                          )}>
+                            {count > 99 ? '99+' : count}
+                          </span>
+                        )}
+                      </NavLink>
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           ))}

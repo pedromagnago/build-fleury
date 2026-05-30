@@ -10,9 +10,11 @@
  */
 
 import { useState, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { InconsistenciasTable } from '@/components/financeiro/InconsistenciasTable'
 import { AuditoriaContabilCard } from '@/components/financeiro/AuditoriaContabilCard'
+import { Zona1Panel } from '@/components/painel/Zona1Panel'
 import {
   Gauge, ChevronDown, ChevronRight, TrendingUp, TrendingDown,
   Package, CreditCard, Wallet, FileCheck2, Landmark, AlertTriangle,
@@ -29,6 +31,8 @@ import { formatCurrency } from '@/lib/utils'
 import { useHealthChecks } from '@/hooks/useHealthChecks'
 import { useCashFlowEvents } from '@/hooks/useCashFlowEvents'
 import { GapInspectorDrawer, type GapOrigin } from '@/components/painel/GapInspectorDrawer'
+import { useAdiantamentos } from '@/hooks/useAdiantamentos'
+import { useMedicaoParcelas } from '@/hooks/useMedicaoParcelas'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -101,6 +105,8 @@ export default function PainelControlePage() {
   const { data: medicoes = [] } = useMedicoes()
   const { data: movimentacoes = [] } = useMovimentacoes()
   const { data: etapas = [] } = useEtapas()
+  const { data: adiantamentos = [] } = useAdiantamentos()
+  const { data: medicaoParcelas = [] } = useMedicaoParcelas()
   // Totais exatos por categoria do FC — fonte de verdade para a grade de integridade.
   // Usa os mesmos eventos que SimuladorPanel/CashFlowChart exibem (viewMode 'completo').
   const { events: fcEvents } = useCashFlowEvents('completo')
@@ -133,7 +139,6 @@ export default function PainelControlePage() {
 
   const [inspectOrigin, setInspectOrigin] = useState<GapOrigin | null>(null)
   const [expandedSection, setExpandedSection] = useState<'diretos' | 'indiretos' | 'capital' | null>('diretos')
-  const [showMacro, setShowMacro] = useState(false)
   const qtdCasas = currentCompany?.qtd_casas ?? 1
 
   // ─── Agregações ────────────────────────────────────────────────────────────
@@ -298,6 +303,42 @@ export default function PainelControlePage() {
     }
   }, [itens, pedidos, parcelas, despesas, mutuos, medicoes, movimentacoes])
 
+  // ─── Agregações: novas entidades (Fase 2 do painel) ──────────────────────
+  const aggNovo = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0]!
+
+    // Adiantamentos
+    const adiantamentosTotal = adiantamentos.reduce((s, a) => s + (Number(a.valor) || 0), 0)
+    const adiantamentosComData = adiantamentos
+      .filter(a => !!a.data_pagamento)
+      .reduce((s, a) => s + (Number(a.valor) || 0), 0)
+    const adiantamentosGap = Math.max(0, adiantamentosTotal - adiantamentosComData)
+    const adiantamentosEmRisco = adiantamentos.filter(a =>
+      a.status !== 'abatido' &&
+      a.data_prevista_abatimento &&
+      a.data_prevista_abatimento < today
+    )
+    const adiantamentosAbatidos = adiantamentos.reduce((s, a) => s + (Number(a.valor_abatido) || 0), 0)
+
+    // Medições → Parcelas de recebimento
+    const medicoesLiberadasValor = medicoes
+      .filter(m => m.status === 'liberada' || m.status === 'paga')
+      .reduce((s, m) => s + (Number(m.valor_liberado) || 0), 0)
+    const medParcelasTotal = medicaoParcelas
+      .filter(p => !p.deleted_at)
+      .reduce((s, p) => s + (Number(p.valor) || 0), 0)
+    const medParcelasGap = Math.max(0, medicoesLiberadasValor - medParcelasTotal)
+    const medParcelasRecebido = medicaoParcelas
+      .filter(p => !p.deleted_at)
+      .reduce((s, p) => s + (Number(p.valor_recebido) || 0), 0)
+
+    return {
+      adiantamentosTotal, adiantamentosComData, adiantamentosGap,
+      adiantamentosEmRisco, adiantamentosAbatidos,
+      medicoesLiberadasValor, medParcelasTotal, medParcelasGap, medParcelasRecebido,
+    }
+  }, [adiantamentos, medicaoParcelas, medicoes])
+
   // Drill-down: diretos por etapa
   const diretosPorEtapa = useMemo(() => {
     const map = new Map<string, { etapa_nome: string; etapa_ordem: number; orcado: number; pedidos: number; pago: number; itensCount: number }>()
@@ -379,7 +420,10 @@ export default function PainelControlePage() {
         icon={Gauge}
       />
 
-      {/* ─── GRADE DE INTEGRIDADE POR ORIGEM ─── */}
+      {/* ─── ZONA 1: CAIXA, ALERTAS E VENCIMENTOS ─── */}
+      <Zona1Panel />
+
+      {/* ─── ZONA 2: GRADE DE INTEGRIDADE POR ORIGEM ─── */}
       <OrigemIntegridadeGrid
         onInspect={setInspectOrigin}
         rows={[
@@ -459,8 +503,88 @@ export default function PainelControlePage() {
               : undefined,
             severity: Math.abs(agg.capitalContratadoParcelas - fcTotals.mutuoDevolucoes) > 0.5 ? 'warn' : 'ok',
           },
+          {
+            label: 'Adiantamentos',
+            sublabel: 'saídas antecipadas a fornecedores',
+            dot: 'bg-orange-500',
+            route: '/adiantamentos',
+            registrado: aggNovo.adiantamentosTotal,
+            noFC: aggNovo.adiantamentosComData,
+            gap: aggNovo.adiantamentosGap,
+            gapNote: aggNovo.adiantamentosGap > 0.5
+              ? 'adiantamentos sem data de pagamento → invisíveis ao FC'
+              : undefined,
+            severity: aggNovo.adiantamentosGap > 0.5 ? 'gap' : 'ok',
+          },
+          {
+            label: 'Recebimentos (med → parcelas)',
+            sublabel: 'entradas estruturadas por medição',
+            dot: 'bg-teal-500',
+            route: '/medicoes',
+            registrado: aggNovo.medicoesLiberadasValor,
+            noFC: aggNovo.medParcelasTotal,
+            gap: aggNovo.medParcelasGap,
+            gapNote: aggNovo.medParcelasGap > 0.5
+              ? 'medições liberadas sem parcelas de recebimento geradas'
+              : undefined,
+            severity: aggNovo.medParcelasGap > 0.5 ? 'gap' : 'ok',
+          },
         ]}
       />
+
+      {/* ─── BLOCO: ADIANTAMENTOS EM RISCO ─── */}
+      {aggNovo.adiantamentosEmRisco.length > 0 && (
+        <div className="rounded-xl border-2 border-red-300 bg-red-50/30 dark:bg-red-950/10 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+              <h2 className="text-sm font-bold text-red-800 dark:text-red-400">
+                Adiantamentos em Risco — prazo de abatimento vencido
+              </h2>
+              <span className="text-xs text-red-600">
+                {aggNovo.adiantamentosEmRisco.length} item{aggNovo.adiantamentosEmRisco.length !== 1 ? 's' : ''} ·{' '}
+                {formatCurrency(aggNovo.adiantamentosEmRisco.reduce((s, a) => s + (a.valor - a.valor_abatido), 0))} pendente
+              </span>
+            </div>
+            <Link to="/adiantamentos"
+              className="text-xs font-semibold px-3 py-1 rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors">
+              Ver Adiantamentos →
+            </Link>
+          </div>
+          <div className="space-y-1 max-h-48 overflow-auto">
+            {aggNovo.adiantamentosEmRisco.slice(0, 10).map(a => {
+              const diasAtraso = Math.floor(
+                (Date.now() - new Date((a.data_prevista_abatimento ?? '') + 'T00:00:00').getTime()) / 86400000
+              )
+              const saldo = a.valor - a.valor_abatido
+              return (
+                <div key={a.id}
+                  className="flex items-center justify-between gap-2 text-xs py-1.5 px-2 rounded-lg border border-red-200/50 bg-red-500/3">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium">
+                      {a.fornecedor?.nome ?? a.pedido?.fornecedores?.nome ?? 'Fornecedor —'}
+                    </span>
+                    <span className="ml-2 text-muted-foreground">
+                      Pedido #{a.pedido?.numero_pedido ?? '—'}
+                    </span>
+                  </div>
+                  <span className="text-red-600 font-semibold tabular-nums shrink-0">
+                    {formatCurrency(saldo)}
+                  </span>
+                  <span className="text-red-500 text-[10px] font-bold shrink-0">
+                    {diasAtraso}d
+                  </span>
+                </div>
+              )
+            })}
+            {aggNovo.adiantamentosEmRisco.length > 10 && (
+              <p className="text-xs text-muted-foreground px-2">
+                +{aggNovo.adiantamentosEmRisco.length - 10} mais — veja em Adiantamentos
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ─── CAMADA 0: AUDITORIA CONTÁBIL (3 equações que devem fechar) ─── */}
       <AuditoriaContabilCard onOrfasClick={() => setInspectOrigin('orfas')} />
@@ -524,18 +648,7 @@ export default function PainelControlePage() {
       {/* ─── CAMADA 1: INCONSISTÊNCIAS DETECTADAS (foco operacional) ─── */}
       <InconsistenciasTable />
 
-      {/* ─── CAMADA 1: KPI CARDS (contexto macro, recolhível) ─── */}
-      <div className="-mb-2">
-        <button
-          onClick={() => setShowMacro(s => !s)}
-          className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors"
-        >
-          {showMacro ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          Auditoria macro {showMacro ? '(esconder)' : '(mostrar contexto agregado)'}
-        </button>
-      </div>
-
-      {showMacro && (
+      {/* ─── CAMADA 3: AUDITORIA MACRO ─── */}
       <div className="space-y-6">
       <div>
         <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
@@ -714,6 +827,46 @@ export default function PainelControlePage() {
                 <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(agg.orcadoComFinanceiro / qtdCasas)}</td>
                 <td />
               </tr>
+
+              {/* MARGEM DO PROJETO */}
+              <tr>
+                <td colSpan={8} className="px-3 py-1.5 bg-muted/40 border-t-2 border-border text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Margem do Projeto <span className="normal-case font-normal text-muted-foreground/70 ml-2">(receita − custo total)</span>
+                </td>
+              </tr>
+              {(() => {
+                const receita = agg.medicoesPlanejadas
+                const margemBrutaOrcada = receita - agg.orcadoComFinanceiro
+                const margemBrutaReal = agg.medicoesLiberadas - agg.pagoComFinanceiro
+                const margemPctOrcada = receita > 0 ? (margemBrutaOrcada / receita) * 100 : 0
+                const margemPctReal = agg.medicoesLiberadas > 0 ? (margemBrutaReal / agg.medicoesLiberadas) * 100 : 0
+                const toneOrcado = margemBrutaOrcada >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600'
+                const toneReal = margemBrutaReal >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600'
+                return (
+                  <>
+                    <tr className="bg-muted/20">
+                      <td className="px-3 py-2 text-xs text-muted-foreground pl-6">Receita (medições)</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-xs">{formatCurrency(receita)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-xs text-muted-foreground">—</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-xs">{formatCurrency(agg.medicoesLiberadas)}</td>
+                      <td colSpan={4} />
+                    </tr>
+                    <tr className={`font-bold ${margemBrutaOrcada >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+                      <td className="px-3 py-2">Margem Bruta</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${toneOrcado}`}>
+                        {formatCurrency(margemBrutaOrcada)}
+                        <span className="ml-1 text-xs font-normal opacity-70">({margemPctOrcada.toFixed(1)}%)</span>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">—</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${toneReal}`}>
+                        {formatCurrency(margemBrutaReal)}
+                        <span className="ml-1 text-xs font-normal opacity-70">({margemPctReal.toFixed(1)}%)</span>
+                      </td>
+                      <td colSpan={4} />
+                    </tr>
+                  </>
+                )
+              })()}
             </tbody>
           </table>
         </div>
@@ -814,7 +967,6 @@ export default function PainelControlePage() {
         )}
       </div>
       </div>
-      )}
       {/* ─── DRAWER DE INSPEÇÃO ─── */}
       <GapInspectorDrawer
         origin={inspectOrigin}
@@ -838,7 +990,7 @@ interface OrigemRow {
   sublabel: string
   dot: string
   route: string
-  inspectKey: GapOrigin
+  inspectKey?: GapOrigin
   registrado: number
   noFC: number
   gap: number
@@ -943,12 +1095,24 @@ function OrigemIntegridadeGrid({
                         : <XCircle className="h-4 w-4 text-red-500 mx-auto" />}
                   </td>
                   <td className="px-2 py-3">
-                    <button
-                      onClick={() => onInspect(row.inspectKey)}
-                      className="inline-flex items-center gap-0.5 rounded px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                    >
-                      Inspecionar <ArrowRight className="h-3 w-3" />
-                    </button>
+                    <div className="flex flex-col gap-1 items-start">
+                      {row.inspectKey && (
+                        <button
+                          onClick={() => onInspect(row.inspectKey!)}
+                          className="inline-flex items-center gap-0.5 rounded px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                        >
+                          Inspecionar <ArrowRight className="h-3 w-3" />
+                        </button>
+                      )}
+                      {row.route && (
+                        <Link
+                          to={row.route}
+                          className="inline-flex items-center gap-0.5 rounded px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/10 transition-colors"
+                        >
+                          Ir à origem <ArrowRight className="h-3 w-3" />
+                        </Link>
+                      )}
+                    </div>
                   </td>
                 </tr>
               )

@@ -12,7 +12,7 @@ import { useItensCompra, usePedidos } from '@/hooks/useCompras'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useMutuos } from '@/hooks/useMutuos'
 import { localDate, parsearCondicao, dataEfetivaParcela } from '@/lib/parcelas'
-import { useConciliacaoLinks } from '@/hooks/useConciliacao'
+import { useConciliacaoLinks, STATUS_CONCILIADO } from '@/hooks/useConciliacao'
 import type { FinancialViewMode } from '@/components/cronograma/FinancialViewFilter'
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -140,6 +140,9 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     const movsByMutuoParcelaId = new Map<string, Set<string>>()
     const movsByMedicaoId = new Map<string, Set<string>>()
     for (const c of (linksMovs as any[])) {
+      // Apenas conciliações efetivas (confirmado/aprovado) categorizam movimentações.
+      // Sugerido ainda não confirmado não deve aparecer como "realizado" no fluxo.
+      if (!STATUS_CONCILIADO.has(c.status)) continue
       const links = c.conciliacao_parcelas ?? []
       for (const l of links) {
         const movId = c.movimentacao_id

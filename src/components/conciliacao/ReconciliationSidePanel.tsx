@@ -146,6 +146,10 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     const isSaida = row.tipo === 'saida'
     const result: Candidato[] = []
 
+    // ID da conciliação atual — excluído do cálculo de saldo dos mútuos para
+    // que itens já vinculados a esta mov apareçam como disponíveis ao trocar.
+    const currentConcId = row.conciliacao_id ?? null
+
     // Movs fantasma (Pgto lote / Quitar) — conciliacoes status='aprovado'
     // representam baixas pré-feitas que ainda não foram associadas a um
     // débito real do extrato. Permite consolidar várias baixas em uma só
@@ -224,6 +228,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
       // e também adiantamentos novos que o projeto faria (mutuo adiantamento feito sem parcelas e sem conciliação)
       const mutuoValorAplicadoSaida = new Map<string, number>()
       for (const conc of (concs as any[])) {
+        if (conc.id === currentConcId) continue
         for (const link of (conc.conciliacao_parcelas ?? [])) {
           if (link.mutuo_id) {
             const atual = mutuoValorAplicadoSaida.get(link.mutuo_id) ?? 0
@@ -293,10 +298,11 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
           raw: m,
         })
       }
-      // Soma de valor já vinculado a cada mutuo (conciliações confirmadas)
-      // para permitir conciliação parcial de depósitos que formam o total da captação.
+      // Soma de valor já vinculado a cada mutuo (exceto a conciliação atual, para que
+      // o item já selecionado continue visível ao trocar o vínculo).
       const mutuoValorAplicado = new Map<string, number>()
       for (const conc of (concs as any[])) {
+        if (conc.id === currentConcId) continue
         for (const link of (conc.conciliacao_parcelas ?? [])) {
           if (link.mutuo_id) {
             const atual = mutuoValorAplicado.get(link.mutuo_id) ?? 0
@@ -1025,7 +1031,7 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
                 { k: 'pedido',   label: 'Pedidos',   cls: 'bg-blue-500/10 text-blue-600' },
                 { k: 'despesa',  label: 'Despesas',  cls: 'bg-amber-500/10 text-amber-600' },
                 { k: 'medicao',  label: 'Medições',  cls: 'bg-purple-500/10 text-purple-600' },
-                { k: 'mutuo',    label: 'Mútuos',    cls: 'bg-indigo-500/10 text-indigo-600' },
+                { k: 'mutuo',    label: 'Capital de Giro',    cls: 'bg-indigo-500/10 text-indigo-600' },
               ] as const).map(t => (
                 <button key={t.k}
                   onClick={() => setFiltroTipo(t.k)}

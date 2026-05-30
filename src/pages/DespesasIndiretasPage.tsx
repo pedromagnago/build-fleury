@@ -31,7 +31,7 @@ const LABEL = 'mb-1 block text-[10px] font-medium uppercase tracking-wide text-m
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function DespesasIndiretasPage() {
-  const { despesas, isLoading, deleteDespesa, bulkUpdateFields, bulkDelete } = useDespesasIndiretas()
+  const { despesas, isLoading, pagoBancoReal, deleteDespesa, bulkUpdateFields, bulkDelete } = useDespesasIndiretas()
   const { data: parcelas = [] } = useParcelas()
 
   // ── Navigation ──────────────────────────────────────────────────────────────
@@ -59,15 +59,6 @@ export default function DespesasIndiretasPage() {
   // ── Selection ────────────────────────────────────────────────────────────────
   const selection = useSelection()
 
-  // ── Pago por despesa (valor_pago real das parcelas) ──────────────────────────
-  const pagoPorDespesa = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const p of parcelas) {
-      if (!p.despesa_indireta_id) continue
-      map.set(p.despesa_indireta_id, (map.get(p.despesa_indireta_id) ?? 0) + Number(p.valor_pago || 0))
-    }
-    return map
-  }, [parcelas])
 
   // ── Derived data ─────────────────────────────────────────────────────────────
   const categorias = useMemo(() => {
@@ -102,7 +93,7 @@ export default function DespesasIndiretasPage() {
     else if (statusFilter === 'negativo') result = result.filter(d => Number(d.valor_saldo) < 0)
     else if (statusFilter === 'consumido') result = result.filter(d => Number(d.valor_consumido) > 0)
     else if (statusFilter === 'sem_parcela') result = result.filter(d => !parcelas.some(p => p.despesa_indireta_id === d.id))
-    else if (statusFilter === 'ultrapassado') result = result.filter(d => (pagoPorDespesa.get(d.id) ?? 0) > Number(d.valor_orcado) + 0.5)
+    else if (statusFilter === 'ultrapassado') result = result.filter(d => (pagoBancoReal.get(d.id) ?? 0) > Number(d.valor_orcado) + 0.5)
 
     return result
   }, [despesas, parcelas, tab, search, filterCategoria, statusFilter])
@@ -120,9 +111,9 @@ export default function DespesasIndiretasPage() {
   // ── KPIs ─────────────────────────────────────────────────────────────────────
   const totalOrcado = filteredDespesas.reduce((s, d) => s + Number(d.valor_orcado), 0)
   const totalConsumido = filteredDespesas.reduce((s, d) => s + Number(d.valor_consumido), 0)
-  const totalPago = filteredDespesas.reduce((s, d) => s + (pagoPorDespesa.get(d.id) ?? 0), 0)
+  const totalPago = filteredDespesas.reduce((s, d) => s + (pagoBancoReal.get(d.id) ?? 0), 0)
   const totalUltrapassado = filteredDespesas.reduce((s, d) => {
-    const pago = pagoPorDespesa.get(d.id) ?? 0
+    const pago = pagoBancoReal.get(d.id) ?? 0
     return s + Math.max(0, pago - Number(d.valor_orcado))
   }, 0)
   const saldo = totalOrcado - totalConsumido
@@ -431,7 +422,7 @@ export default function DespesasIndiretasPage() {
                           <DespesaRow
                             key={d.id}
                             d={d}
-                            totalPago={pagoPorDespesa.get(d.id) ?? 0}
+                            totalPago={pagoBancoReal.get(d.id) ?? 0}
                             isSelected={selection.isSelected(d.id)}
                             onToggle={() => selection.toggle(d.id)}
                             hasParcela={parcelas.some(p => p.despesa_indireta_id === d.id)}
@@ -490,7 +481,7 @@ export default function DespesasIndiretasPage() {
                   key={d.id}
                   d={d}
                   showCategoria
-                  totalPago={pagoPorDespesa.get(d.id) ?? 0}
+                  totalPago={pagoBancoReal.get(d.id) ?? 0}
                   isSelected={selection.isSelected(d.id)}
                   onToggle={() => selection.toggle(d.id)}
                   hasParcela={parcelas.some(p => p.despesa_indireta_id === d.id)}

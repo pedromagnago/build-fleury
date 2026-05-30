@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
 import { toast } from 'sonner'
@@ -61,6 +62,39 @@ export function useDespesasIndiretas() {
     },
     enabled: !!currentCompany,
   })
+
+  // Query: pago real via extrato bancário (somente conciliações confirmadas, exclui aprovado/fantasma)
+  const { data: _conciliacoesConfirmadas = [] } = useQuery({
+    queryKey: ['pago_banco_indiretas', currentCompany?.id],
+    queryFn: async () => {
+      if (!currentCompany) return []
+      const { data, error } = await supabase
+        .from('conciliacoes')
+        .select(`
+          conciliacao_parcelas (
+            valor_aplicado,
+            parcela:parcelas ( despesa_indireta_id )
+          )
+        `)
+        .eq('company_id', currentCompany.id)
+        .eq('status', 'confirmado')
+      if (error) throw error
+      return data || []
+    },
+    enabled: !!currentCompany,
+  })
+
+  const pagoBancoReal = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const cc of _conciliacoesConfirmadas) {
+      for (const cp of (cc.conciliacao_parcelas ?? [])) {
+        const despId = (cp.parcela as any)?.despesa_indireta_id as string | null
+        if (!despId) continue
+        map.set(despId, (map.get(despId) ?? 0) + Number(cp.valor_aplicado ?? 0))
+      }
+    }
+    return map
+  }, [_conciliacoesConfirmadas])
 
   // Mutations
   const createMutation = useMutation({
@@ -314,6 +348,7 @@ export function useDespesasIndiretas() {
   return {
     despesas,
     isLoading,
+    pagoBancoReal,
     createDespesa: createMutation.mutateAsync,
     isCreating: createMutation.isPending,
     updateDespesa: updateMutation.mutateAsync,

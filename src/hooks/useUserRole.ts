@@ -16,18 +16,18 @@ const ROLE_ROUTE_ACCESS: Record<UserRole, Set<string>> = {
     '/cronograma', '/compras', '/avanco', '/pagamentos', '/recebimentos',
     '/despesas-indiretas', '/mutuos', '/conciliacao', '/documentos',
     '/auditoria', '/logs', '/painel-controle', '/relatorios', '/importacao', '/recepcao', '/usuarios',
-    '/configuracoes', '/perfil',
+    '/configuracoes', '/perfil', '/adiantamentos', '/medicoes',
   ]),
   supervisor: new Set([
     '/cronograma', '/compras', '/avanco', '/pagamentos', '/recebimentos',
     '/despesas-indiretas', '/mutuos', '/conciliacao', '/documentos',
     '/auditoria', '/logs', '/painel-controle', '/relatorios', '/importacao', '/recepcao', '/usuarios',
-    '/configuracoes', '/perfil',
+    '/configuracoes', '/perfil', '/adiantamentos', '/medicoes',
   ]),
   operador: new Set([
     '/cronograma', '/compras', '/avanco', '/pagamentos', '/recebimentos',
     '/despesas-indiretas', '/conciliacao', '/documentos',
-    '/relatorios', '/recepcao', '/perfil',
+    '/relatorios', '/recepcao', '/perfil', '/adiantamentos', '/medicoes',
   ]),
   cliente: new Set([
     '/cronograma', '/avanco', '/relatorios', '/perfil',
