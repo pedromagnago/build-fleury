@@ -12,11 +12,12 @@ interface ItemCompraSectionProps {
   casasTotal: number
   pedidosByItem: Map<string, Pedido[]>
   parcelasByPedido: Map<string, Parcela[]>
+  consumidoPorItem?: Map<string, number>
   expandedItems: Set<string>
   toggleItem: (id: string) => void
 }
 
-export default function ItemCompraSection({ etapaId, items, dists, casasTotal, pedidosByItem, parcelasByPedido, expandedItems, toggleItem }: ItemCompraSectionProps) {
+export default function ItemCompraSection({ etapaId, items, dists, casasTotal, pedidosByItem, parcelasByPedido, consumidoPorItem, expandedItems, toggleItem }: ItemCompraSectionProps) {
   const createItem = useCreateItemCompra()
   const updateItem = useUpdateItemCompra()
   const deleteItem = useDeleteItemCompra()
@@ -92,10 +93,12 @@ export default function ItemCompraSection({ etapaId, items, dists, casasTotal, p
               {items.map(item => {
                 const iExp = expandedItems.has(item.id)
                 const iPeds = pedidosByItem.get(item.id) ?? []
-                let iCon = 0
+                // consumidoPorItem usa pedido_itens (item-level) em vez do header do pedido,
+                // evitando que âncoras de NF multi-item inflem um único item_compra_id.
+                const iCon = consumidoPorItem?.get(item.id)
+                  ?? iPeds.reduce((s, p) => s + (p.valor_total_real || 0), 0)
                 let iPago = 0
                 iPeds.forEach(p => {
-                  iCon += (p.valor_total_real || 0)
                   const parcs = parcelasByPedido.get(p.id) ?? []
                   parcs.forEach(parc => iPago += (parc.valor_pago || 0))
                 })

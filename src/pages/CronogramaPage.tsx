@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
 import { useEtapas, useUpdateEtapa, useDeleteEtapa, type Etapa } from '@/hooks/useEtapas'
-import { useItensCompra, usePedidos, type ItemCompra, type Pedido } from '@/hooks/useCompras'
+import { useItensCompra, usePedidos, usePedidoItens, type ItemCompra, type Pedido } from '@/hooks/useCompras'
 import { useDistribuicao, type Distribuicao } from '@/hooks/useOperacional'
 import { useParcelas, type Parcela } from '@/hooks/useFinanceiro'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
@@ -92,6 +92,7 @@ export default function CronogramaPage() {
   const { data: distribuicoes = [] } = useDistribuicao()
   const { data: itensCompra = [] } = useItensCompra()
   const { data: pedidos = [] } = usePedidos()
+  const { data: pedidoItens = [] } = usePedidoItens()
   const { data: parcelas = [] } = useParcelas()
   const { despesas = [] } = useDespesasIndiretas()
   const { data: mutuos = [] } = useMutuos()
@@ -153,6 +154,20 @@ export default function CronogramaPage() {
     return m
   }, [pedidos])
 
+  // Consumo real por item_compra_id usando pedido_itens (não o header do pedido).
+  // O header (pedidos.item_compra_id) aponta só pro primeiro item do âncora de NF
+  // multi-item → inflaria esse item e zeraria os demais.
+  const consumidoPorItem = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const pi of pedidoItens as any[]) {
+      const ped = pi.pedidos
+      if (!ped || ped.status === 'cancelado') continue
+      const prev = m.get(pi.item_compra_id) ?? 0
+      m.set(pi.item_compra_id, prev + Number(pi.valor_total_real ?? 0))
+    }
+    return m
+  }, [pedidoItens])
+
   const parcelasByPedido = useMemo(() => {
     const m = new Map<string, Parcela[]>()
     parcelas.forEach(p => { if (p.pedido_id && !m.has(p.pedido_id)) m.set(p.pedido_id, []); if (p.pedido_id) m.get(p.pedido_id)!.push(p) })
@@ -171,9 +186,9 @@ export default function CronogramaPage() {
       const items = itemsByEtapa.get(e.id) ?? []
       items.forEach(i => {
         custoOrc += (i.valor_total_orcado ?? 0)
+        custoCon += consumidoPorItem.get(i.id) ?? 0
         const peds = pedidosByItem.get(i.id) ?? []
         peds.forEach(p => {
-          custoCon += (p.valor_total_real || 0)
           const parcs = parcelasByPedido.get(p.id) ?? []
           parcs.forEach(parc => {
             custoPago += (parc.valor_pago || 0)
@@ -348,7 +363,7 @@ export default function CronogramaPage() {
         </div>
       ) : (
         <>
-          {activeTab === 'wbs' && <WBSTable etapas={filtered} itemsByEtapa={itemsByEtapa} distByEtapa={distByEtapa} pedidosByItem={pedidosByItem} parcelasByPedido={parcelasByPedido} expandedIds={expandedIds} toggleExpand={toggleExpand} expandedItems={expandedItems} toggleItem={toggleItem} onEdit={e => { setEditingEtapa(e); setShowModal(true) }} onDelete={id => { if (window.confirm('Excluir etapa e todos os itens?')) deleteEtapa.mutate(id) }} selection={selection} />}
+          {activeTab === 'wbs' && <WBSTable etapas={filtered} itemsByEtapa={itemsByEtapa} distByEtapa={distByEtapa} pedidosByItem={pedidosByItem} parcelasByPedido={parcelasByPedido} consumidoPorItem={consumidoPorItem} expandedIds={expandedIds} toggleExpand={toggleExpand} expandedItems={expandedItems} toggleItem={toggleItem} onEdit={e => { setEditingEtapa(e); setShowModal(true) }} onDelete={id => { if (window.confirm('Excluir etapa e todos os itens?')) deleteEtapa.mutate(id) }} selection={selection} />}
           {activeTab === 'kanban' && <KanbanView etapas={filtered} itemsByEtapa={itemsByEtapa} itensCompra={itensCompra} updateEtapa={updateEtapa} onEdit={e => { setEditingEtapa(e); setShowModal(true) }} />}
           {activeTab === 'gantt' && <GanttView etapas={filtered} distribuicoes={distribuicoes} distByEtapa={distByEtapa} medicoes={medicoes} expandedIds={expandedIds} toggleExpand={toggleExpand} itemsByEtapa={itemsByEtapa} selection={selection} onEdit={e => { setEditingEtapa(e); setShowModal(true) }} onDelete={id => { if (window.confirm('Excluir etapa?')) deleteEtapa.mutate(id) }} updateEtapa={updateEtapa} navigate={navigate} />}
         </>

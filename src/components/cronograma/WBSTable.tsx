@@ -27,6 +27,7 @@ interface WBSTableProps {
   distByEtapa: Map<string, Distribuicao[]>
   pedidosByItem: Map<string, Pedido[]>
   parcelasByPedido: Map<string, Parcela[]>
+  consumidoPorItem?: Map<string, number>
   expandedIds: Set<string>
   toggleExpand: (id: string) => void
   expandedItems: Set<string>
@@ -69,7 +70,7 @@ function CostBar({ orcado, consumido, pago }: { orcado: number; consumido: numbe
 }
 
 export default function WBSTable({
-  etapas, itemsByEtapa, distByEtapa, pedidosByItem, parcelasByPedido,
+  etapas, itemsByEtapa, distByEtapa, pedidosByItem, parcelasByPedido, consumidoPorItem,
   expandedIds, toggleExpand, expandedItems, toggleItem,
   onEdit, onDelete, selection,
 }: WBSTableProps) {
@@ -103,9 +104,9 @@ export default function WBSTable({
 
     let consumido = 0, pago = 0, aPagar = 0
     items.forEach(i => {
+      consumido += consumidoPorItem?.get(i.id) ?? 0
       const peds = pedidosByItem.get(i.id) ?? []
       peds.forEach(p => {
-        consumido += (p.valor_total_real || 0)
         const parcs = parcelasByPedido.get(p.id) ?? []
         parcs.forEach(parc => {
           pago += (parc.valor_pago || 0)
@@ -450,6 +451,7 @@ export default function WBSTable({
                         items={items}
                         pedidosByItem={pedidosByItem}
                         parcelasByPedido={parcelasByPedido}
+                        consumidoPorItem={consumidoPorItem}
                         expandedItems={expandedItems}
                         toggleItem={toggleItem}
                         updateEtapa={updateEtapa}
@@ -537,7 +539,7 @@ export default function WBSTable({
 }
 
 // ── Expanded row (tabs: Faturamento / Compras) ────────────────────────────────
-function ExpandedRow({ etapa, dists, items, pedidosByItem, parcelasByPedido, expandedItems, toggleItem, updateEtapa, createDist, updateDist, deleteDist }: any) {
+function ExpandedRow({ etapa, dists, items, pedidosByItem, parcelasByPedido, consumidoPorItem, expandedItems, toggleItem, updateEtapa, createDist, updateDist, deleteDist }: any) {
   const [tab, setTab] = useState<'faturamento' | 'compras'>('faturamento')
 
   return (
@@ -572,7 +574,8 @@ function ExpandedRow({ etapa, dists, items, pedidosByItem, parcelasByPedido, exp
           <ItemCompraSection
             etapaId={etapa.id} items={items} dists={dists}
             casasTotal={etapa.casas_total} pedidosByItem={pedidosByItem}
-            parcelasByPedido={parcelasByPedido} expandedItems={expandedItems} toggleItem={toggleItem}
+            parcelasByPedido={parcelasByPedido} consumidoPorItem={consumidoPorItem}
+            expandedItems={expandedItems} toggleItem={toggleItem}
           />
         )}
       </div>
