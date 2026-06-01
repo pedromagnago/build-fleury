@@ -121,7 +121,7 @@ export default function WBSTable({
     const margemPct = receita > 0 ? ((receita - orcado) / receita) * 100 : 0
 
     return { etapa, items, dists, receita, orcado, consumido, pago, aPagar, saldo, margem, margemPct }
-  }), [etapas, itemsByEtapa, distByEtapa, pedidosByItem, parcelasByPedido])
+  }), [etapas, itemsByEtapa, distByEtapa, pedidosByItem, parcelasByPedido, consumidoPorItem])
 
   // ── Sort ────────────────────────────────────────────────────────────────────
   const sorted = useMemo(() => {
