@@ -1094,6 +1094,8 @@ export function useUpdateConciliacao() {
       if (concErr) throw concErr
       if (!conc) throw new Error('Conciliação não encontrada')
 
+      const wassugerido = (conc as any).status === 'sugerido'
+
       const { data: movData0 } = await supabase
         .from('movimentacoes_bancarias')
         .select('data')
@@ -1140,6 +1142,8 @@ export function useUpdateConciliacao() {
       await supabase.from('movimentacoes_bancarias').update({
         parcela_id: primeiro?.origem === 'parcela' ? primeiro.origem_id : null,
         ...(categoriaOrigem ? { categoria: categoriaOrigem } : {}),
+        // Quando edição manual promove uma sugestão, confirma na mov também
+        ...(wassugerido ? { conciliado: true, conciliado_em: new Date().toISOString() } : {}),
       }).eq('id', conc.movimentacao_id)
 
       const { data: movData } = await supabase
@@ -1153,6 +1157,8 @@ export function useUpdateConciliacao() {
       await supabase.from('conciliacoes').update({
         diferenca,
         match_type: 'manual_edit',
+        // Edição manual de sugestão confirma automaticamente (não precisa de passo extra)
+        ...(wassugerido ? { status: 'confirmado' } : {}),
       }).eq('id', conciliacaoId)
 
       await supabase.from('audit_logs').insert({
