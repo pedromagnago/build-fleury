@@ -104,8 +104,9 @@ export default function WBSTable({
 
     let consumido = 0, pago = 0, aPagar = 0
     items.forEach(i => {
-      consumido += consumidoPorItem?.get(i.id) ?? 0
       const peds = pedidosByItem.get(i.id) ?? []
+      consumido += consumidoPorItem?.get(i.id)
+        ?? peds.reduce((s, p) => s + ((p as any).valor_total_real || 0), 0)
       peds.forEach(p => {
         const parcs = parcelasByPedido.get(p.id) ?? []
         parcs.forEach(parc => {

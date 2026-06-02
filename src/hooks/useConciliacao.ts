@@ -592,7 +592,7 @@ export function useConfirmConciliacao() {
     mutationFn: async (conciliacaoId: string) => {
       const { data: conc, error: concErr } = await supabase
         .from('conciliacoes')
-        .select('*, conciliacao_parcelas(parcela_id, valor_aplicado)')
+        .select('*, conciliacao_parcelas(parcela_id, mutuo_parcela_id, medicao_id, mutuo_id, valor_aplicado)')
         .eq('id', conciliacaoId)
         .single()
       if (concErr) throw concErr
@@ -636,27 +636,34 @@ export function useConfirmConciliacao() {
         parcela_id: conc.conciliacao_parcelas?.[0]?.parcela_id ?? null,
       }).eq('id', conc.movimentacao_id)
 
-      // IMPORTANTE: NÃO escrever valor_pago nem status aqui.
+      // IMPORTANTE: NÃO chamar aplicarDeltaOrigem para 'parcela' aqui.
       // A trigger SQL trg_sync_parcela_por_status_conciliacao (disparada pelo
       // UPDATE conciliacoes acima) já recalcula valor_pago = SUM(valor_aplicado)
       // e o status correto. Antes este loop somava valor_aplicado em cima do
       // valor_pago já recalculado pela trigger, gerando duplicação contábil
       // ("delta em dobro" — bug visto em ~12 parcelas em produção).
-      // Aqui só persistimos campos que a trigger NÃO toca: forma_pagamento,
-      // conta_bancaria_id e (se ainda nulo) data_pagamento_real.
+      // Para parcelas: só persistimos campos que a trigger NÃO toca.
+      // Para mutuo_parcela/medicao/mutuo: NÃO há trigger — aplicarDeltaOrigem é obrigatório.
       for (const link of (conc.conciliacao_parcelas ?? [])) {
-        const { data: parcela } = await supabase
-          .from('parcelas')
-          .select('data_pagamento_real, forma_pagamento, conta_bancaria_id')
-          .eq('id', link.parcela_id)
-          .single()
-        if (!parcela) continue
-
-        await supabase.from('parcelas').update({
-          data_pagamento_real: parcela.data_pagamento_real ?? dataPgto,
-          forma_pagamento: parcela.forma_pagamento ?? formaInferida,
-          conta_bancaria_id: parcela.conta_bancaria_id ?? contaId,
-        }).eq('id', link.parcela_id)
+        if (link.parcela_id) {
+          const { data: parcela } = await supabase
+            .from('parcelas')
+            .select('data_pagamento_real, forma_pagamento, conta_bancaria_id')
+            .eq('id', link.parcela_id)
+            .single()
+          if (!parcela) continue
+          await supabase.from('parcelas').update({
+            data_pagamento_real: parcela.data_pagamento_real ?? dataPgto,
+            forma_pagamento: parcela.forma_pagamento ?? formaInferida,
+            conta_bancaria_id: parcela.conta_bancaria_id ?? contaId,
+          }).eq('id', link.parcela_id)
+        } else if (link.mutuo_parcela_id) {
+          await aplicarDeltaOrigem('mutuo_parcela', link.mutuo_parcela_id, Number(link.valor_aplicado), dataPgto)
+        } else if (link.medicao_id) {
+          await aplicarDeltaOrigem('medicao', link.medicao_id, Number(link.valor_aplicado), dataPgto)
+        } else if (link.mutuo_id) {
+          await aplicarDeltaOrigem('mutuo', link.mutuo_id, Number(link.valor_aplicado), dataPgto)
+        }
       }
 
       return conc
@@ -666,6 +673,8 @@ export function useConfirmConciliacao() {
       qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
       toast.success('Conciliação confirmada')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -803,6 +812,34 @@ async function buscarCategoriaOrigem(origem: VinculoOrigem, origemId: string): P
     return `${(data as any).categoria ?? 'M\u00fatuo'} - ${(data as any).nome}`
   }
   return null
+}
+
+// Recalcula valor_pago de uma mutuo_parcela a partir do SUM de conciliacao_parcelas.
+// Idêntico ao que a trigger trg_sync_parcela_valor_pago faz para parcelas de pedido.
+// Deve ser chamado APÓS qualquer INSERT/DELETE em conciliacao_parcelas que afete a linha.
+async function sincronizarMutuo_parcela(mutuo_parcela_id: string, dataPgto: string) {
+  const { data: links } = await supabase
+    .from('conciliacao_parcelas')
+    .select('valor_aplicado, conciliacoes(status)')
+    .eq('mutuo_parcela_id', mutuo_parcela_id)
+
+  const totalPago = ((links ?? []) as any[])
+    .filter(l => !['rejeitado', 'aprovado'].includes(String(l.conciliacoes?.status ?? '')))
+    .reduce((s: number, l: any) => s + Number(l.valor_aplicado || 0), 0)
+
+  const { data: mp } = await supabase.from('mutuo_parcelas')
+    .select('valor, data_vencimento').eq('id', mutuo_parcela_id).single()
+  if (!mp) return
+
+  const today = new Date().toISOString().split('T')[0]!
+  const total = Number(mp.valor)
+  const novoStatus = totalPago <= 0.005 ? (mp.data_vencimento < today ? 'vencida' : 'pendente')
+    : totalPago >= total - 0.005 ? 'paga' : 'parcialmente_paga'
+  await supabase.from('mutuo_parcelas').update({
+    valor_pago: totalPago,
+    status: novoStatus,
+    data_pagamento_real: totalPago > 0 ? dataPgto : null,
+  }).eq('id', mutuo_parcela_id)
 }
 
 // Aplica delta (pode ser negativo ao desfazer) no valor_pago da origem e atualiza status
@@ -1008,15 +1045,25 @@ export function useUndoConciliacao() {
         parcela_id: null,
       }).eq('id', conc.movimentacao_id)
 
+      const mutuo_parcelaIdsUndo = new Set<string>()
       for (const link of (conc.conciliacao_parcelas ?? []) as any[]) {
         const origem = inferirOrigem(link)
         if (!origem) continue
+        if (origem.origem === 'mutuo_parcela') {
+          // Recalcula do SUM após o delete — não usar delta incremental
+          mutuo_parcelaIdsUndo.add(origem.origem_id); continue
+        }
         // Delta negativo (reverte valor_pago)
         await aplicarDeltaOrigem(origem.origem, origem.origem_id, -Number(link.valor_aplicado), today)
       }
 
       await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', conciliacaoId)
       await supabase.from('conciliacoes').delete().eq('id', conciliacaoId)
+
+      // Recalcula mutuo_parcelas após o delete dos CP rows
+      for (const mpId of mutuo_parcelaIdsUndo) {
+        await sincronizarMutuo_parcela(mpId, today)
+      }
 
       // Fix B: após o trigger recalcular valor_pago a partir dos links restantes,
       // limpa data_pagamento_real nas parcelas que ficaram zeradas. O trigger não
@@ -1117,13 +1164,16 @@ export function useUpdateConciliacao() {
 
       const chavesAfetadas = new Set([...antigoMap.keys(), ...novoMap.keys()])
 
+      // mutuo_parcela não tem trigger SQL — não usar delta incremental aqui porque
+      // o valor_pago pode estar inconsistente; recalcular do SUM após o reinsert.
+      const mutuo_parcelaIds = new Set<string>()
       for (const chave of chavesAfetadas) {
+        const [origem, origem_id] = chave.split(':') as [VinculoOrigem, string]
+        if (origem === 'mutuo_parcela') { mutuo_parcelaIds.add(origem_id); continue }
         const antigo = antigoMap.get(chave) ?? 0
         const novo = novoMap.get(chave)?.valor ?? 0
         const delta = novo - antigo
         if (Math.abs(delta) < 0.005) continue
-
-        const [origem, origem_id] = chave.split(':') as [VinculoOrigem, string]
         await aplicarDeltaOrigem(origem, origem_id, delta, dataPgto)
       }
 
@@ -1132,6 +1182,11 @@ export function useUpdateConciliacao() {
         await supabase.from('conciliacao_parcelas').insert(
           novosVinculos.map(v => buildLinkRow(conciliacaoId, v))
         )
+      }
+
+      // Recalcula mutuo_parcelas do SUM real após o reinsert
+      for (const mpId of mutuo_parcelaIds) {
+        await sincronizarMutuo_parcela(mpId, dataPgto)
       }
 
       // movimentacoes.parcela_id + categoria propagada do primeiro v\u00ednculo
@@ -1246,7 +1301,12 @@ export function useCreateConciliacao() {
 
       // Aplica delta positivo (adiciona valor_pago na origem)
       for (const v of vinculosFinal) {
-        await aplicarDeltaOrigem(v.origem, v.origem_id, v.valor_aplicado, dataPgto)
+        if (v.origem === 'mutuo_parcela') {
+          // Recalcula do SUM — mais seguro que delta incremental quando há múltiplos vínculos
+          await sincronizarMutuo_parcela(v.origem_id, dataPgto)
+        } else {
+          await aplicarDeltaOrigem(v.origem, v.origem_id, v.valor_aplicado, dataPgto)
+        }
         // Rastreabilidade: grava conta+forma na parcela quando ainda não tem
         if (v.origem === 'parcela') {
           const { data: p } = await supabase.from('parcelas')

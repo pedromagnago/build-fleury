@@ -984,7 +984,6 @@ function ParcelasTab({ search }: { search: string }) {
           titulo={viewingVinculos.pedido_item ?? viewingVinculos.descricao ?? 'Parcela'}
           subtitulo={`Venc ${localDate(viewingVinculos.data_vencimento).toLocaleDateString('pt-BR')} · Parcela ${viewingVinculos.numero_parcela}`}
           valor={Number(viewingVinculos.valor)}
-          valorPago={Number(viewingVinculos.valor_pago || 0)}
           onClose={() => setViewingVinculos(null)}
         />
       )}
@@ -2017,7 +2016,6 @@ function PorPedidoTab() {
           titulo={viewingVinculos.pedido_item ?? viewingVinculos.descricao ?? 'Parcela'}
           subtitulo={`Venc ${localDate(viewingVinculos.data_vencimento).toLocaleDateString('pt-BR')} · Parcela ${viewingVinculos.numero_parcela}`}
           valor={Number(viewingVinculos.valor)}
-          valorPago={Number(viewingVinculos.valor_pago || 0)}
           onClose={() => setViewingVinculos(null)}
         />
       )}

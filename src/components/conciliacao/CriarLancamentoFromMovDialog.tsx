@@ -2,21 +2,23 @@
  * Build Fleury — Criar Lançamento a partir de Movimento
  *
  * Abre ao clicar "Criar novo" no painel lateral de conciliação.
- * Cria entidade (despesa indireta, adiantamento, transferência) com valor+data
+ * Cria entidade (despesa indireta, adiantamento, medição, transferência) com valor+data
  * do movimento e vincula automaticamente via conciliacao_parcelas.
  */
 import { useState, useEffect } from 'react'
-import { X, Save, ArrowLeftRight, Landmark, Building2 } from 'lucide-react'
+import { X, Save, ArrowLeftRight, Landmark, Building2, FileCheck } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
 import { useFornecedores } from '@/hooks/useCompras'
 import { useContasBancarias } from '@/hooks/useFinanceiro'
+import { useMedicoes } from '@/hooks/useOperacional'
+import { aplicarDeltaOrigem } from '@/hooks/useConciliacao'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
 import { parsearCondicao } from '@/lib/parcelas'
 
-type Tipo = 'despesa' | 'adiantamento' | 'transferencia'
+type Tipo = 'despesa' | 'adiantamento' | 'transferencia' | 'medicao'
 
 interface Props {
   mov: any  // a linha do extrato (row)
@@ -27,6 +29,7 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
   const { currentCompany } = useProject()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: contas = [] } = useContasBancarias()
+  const { data: medicoes = [] } = useMedicoes()
   const qc = useQueryClient()
 
   const isSaida = mov.tipo === 'saida'
@@ -39,6 +42,9 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
   const [condPagamento, setCondPagamento] = useState('0')
   const [categoria, setCategoria] = useState('Indireto')
   const [contaDestinoId, setContaDestinoId] = useState<string>('')
+  const [medicaoId, setMedicaoId] = useState<string>('')
+
+  const medicoesPendentes = medicoes.filter(m => m.status !== 'paga')
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -163,6 +169,41 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
         // Garante parcela de retorno em 30 dias se nenhum cronograma foi definido
         await supabase.rpc('ensure_retorno_adiantamento', { p_mutuo_id: mut.id })
       }
+      else if (tipo === 'medicao') {
+        if (!medicaoId) throw new Error('Selecione a medição')
+        // Vincula diretamente o movimento bancário à medição via conciliação —
+        // sem criar nenhuma entidade nova. Usa aplicarDeltaOrigem para recalcular
+        // valor_liberado e status da medição de forma consistente.
+        const { data: concInserted, error: errConc } = await supabase
+          .from('conciliacoes')
+          .insert({
+            company_id: currentCompany.id,
+            movimentacao_id: movId,
+            match_type: 'manual_medicao',
+            confidence: 100,
+            diferenca: 0,
+            status: 'aprovado',
+          })
+          .select('id')
+          .single()
+        if (errConc) throw errConc
+        if (!concInserted) throw new Error('Falha ao criar conciliação')
+
+        const { error: errCp } = await supabase.from('conciliacao_parcelas').insert({
+          conciliacao_id: concInserted.id,
+          medicao_id: medicaoId,
+          valor_aplicado: absValor,
+        })
+        if (errCp) throw errCp
+
+        await aplicarDeltaOrigem('medicao', medicaoId, absValor, mov.data)
+
+        await supabase.from('movimentacoes_bancarias').update({
+          conciliado: true,
+          conciliado_em: new Date().toISOString(),
+          observacao: `Vinculado à medição via conciliação manual`,
+        }).eq('id', movId)
+      }
       else if (tipo === 'transferencia') {
         if (!contaDestinoId) throw new Error('Selecione a conta destino')
         // Cria mov oposto na conta destino + marca ambos como conciliados
@@ -198,7 +239,9 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
-      toast.success('Lançamento criado e vinculado')
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
+      toast.success(tipo === 'medicao' ? 'Recebimento vinculado à medição' : 'Lançamento criado e vinculado')
       onClose(true)
     },
     onError: (err: Error) => toast.error(err.message),
@@ -212,6 +255,13 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
       desc: 'Despesa indireta paga (material, serviço, administrativo)',
       icon: Building2,
       visible: isSaida,
+    },
+    {
+      id: 'medicao' as Tipo,
+      label: 'Recebimento de Medição',
+      desc: 'Vincula esta entrada diretamente a uma medição do contrato',
+      icon: FileCheck,
+      visible: !isSaida,
     },
     {
       id: 'adiantamento' as Tipo,
@@ -304,6 +354,34 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
             </>
           )}
 
+          {tipo === 'medicao' && (
+            <div className="space-y-3">
+              <div>
+                <label className="text-[10px] font-bold uppercase text-muted-foreground">Medição *</label>
+                <select
+                  value={medicaoId}
+                  onChange={e => setMedicaoId(e.target.value)}
+                  className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-xs"
+                >
+                  <option value="">— Selecione a medição —</option>
+                  {medicoesPendentes.map(m => {
+                    const saldo = Number(m.valor_planejado) - Number(m.valor_liberado ?? 0)
+                    return (
+                      <option key={m.id} value={m.id}>
+                        Medição nº {m.numero} · saldo {saldo.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                      </option>
+                    )
+                  })}
+                </select>
+              </div>
+              <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2">
+                <p className="text-[10px] text-emerald-700 dark:text-emerald-400 leading-relaxed">
+                  Nenhuma entidade nova será criada. O movimento bancário ficará vinculado diretamente à medição selecionada e o saldo dela será atualizado.
+                </p>
+              </div>
+            </div>
+          )}
+
           {tipo === 'transferencia' && (
             <div>
               <label className="text-[10px] font-bold uppercase text-muted-foreground">Conta destino</label>
@@ -327,7 +405,7 @@ export function CriarLancamentoFromMovDialog({ mov, onClose }: Props) {
           <button onClick={() => submit.mutate()} disabled={submit.isPending}
             className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-1.5 text-xs font-bold text-primary-foreground hover:opacity-90 disabled:opacity-50">
             <Save className="h-3.5 w-3.5" />
-            {submit.isPending ? 'Salvando...' : 'Criar e vincular'}
+            {submit.isPending ? 'Salvando...' : tipo === 'medicao' ? 'Vincular à medição' : 'Criar e vincular'}
           </button>
         </div>
       </div>

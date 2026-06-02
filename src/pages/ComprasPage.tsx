@@ -1038,6 +1038,12 @@ function PedidosTab({ search }: { search: string }) {
   const startEdit = async (p: Pedido) => {
     setEditingPedido(p)
     setCondFromForn(false)
+    // Reset parcelas antes de qualquer coisa — garante que o useEffect de auto-geração
+    // dispara com parcelasManuallyEdited=false no mesmo batch que o setGlobalForm.
+    // Sem isso, se o pedido anterior tinha edição manual (flag=true), o useEffect
+    // retorna cedo e o fetch async que vem depois seta [] → parcelas somem.
+    setParcelasManuallyEdited(false)
+    setEditableParcelas([])
     setGlobalForm({
       fornecedor_id: p.fornecedor_id ?? '',
       cond_pagamento: p.cond_pagamento ?? '',
@@ -1097,9 +1103,9 @@ function PedidosTab({ search }: { search: string }) {
         valor_pago: Number(ep.valor_pago || 0),
       })))
       setParcelasManuallyEdited(true)
-    } else {
-      setEditableParcelas([])
     }
+    // else: sem parcelas no banco — o useEffect já rodou com parcelasManuallyEdited=false
+    // e auto-gerou as parcelas a partir de cond_pagamento+data_entrega. Não sobrescreve.
 
     setShowForm(true)
   }

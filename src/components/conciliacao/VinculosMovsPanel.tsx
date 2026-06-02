@@ -19,7 +19,6 @@ interface Props {
   titulo: string
   subtitulo?: string
   valor: number
-  valorPago?: number
   onClose: () => void
 }
 
@@ -29,7 +28,7 @@ function fmtDateBr(d: string | null | undefined): string {
   return `${day}/${m}/${(y ?? '').slice(2)}`
 }
 
-export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, valorPago = 0, onClose }: Props) {
+export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, onClose }: Props) {
   const { data: concs = [] } = useConciliacoes()
   const { data: movs = [] } = useMovimentacoes()
   const { data: contas = [] } = useContasBancarias()
@@ -70,7 +69,8 @@ export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, 
   }, [concs, movs, origem, origemId])
 
   const totalAplicado = links.reduce((s, l) => s + l.valorAplicado, 0)
-  const saldo = valor - (valorPago || 0)
+  // Usa totalAplicado (soma dos links reais) e não valorPago (campo do banco que pode estar stale)
+  const saldo = valor - totalAplicado
 
   return (
     <>

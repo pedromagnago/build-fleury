@@ -70,8 +70,16 @@ export function NovoLancamentoDialog({ defaultContaId, defaultTipo, defaultValor
     for (const p of parcelas as any[]) {
       if (p.status === 'paga') continue
       const label = p.pedido_item ?? p.descricao ?? 'Parcela'
-      const sublabel = `Parcela · Venc ${p.data_vencimento} · ${p.status}`
-      const hay = `${label} ${sublabel} ${p.valor}`.toLowerCase()
+      const fornNome = p.fornecedor_nome ?? ''
+      const pedNum = p.pedido_numero ? `Ped. ${p.pedido_numero}` : ''
+      const etapaNome = p.etapa_nome ?? ''
+      const sublabel = [
+        pedNum || 'Parcela',
+        fornNome,
+        `Venc ${p.data_vencimento}`,
+        p.status,
+      ].filter(Boolean).join(' · ')
+      const hay = `${label} ${sublabel} ${etapaNome} ${p.valor}`.toLowerCase()
       if (q && !hay.includes(q)) continue
       out.push({ tipo: 'parcela', id: p.id, label, sublabel, valor: Number(p.valor) })
     }
@@ -102,7 +110,7 @@ export function NovoLancamentoDialog({ defaultContaId, defaultTipo, defaultValor
         out.push({ tipo: 'mutuo_parcela', id: mp.id, label, sublabel, valor: valorMp })
       }
     }
-    return out.slice(0, 30)
+    return out.slice(0, q ? 30 : 15)
   }, [parcelas, mutuos, medicoes, search, tipo])
 
   // Se mudou o tipo e o vínculo selecionado não é mais coerente (ex: medicao em saída), limpa
@@ -247,35 +255,40 @@ export function NovoLancamentoDialog({ defaultContaId, defaultTipo, defaultValor
                             : 'Buscar parcela, mútuo ou valor...'}
                           className="w-full rounded-md border bg-background pl-7 pr-2 py-1.5 text-xs" />
                       </div>
-                      {search && (
-                        <div className="mt-1 max-h-48 overflow-auto rounded-md border bg-card">
-                          {candidatos.map(c => (
-                            <button key={`${c.tipo}-${c.id}`} onClick={() => { setVinculo(c); setSearch('') }}
-                              className="w-full flex items-center justify-between p-2 hover:bg-muted text-left border-b last:border-0">
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1">
-                                  <p className="text-xs truncate">{c.label}</p>
-                                  <span className={`text-[9px] rounded px-1 ${
-                                    c.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' :
-                                    c.tipo === 'mutuo_parcela' ? 'bg-violet-500/10 text-violet-600' :
-                                    c.tipo === 'medicao' ? 'bg-purple-500/10 text-purple-600' :
-                                    'bg-blue-500/10 text-blue-600'
-                                  }`}>
-                                    {c.tipo === 'mutuo' ? 'MUT' :
-                                      c.tipo === 'mutuo_parcela' ? 'MUT-P' :
-                                      c.tipo === 'medicao' ? 'MED' : 'PARC'}
-                                  </span>
-                                </div>
-                                <p className="text-[10px] text-muted-foreground">{c.sublabel}</p>
+                      <div className="mt-1 max-h-48 overflow-auto rounded-md border bg-card">
+                        {candidatos.length === 0 && (
+                          <p className="p-2 text-center text-[11px] text-muted-foreground">
+                            {search ? 'Nenhuma encontrada' : 'Nenhum vínculo pendente'}
+                          </p>
+                        )}
+                        {candidatos.map(c => (
+                          <button key={`${c.tipo}-${c.id}`} onClick={() => { setVinculo(c); setSearch('') }}
+                            className="w-full flex items-center justify-between p-2 hover:bg-muted text-left border-b last:border-0">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1">
+                                <p className="text-xs truncate">{c.label}</p>
+                                <span className={`text-[9px] rounded px-1 flex-shrink-0 ${
+                                  c.tipo === 'mutuo' ? 'bg-indigo-500/10 text-indigo-600' :
+                                  c.tipo === 'mutuo_parcela' ? 'bg-violet-500/10 text-violet-600' :
+                                  c.tipo === 'medicao' ? 'bg-purple-500/10 text-purple-600' :
+                                  'bg-blue-500/10 text-blue-600'
+                                }`}>
+                                  {c.tipo === 'mutuo' ? 'MUT' :
+                                    c.tipo === 'mutuo_parcela' ? 'MUT-P' :
+                                    c.tipo === 'medicao' ? 'MED' : 'PARC'}
+                                </span>
                               </div>
-                              <span className="text-xs font-mono font-semibold">{formatCurrency(c.valor)}</span>
-                            </button>
-                          ))}
-                          {candidatos.length === 0 && (
-                            <p className="p-2 text-center text-[11px] text-muted-foreground">Nenhuma encontrada</p>
-                          )}
-                        </div>
-                      )}
+                              <p className="text-[10px] text-muted-foreground">{c.sublabel}</p>
+                            </div>
+                            <span className="text-xs font-mono font-semibold flex-shrink-0 ml-2">{formatCurrency(c.valor)}</span>
+                          </button>
+                        ))}
+                        {!search && candidatos.length >= 15 && (
+                          <p className="p-1.5 text-center text-[10px] text-muted-foreground border-t">
+                            Digite para filtrar mais resultados
+                          </p>
+                        )}
+                      </div>
                     </>
                   )}
                 </div>
