@@ -109,7 +109,28 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
         else comprovantePath = filePath
       }
 
-      // 2. Atualizar origem
+      // 2. Criar movimentação bancária PRIMEIRO — se falhar, origem não é tocada
+      const descLabel =
+        item.origem === 'medicao' ? `Recebimento: ${item.descricao}` :
+        item.origem === 'adiantamento' ? `Devolução: ${item.descricao}` :
+        `Captação: ${item.descricao}`
+
+      const { data: movRow, error: eMov } = await supabase
+        .from('movimentacoes_bancarias')
+        .insert({
+          company_id: currentCompany.id,
+          conta_id: form.conta_bancaria_id,
+          data: form.data_recebimento,
+          descricao: descLabel,
+          valor: valorRecebido,
+          tipo: 'entrada',
+        })
+        .select('id')
+        .single()
+      if (eMov) throw eMov
+      if (!movRow) throw new Error('Movimentação não criada')
+
+      // 3. Atualizar origem (só após movimentação criada com sucesso)
       if (item.origem === 'medicao') {
         const novoLiberado = Number(item.raw.valor_liberado ?? 0) + valorRecebido
         const total = Number(item.raw.valor_planejado ?? item.valor_total)
@@ -132,27 +153,6 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
         if (error) throw error
       }
       // captacao: status derivado pelas conciliações — sem UPDATE direto
-
-      // 3. Criar movimentação bancária (entrada)
-      const descLabel =
-        item.origem === 'medicao' ? `Recebimento: ${item.descricao}` :
-        item.origem === 'adiantamento' ? `Devolução: ${item.descricao}` :
-        `Captação: ${item.descricao}`
-
-      const { data: movRow, error: eMov } = await supabase
-        .from('movimentacoes_bancarias')
-        .insert({
-          company_id: currentCompany.id,
-          conta_id: form.conta_bancaria_id,
-          data: form.data_recebimento,
-          descricao: descLabel,
-          valor: valorRecebido,
-          tipo: 'entrada',
-        })
-        .select('id')
-        .single()
-      if (eMov) throw eMov
-      if (!movRow) throw new Error('Movimentação não criada')
 
       // 4. Criar conciliação aprovada
       const { data: concRow, error: eConc } = await supabase
