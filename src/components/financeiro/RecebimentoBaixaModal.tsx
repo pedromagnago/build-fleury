@@ -124,6 +124,7 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
           descricao: descLabel,
           valor: valorRecebido,
           tipo: 'entrada',
+          ...(form.observacoes.trim() ? { observacao: form.observacoes.trim() } : {}),
         })
         .select('id')
         .single()
@@ -139,6 +140,7 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
           valor_liberado: novoLiberado,
           status: novoStatus,
           data_liberacao: form.data_recebimento,
+          ...(form.observacoes.trim() ? { observacoes: form.observacoes.trim() } : {}),
         }).eq('id', item.raw.id)
         if (error) throw error
       } else if (item.origem === 'adiantamento') {
@@ -149,6 +151,7 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
           valor_pago: novoPago,
           data_pagamento_real: form.data_recebimento,
           status: novoStatus,
+          ...(form.observacoes.trim() ? { observacoes: form.observacoes.trim() } : {}),
         }).eq('id', item.raw.id)
         if (error) throw error
       }
