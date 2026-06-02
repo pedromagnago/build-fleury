@@ -19,6 +19,7 @@ interface Props {
   titulo: string
   subtitulo?: string
   valor: number
+  valorPago?: number
   onClose: () => void
 }
 
