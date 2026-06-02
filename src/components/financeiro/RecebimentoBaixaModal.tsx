@@ -148,7 +148,6 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
           descricao: descLabel,
           valor: valorRecebido,
           tipo: 'entrada',
-          ...(item.origem === 'medicao' ? { medicao_id: item.raw.id } : {}),
         })
         .select('id')
         .single()
@@ -214,7 +213,9 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
       onDone()
     } catch (err) {
       console.error('[RecebimentoBaixaModal]', err)
-      toast.error(`Erro: ${err instanceof Error ? err.message : String(err)}`)
+      const e = err as any
+      const msg = e?.message ?? e?.details ?? e?.hint ?? String(err)
+      toast.error(`Erro: ${msg}`)
     } finally {
       setSaving(false)
     }
