@@ -39,7 +39,14 @@ interface DanfeItem {
 const RE_INICIO_ITENS = /DADOS\s+DOS\s+PRODUTOS\s*\/\s*SERVI[ÇC]OS/i
 const RE_FIM_ITENS = /C[ÁA]LCULO\s+DO\s+ISSQN|DADOS\s+ADICIONAIS|INFORMA[ÇC][ÕO]ES\s+COMPLEMENTARES/i
 const RE_INICIO_ITEM = /^\s*(\d{6,})\s+/
-const RE_LINHA_ITEM = /(?:^|\s)(\d{6,})[\s\t]+(.+?)[\s\t]+(\d{8})[\s\t]+\d{2,4}[\s\t]+\d{4}[\s\t]+([A-Z0-9]{1,5})[\s\t]+([\d.,]+)[\s\t]+([\d.,]+)[\s\t]+([\d.,]+)(?:[\s\t]|$)/
+// Aceita NCM de 6-10 dígitos (alguns antigos têm 6; alguns têm 10).
+// Absorve 1-5 grupos numéricos (Origem/CST/CFOP/CEST) que podem vir separados
+// por espaço após normalização — e.g. "0 00 5102" ou "000 5102".
+// Exige que a unidade comece com letra (UN, KG, M2…) para não confundir com CFOP.
+const RE_LINHA_ITEM = /(?:^|\s)(\d{6,})[\s\t]+(.+?)[\s\t]+(\d{6,10})(?:[\s\t]+\d+){1,5}[\s\t]+([A-Z][A-Z0-9]{0,5})[\s\t]+([\d.,]+)[\s\t]+([\d.,]+)[\s\t]+([\d.,]+)(?:[\s\t]|$)/
+// Fallback sem NCM/CST/CFOP obrigatório: só codigo + descricao + unit + qtd + vunit + vtotal.
+// Usado quando RE_LINHA_ITEM falha mas o item é claramente um item de NF.
+const RE_LINHA_ITEM_SIMPLES = /^(\d{6,})\s+(.+?)\s+([A-Z][A-Z0-9]{0,5})\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s*$/
 
 function parseNumberBr(s: string | undefined | null): number | null {
   if (!s) return null
@@ -119,20 +126,42 @@ function parseDanfeItens(texto: string): { itens: DanfeItem[]; notas: string[] }
   const itens: DanfeItem[] = []
   let ordem = 0
   for (const bloco of blocos) {
-    const blocoNormalizado = bloco.replace(/[\t ]+/g, ' ')
+    const blocoNormalizado = bloco.replace(/[\t ]+/g, ' ').trim()
     const m = blocoNormalizado.match(RE_LINHA_ITEM)
-    if (!m) { notas.push(`linha não casou: "${bloco.slice(0, 120)}..."`); continue }
-    ordem++
-    itens.push({
-      ordem,
-      codigo: m[1]!,
-      descricao: limparDescricao(m[2]!),
-      ncm: m[3] ?? null,
-      unidade: m[4] ?? null,
-      quantidade: parseNumberBr(m[5]),
-      valor_unitario: parseNumberBr(m[6]),
-      valor_total: parseNumberBr(m[7]),
-    })
+    if (m) {
+      ordem++
+      itens.push({
+        ordem,
+        codigo: m[1]!,
+        descricao: limparDescricao(m[2]!),
+        ncm: m[3] ?? null,
+        unidade: m[4] ?? null,
+        quantidade: parseNumberBr(m[5]),
+        valor_unitario: parseNumberBr(m[6]),
+        valor_total: parseNumberBr(m[7]),
+      })
+      continue
+    }
+    // Fallback: regex simplificado sem exigir NCM/CST/CFOP no padrão exato.
+    // Cobre itens onde o Origem (1 dígito) vinha separado do CST por espaço
+    // e o regex principal falhava — ex: "0 00 5102" vs "000 5102".
+    const m2 = blocoNormalizado.match(RE_LINHA_ITEM_SIMPLES)
+    if (m2) {
+      ordem++
+      itens.push({
+        ordem,
+        codigo: m2[1]!,
+        descricao: limparDescricao(m2[2]!),
+        ncm: null,
+        unidade: m2[3] ?? null,
+        quantidade: parseNumberBr(m2[4]),
+        valor_unitario: parseNumberBr(m2[5]),
+        valor_total: parseNumberBr(m2[6]),
+      })
+      notas.push(`item ${ordem}: recuperado por regex simplificado (NCM/CST/CFOP não identificados)`)
+      continue
+    }
+    notas.push(`linha não casou: "${bloco.slice(0, 120)}..."`)
   }
   return { itens, notas }
 }
