@@ -15,19 +15,19 @@ const ROLE_ROUTE_ACCESS: Record<UserRole, Set<string>> = {
   super_admin: new Set([
     '/cronograma', '/compras', '/avanco', '/pagamentos', '/recebimentos',
     '/despesas-indiretas', '/mutuos', '/conciliacao', '/documentos',
-    '/auditoria', '/logs', '/painel-controle', '/relatorios', '/importacao', '/recepcao', '/usuarios',
+    '/auditoria', '/logs', '/painel-controle', '/relatorios', '/relatorio-analitico', '/importacao', '/recepcao', '/usuarios',
     '/configuracoes', '/perfil', '/adiantamentos', '/medicoes',
   ]),
   supervisor: new Set([
     '/cronograma', '/compras', '/avanco', '/pagamentos', '/recebimentos',
     '/despesas-indiretas', '/mutuos', '/conciliacao', '/documentos',
-    '/auditoria', '/logs', '/painel-controle', '/relatorios', '/importacao', '/recepcao', '/usuarios',
+    '/auditoria', '/logs', '/painel-controle', '/relatorios', '/relatorio-analitico', '/importacao', '/recepcao', '/usuarios',
     '/configuracoes', '/perfil', '/adiantamentos', '/medicoes',
   ]),
   operador: new Set([
     '/cronograma', '/compras', '/avanco', '/pagamentos', '/recebimentos',
     '/despesas-indiretas', '/conciliacao', '/documentos',
-    '/relatorios', '/recepcao', '/perfil', '/adiantamentos', '/medicoes',
+    '/relatorios', '/relatorio-analitico', '/recepcao', '/perfil', '/adiantamentos', '/medicoes',
   ]),
   cliente: new Set([
     '/cronograma', '/avanco', '/relatorios', '/perfil',
