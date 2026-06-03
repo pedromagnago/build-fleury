@@ -105,8 +105,7 @@ export default function WBSTable({
     let consumido = 0, pagoTotal = 0
     items.forEach(i => {
       const peds = pedidosByItem.get(i.id) ?? []
-      consumido += consumidoPorItem?.get(i.id)
-        ?? peds.reduce((s, p) => s + ((p as any).valor_total_real || 0), 0)
+      consumido += consumidoPorItem?.get(i.id) ?? 0
       peds.forEach(p => {
         const parcs = parcelasByPedido.get(p.id) ?? []
         parcs.forEach(parc => {
@@ -114,7 +113,7 @@ export default function WBSTable({
         })
       })
     })
-    const pago   = Math.min(pagoTotal, consumido)
+    const pago   = pagoTotal
     const aPagar = Math.max(0, consumido - pago)
     const saldo  = orcado - consumido
     const margem    = receita - orcado

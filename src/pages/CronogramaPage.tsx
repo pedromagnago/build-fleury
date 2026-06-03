@@ -176,7 +176,7 @@ export default function CronogramaPage() {
 
   // Dashboard totals
   const dashTotals = useMemo(() => {
-    let custoOrc = 0, custoCon = 0, custoPago = 0, custoAPagar = 0, receitaCEF = 0
+    let custoOrc = 0, custoCon = 0, custoPago = 0, receitaCEF = 0
     let custoIndOrc = 0, custoIndCon = 0, custoIndPago = 0
 
     etapas.forEach(e => {
@@ -192,28 +192,27 @@ export default function CronogramaPage() {
           const parcs = parcelasByPedido.get(p.id) ?? []
           parcs.forEach(parc => {
             custoPago += (parc.valor_pago || 0)
-            if (parc.status !== 'paga') {
-              custoAPagar += Math.max(0, (parc.valor || 0) - (parc.valor_pago || 0))
-            }
           })
         })
       })
     })
+
+    // A Pagar direto = quanto do consumido ainda não saiu do caixa
+    const custoAPagar = Math.max(0, custoCon - custoPago)
 
     despesas.forEach(d => {
       custoIndOrc += Number(d.valor_orcado || 0)
       custoIndCon += Number(d.valor_consumido || 0)
     })
 
-    let custoIndAPagar = 0
     parcelas.forEach(p => {
       if (p.despesa_indireta_id) {
         custoIndPago += Number(p.valor_pago || 0)
-        if (p.status !== 'paga') {
-          custoIndAPagar += Math.max(0, (p.valor || 0) - (p.valor_pago || 0))
-        }
       }
     })
+
+    // A Pagar indireto = mesmo critério: consumido - pago
+    const custoIndAPagar = Math.max(0, custoIndCon - custoIndPago)
 
     // Capital (mútuos) — apenas direção 'entrada' (empresa tomou dinheiro)
     // mútuos 'saida' (empresa emprestou) são ativos e não entram no custo de capital
