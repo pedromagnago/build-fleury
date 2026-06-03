@@ -27,6 +27,7 @@ import {
   FileInput,
   HandCoins,
   ClipboardList,
+  TableProperties,
 } from 'lucide-react'
 
 const sections = [
@@ -63,7 +64,8 @@ const sections = [
       { to: '/documentos',  icon: FileText,  label: 'Documentos' },
       { to: '/auditoria',   icon: Shield,    label: 'Auditoria' },
       { to: '/logs',        icon: Bug,       label: 'Logs' },
-      { to: '/relatorios',  icon: BarChart3, label: 'Relatórios' },
+      { to: '/relatorios',            icon: BarChart3,        label: 'Relatórios' },
+      { to: '/relatorio-analitico',  icon: TableProperties,  label: 'Análise Integrada' },
       { to: '/importacao',  icon: Upload,    label: 'Importação' },
       { to: '/usuarios',    icon: Users,     label: 'Usuários' },
     ],

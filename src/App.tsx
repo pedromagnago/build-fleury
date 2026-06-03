@@ -35,6 +35,7 @@ import AvancoFisicoPage from '@/pages/AvancoFisicoPage'
 // MedicoesPage removed — absorbed into CronogramaPage
 import ConciliacaoPage from '@/pages/ConciliacaoPage'
 import RelatoriosPage from '@/pages/RelatoriosPage'
+import RelatorioAnaliticoPage from '@/pages/RelatorioAnaliticoPage'
 import MutuosPage from '@/pages/MutuosPage'
 import GestaoUsuariosPage from '@/pages/GestaoUsuariosPage'
 import PerfilPage from '@/pages/PerfilPage'
@@ -111,6 +112,7 @@ export default function App() {
                 <Route path="/conciliacao" element={<RoleGate route="/conciliacao"><ConciliacaoPage /></RoleGate>} />
                 <Route path="/simulador" element={<Navigate to="/cronograma" replace />} />
                 <Route path="/relatorios" element={<RoleGate route="/relatorios"><RelatoriosPage /></RoleGate>} />
+                <Route path="/relatorio-analitico" element={<RoleGate route="/relatorios"><RelatorioAnaliticoPage /></RoleGate>} />
                 <Route path="/importacao" element={<RoleGate route="/importacao"><ImportacaoPage /></RoleGate>} />
                 <Route path="/recepcao" element={<RoleGate route="/recepcao"><RecepcaoPage /></RoleGate>} />
                 <Route path="/configuracoes" element={<RoleGate route="/configuracoes"><Configuracoes /></RoleGate>} />

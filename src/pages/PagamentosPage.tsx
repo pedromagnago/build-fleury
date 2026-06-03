@@ -2055,9 +2055,8 @@ function PorFornecedorTab() {
 
     return [...map.entries()].map(([fid, g]) => {
       const pendentes = g.parcelas.filter((p) => p.status !== 'paga')
-      const pagas = g.parcelas.filter((p) => p.status === 'paga')
       const totalPend = pendentes.reduce((s, p) => s + Math.max(0, p.valor - p.valor_pago), 0)
-      const totalPago = pagas.reduce((s, p) => s + Math.min(p.valor_pago, p.valor), 0)
+      const totalPago = g.parcelas.reduce((s, p) => s + Math.min(Number(p.valor_pago || 0), Number(p.valor || 0)), 0)
 
       const today = new Date().toISOString().split('T')[0]!
       const proxVenc = pendentes
