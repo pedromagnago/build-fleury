@@ -67,6 +67,7 @@ const ITEM_COLS: ColDef[] = [
   // Identification (fixed)
   { id: 'item_codigo',      group: 'orcamento',  label: 'Código',        align: 'left',   fixed: true,  width: 80  },
   { id: 'item_descricao',   group: 'orcamento',  label: 'Descrição',     align: 'left',   fixed: true,  width: 220 },
+  { id: 'observacoes',      group: 'orcamento',  label: 'Observações',   align: 'left',                 width: 200 },
   // Orçamento
   { id: 'val_orcado',       group: 'orcamento',  label: 'Orçado',        align: 'right',  sumable: true, width: 115 },
   { id: 'item_tipo',        group: 'orcamento',  label: 'Tipo',          align: 'center',               width: 100 },
@@ -120,6 +121,7 @@ const PEDIDO_COLS: ColDef[] = [
   { id: 'val_parcelas',     group: 'pagamentos', label: 'Parcelas',      align: 'right',  sumable: true, width: 115 },
   { id: 'val_pago',         group: 'pagamentos', label: 'Pago',          align: 'right',  sumable: true, width: 100 },
   { id: 'val_a_pagar',      group: 'pagamentos', label: 'A Pagar',       align: 'right',  sumable: true, width: 100 },
+  { id: 'observacoes',      group: 'compras',    label: 'Observações',   align: 'left',                 width: 200 },
 ]
 
 const MEDICAO_COLS: ColDef[] = [
@@ -133,6 +135,7 @@ const MEDICAO_COLS: ColDef[] = [
   { id: 'val_parcelas_med', group: 'recebimentos',label: 'Parcelas',      align: 'right',  sumable: true, width: 115 },
   { id: 'val_recebido',     group: 'recebimentos',label: 'Recebido',      align: 'right',  sumable: true, width: 115 },
   { id: 'val_a_receber',    group: 'recebimentos',label: 'A Receber',     align: 'right',  sumable: true, width: 115 },
+  { id: 'observacoes',      group: 'recebimentos',label: 'Observações',   align: 'left',                 width: 200 },
 ]
 
 const MUTUO_COLS: ColDef[] = [
@@ -146,6 +149,7 @@ const MUTUO_COLS: ColDef[] = [
   { id: 'n_parcelas',       group: 'pagamentos', label: 'Parcelas',      align: 'center',               width: 70  },
   { id: 'saldo_devedor',    group: 'derivados',  label: 'Saldo Devedor', align: 'right',  sumable: true, width: 120 },
   { id: 'status_mutuo',     group: 'derivados',  label: 'Status',        align: 'center',               width: 110 },
+  { id: 'observacoes',      group: 'derivados',  label: 'Observações',   align: 'left',                 width: 200 },
 ]
 
 const COLS_BY_GRAIN: Record<Grain, ColDef[]> = {
@@ -547,7 +551,7 @@ export default function RelatorioAnaliticoPage() {
     // comprMap: item_compra_id → aggregated compras data
     const comprMap = new Map<string, {
       comprometido: number; qtd_pedida: number; qtd_recebida: number; val_com_nf: number
-      pedido_ids: Set<string>; fornecedor: string | null
+      pedido_ids: Set<string>; fornecedor: string | null; observacoes: string | null
     }>()
     for (const pi of pedidoItens as any[]) {
       const ped = pi.pedidos
@@ -555,7 +559,7 @@ export default function RelatorioAnaliticoPage() {
       const foraOrc = pi.fora_orcamento === true
       const existing = comprMap.get(pi.item_compra_id) ?? {
         comprometido: 0, qtd_pedida: 0, qtd_recebida: 0, val_com_nf: 0,
-        pedido_ids: new Set<string>(), fornecedor: null,
+        pedido_ids: new Set<string>(), fornecedor: null, observacoes: null,
       }
       if (!foraOrc) {
         existing.comprometido += Number(pi.valor_total_real ?? 0)
@@ -567,6 +571,7 @@ export default function RelatorioAnaliticoPage() {
       if (!existing.pedido_ids.has(pi.pedido_id)) {
         existing.pedido_ids.add(pi.pedido_id)
         if (!existing.fornecedor) existing.fornecedor = ped.fornecedores?.nome ?? null
+        if (!existing.observacoes && ped.observacoes) existing.observacoes = ped.observacoes
       }
       comprMap.set(pi.item_compra_id, existing)
     }
@@ -577,8 +582,9 @@ export default function RelatorioAnaliticoPage() {
       const itemId = par.item_compra_id
       if (!itemId) continue
       const existing = pagMap.get(itemId) ?? { val_parcelas: 0, val_pago: 0 }
-      existing.val_parcelas += Number(par.valor ?? 0)
-      existing.val_pago += Number(par.valor_pago ?? 0)
+      const valor = Number(par.valor ?? 0)
+      existing.val_parcelas += valor
+      existing.val_pago += Math.min(Number(par.valor_pago ?? 0), valor)
       pagMap.set(itemId, existing)
     }
 
@@ -607,6 +613,7 @@ export default function RelatorioAnaliticoPage() {
         item_custo_unit: it.custo_unitario_orcado,
         fornecedor: compr?.fornecedor ?? (it as any).fornecedor_nome ?? null,
         fornecedor_id: it.fornecedor_id ?? null,
+        observacoes: compr?.observacoes ?? null,
         val_orcado,
         val_comprometido,
         qtd_pedida: compr?.qtd_pedida ?? 0,
@@ -687,8 +694,9 @@ export default function RelatorioAnaliticoPage() {
     for (const par of parcelas as any[]) {
       if (!par.pedido_id) continue
       const existing = pagPedido.get(par.pedido_id) ?? { val_parcelas: 0, val_pago: 0 }
-      existing.val_parcelas += Number(par.valor ?? 0)
-      existing.val_pago += Number(par.valor_pago ?? 0)
+      const valor = Number(par.valor ?? 0)
+      existing.val_parcelas += valor
+      existing.val_pago += Math.min(Number(par.valor_pago ?? 0), valor)
       pagPedido.set(par.pedido_id, existing)
     }
     return pedidos.map(p => {
@@ -709,6 +717,7 @@ export default function RelatorioAnaliticoPage() {
         val_parcelas: pag?.val_parcelas ?? 0,
         val_pago: pag?.val_pago ?? 0,
         val_a_pagar: Math.max(0, (pag?.val_parcelas ?? 0) - (pag?.val_pago ?? 0)),
+        observacoes: p.observacoes ?? null,
       }
     })
   }, [pedidos, parcelas])
@@ -740,6 +749,7 @@ export default function RelatorioAnaliticoPage() {
         val_parcelas_med,
         val_recebido,
         val_a_receber: Math.max(0, val_parcelas_med - val_recebido),
+        observacoes: m.observacoes ?? null,
       }
     })
   }, [medicoes, medParcelas])
@@ -761,6 +771,7 @@ export default function RelatorioAnaliticoPage() {
       n_parcelas: parcelas_list.length,
       saldo_devedor: Math.max(0, val_captado - val_pago_mutuo),
       status_mutuo: m.status,
+      observacoes: m.observacoes ?? null,
     }
   }), [mutuos])
 
@@ -943,6 +954,10 @@ export default function RelatorioAnaliticoPage() {
         </span>
       case 'item_custo_unit':
         return <span className="tabular-nums text-xs text-muted-foreground">{v ? formatCurrency(v) : '—'}</span>
+      case 'observacoes':
+        return v
+          ? <span className="text-xs text-muted-foreground max-w-[200px] truncate block" title={v}>{v}</span>
+          : <span className="text-muted-foreground text-[10px]">—</span>
       case 'item_unidade': case 'fornecedor': case 'instituicao': case 'etapa_nome':
         return <span className="text-xs">{v || <span className="text-muted-foreground">—</span>}</span>
       case 'casas_meta': case 'casas_real':
