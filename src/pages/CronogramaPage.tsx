@@ -154,19 +154,32 @@ export default function CronogramaPage() {
     return m
   }, [pedidos])
 
-  // Consumo real por item_compra_id usando pedido_itens (não o header do pedido).
-  // O header (pedidos.item_compra_id) aponta só pro primeiro item do âncora de NF
-  // multi-item → inflaria esse item e zeraria os demais.
+  // Consumo por item_compra_id.
+  // Fonte primária: pedido_itens.valor_total_real (multi-item safe).
+  // Fallback: pedido.valor_total_real para pedidos antigos sem linhas em pedido_itens.
   const consumidoPorItem = useMemo(() => {
     const m = new Map<string, number>()
+    const pedidosComItens = new Set<string>()
+
     for (const pi of pedidoItens as any[]) {
       const ped = pi.pedidos
       if (!ped || ped.status === 'cancelado') continue
+      pedidosComItens.add(pi.pedido_id)
       const prev = m.get(pi.item_compra_id) ?? 0
       m.set(pi.item_compra_id, prev + Number(pi.valor_total_real ?? 0))
     }
+
+    // Pedidos sem pedido_itens (formato antigo) — atribuir ao item_compra_id do cabeçalho
+    for (const ped of pedidos) {
+      if (pedidosComItens.has(ped.id)) continue
+      if (ped.status === 'cancelado') continue
+      if (!ped.item_compra_id) continue
+      const prev = m.get(ped.item_compra_id) ?? 0
+      m.set(ped.item_compra_id, prev + Number(ped.valor_total_real ?? 0))
+    }
+
     return m
-  }, [pedidoItens])
+  }, [pedidoItens, pedidos])
 
   const parcelasByPedido = useMemo(() => {
     const m = new Map<string, Parcela[]>()
