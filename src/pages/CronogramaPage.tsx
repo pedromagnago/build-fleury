@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useProject } from '@/contexts/ProjectContext'
 import { useEtapas, useUpdateEtapa, useDeleteEtapa, type Etapa } from '@/hooks/useEtapas'
-import { useItensCompra, usePedidos, usePedidoItens, type ItemCompra, type Pedido } from '@/hooks/useCompras'
+import { useItensCompra, usePedidos, type ItemCompra, type Pedido } from '@/hooks/useCompras'
 import { useDistribuicao, type Distribuicao } from '@/hooks/useOperacional'
 import { useParcelas, type Parcela } from '@/hooks/useFinanceiro'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
@@ -92,7 +92,7 @@ export default function CronogramaPage() {
   const { data: distribuicoes = [] } = useDistribuicao()
   const { data: itensCompra = [] } = useItensCompra()
   const { data: pedidos = [] } = usePedidos()
-  const { data: pedidoItens = [] } = usePedidoItens()
+
   const { data: parcelas = [] } = useParcelas()
   const { despesas = [] } = useDespesasIndiretas()
   const { data: mutuos = [] } = useMutuos()
