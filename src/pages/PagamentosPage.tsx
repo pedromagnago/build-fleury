@@ -14,6 +14,10 @@ import { useProject } from '@/contexts/ProjectContext'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
+
+/** Data de referência para pagamento: previsão editável se definida, senão vencimento contratual. */
+const dataPrev = (p: { data_prevista_pagamento?: string | null; data_vencimento: string }) =>
+  p.data_prevista_pagamento ?? p.data_vencimento
 import { useMutuos } from '@/hooks/useMutuos'
 import { toast } from 'sonner'
 import { useDropzone } from 'react-dropzone'
@@ -242,13 +246,13 @@ function ParcelasTab({ search }: { search: string }) {
     }, 50)
   }
   const selectVencidas = () => {
-    const ids = filtered.filter(p => p.status !== 'paga' && p.data_vencimento < today).map(p => p.id)
+    const ids = filtered.filter(p => p.status !== 'paga' && dataPrev(p) < today).map(p => p.id)
     selection.selectAll(ids)
     if (ids.length === 0) toast.info('Nenhuma parcela vencida')
     else { toast.success(`${ids.length} parcela(s) vencida(s) selecionada(s)`); scrollToRow(ids[0]!) }
   }
   const selectSemana = () => {
-    const ids = filtered.filter(p => p.status !== 'paga' && p.data_vencimento >= today && p.data_vencimento <= weekEnd).map(p => p.id)
+    const ids = filtered.filter(p => p.status !== 'paga' && dataPrev(p) >= today && dataPrev(p) <= weekEnd).map(p => p.id)
     selection.selectAll(ids)
     if (ids.length === 0) toast.info('Nenhuma parcela vence esta semana')
     else { toast.success(`${ids.length} parcela(s) desta semana selecionada(s)`); scrollToRow(ids[0]!) }
@@ -304,7 +308,7 @@ function ParcelasTab({ search }: { search: string }) {
 
   const filtered = parcelas.filter((p) => {
     const q = search.toLowerCase().trim()
-    // Aceita data em formato BR (DD/MM/YYYY ou DD/MM) e converte para ISO p/ casar com data_vencimento/pagamento
+    // Aceita data em formato BR (DD/MM/YYYY ou DD/MM) e converte para ISO p/ casar com previsão/pagamento
     let isoFromQuery = ''
     const brFull = q.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
     const brShort = q.match(/^(\d{2})\/(\d{2})$/)
@@ -316,12 +320,12 @@ function ParcelasTab({ search }: { search: string }) {
       ((p as any).pedido_numero != null ? String((p as any).pedido_numero).includes(q) : false) ||
       p.status.includes(q) ||
       (isoFromQuery && (
-        (p.data_vencimento ?? '').includes(isoFromQuery) ||
+        dataPrev(p).includes(isoFromQuery) ||
         (p.data_pagamento_real ?? '').includes(isoFromQuery)
       )) ||
       // ISO direto (YYYY-MM-DD)
       (q.match(/^\d{4}-\d{2}-\d{2}$/) && (
-        (p.data_vencimento ?? '').includes(q) ||
+        dataPrev(p).includes(q) ||
         (p.data_pagamento_real ?? '').includes(q)
       ))
     if (!matchesSearch) return false
@@ -345,8 +349,8 @@ function ParcelasTab({ search }: { search: string }) {
     if (formaPgtoFilter && (p.forma_pagamento ?? '').toLowerCase() !== formaPgtoFilter.toLowerCase()) return false
     if (valorMin && p.valor < parseFloat(valorMin)) return false
     if (valorMax && p.valor > parseFloat(valorMax)) return false
-    // Filtro de vencimento — pagas só aparecem se 'todas' ou 'pagas'
-    const venc = p.data_vencimento ?? ''
+    // Filtro por previsão de pagamento (data_prevista_pagamento ?? data_vencimento)
+    const venc = dataPrev(p)
     if (vencDe && venc < vencDe) return false
     if (vencAte && venc > vencAte) return false
     if (dueFilter === 'pagas') return p.status === 'paga'
@@ -436,7 +440,7 @@ function ParcelasTab({ search }: { search: string }) {
       // mútuos e amortizações nunca têm NF — excluir quando filtro exige NF
       if (nfFilter === 'com_nf') return false
       if (soAberto && p.status === 'paga') return false
-      const venc = p.data_vencimento ?? ''
+      const venc = dataPrev(p)
       if (vencDe && venc < vencDe) return false
       if (vencAte && venc > vencAte) return false
       if (valorMin && p.valor < parseFloat(valorMin)) return false
@@ -455,17 +459,17 @@ function ParcelasTab({ search }: { search: string }) {
   const allFiltered = useMemo(() => {
     // If type filter is 'mutuos', show only mutuos
     if (typeFilter === 'mutuos') {
-      return applyAdvancedToExtras(mutuoParcelas).sort((a: any, b: any) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
+      return applyAdvancedToExtras(mutuoParcelas).sort((a: any, b: any) => dataPrev(a).localeCompare(dataPrev(b)))
     }
     if (typeFilter === 'amortizacoes') {
-      return applyAdvancedToExtras(amortizacoesParcelas).sort((a: any, b: any) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
+      return applyAdvancedToExtras(amortizacoesParcelas).sort((a: any, b: any) => dataPrev(a).localeCompare(dataPrev(b)))
     }
     const combined = [
       ...filtered.map(p => ({ ...p, _source: 'pedido' as const, _mutuoNome: '' })),
       ...(typeFilter === 'todos' ? applyAdvancedToExtras(mutuoParcelas) : []),
       ...(typeFilter === 'todos' ? applyAdvancedToExtras(amortizacoesParcelas) : []),
     ]
-    return combined.sort((a, b) => (a.data_vencimento ?? '').localeCompare(b.data_vencimento ?? ''))
+    return combined.sort((a, b) => dataPrev(a).localeCompare(dataPrev(b)))
   }, [filtered, mutuoParcelas, amortizacoesParcelas, typeFilter, soAberto, nfFilter, dueFilter, vencDe, vencAte, valorMin, valorMax, today, weekEnd, monthEnd])
 
   const totals = allFiltered.reduce(
@@ -488,7 +492,7 @@ function ParcelasTab({ search }: { search: string }) {
     let semana = 0, semanaValor = 0
     allParcelasCombined.forEach((p) => {
       if (p.status === 'paga') return
-      const v = p.data_vencimento ?? ''
+      const v = dataPrev(p)
       const restante = Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0))
       if (v && v < today) { vencidas++; vencidasValor += restante }
       else if (v === today) { hoje++; hojeValor += restante }
@@ -780,7 +784,7 @@ function ParcelasTab({ search }: { search: string }) {
                 const cfg = statusConfig[p.status] ?? statusConfig['futura']!
                 const isMutuo = (p as any)._source === 'mutuo'
                 const isEditingRow = editingParcela?.id === p.id || payingParcela?.id === p.id
-                const venc = p.data_vencimento ?? ''
+                const venc = dataPrev(p)
                 const isVencida = p.status !== 'paga' && venc && venc < today
                 const isHoje = p.status !== 'paga' && venc === today
                 const isSemana = p.status !== 'paga' && venc > today && venc <= weekEnd
@@ -798,7 +802,7 @@ function ParcelasTab({ search }: { search: string }) {
                       isVencida ? 'text-red-600' : isHoje ? 'text-amber-600' : isSemana ? 'text-amber-500' : ''
                     }`}>
                       <div className="flex items-center justify-center gap-1">
-                        {localDate(p.data_vencimento).toLocaleDateString('pt-BR')}
+                        {localDate(dataPrev(p)).toLocaleDateString('pt-BR')}
                         {isVencida && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[8px] font-bold text-red-600">VENC</span>}
                         {isHoje && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[8px] font-bold text-amber-600">HOJE</span>}
                       </div>
@@ -908,7 +912,7 @@ function ParcelasTab({ search }: { search: string }) {
           const total = sel.reduce((s, p) => s + Number(p.valor || 0), 0)
           const pago = sel.reduce((s, p) => s + Math.min(Number(p.valor_pago || 0), Number(p.valor || 0)), 0)
           const pendente = sel.reduce((s, p) => s + Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0)), 0)
-          const vencidas = sel.filter(p => p.status !== 'paga' && p.data_vencimento < new Date().toISOString().split('T')[0]!).length
+          const vencidas = sel.filter(p => p.status !== 'paga' && dataPrev(p) < new Date().toISOString().split('T')[0]!).length
           return [
             { label: 'Valor', value: formatCurrency(total), tone: 'primary' as const },
             ...(pago > 0 ? [{ label: 'Pago', value: formatCurrency(pago), tone: 'emerald' as const }] : []),
@@ -1461,9 +1465,9 @@ function AgendaTab({ onPickDay }: { onPickDay?: (isoDate: string) => void }) {
     const map = new Map<string, Parcela[]>()
     days.forEach((d) => map.set(d, []))
     parcelas
-      .filter((p) => p.status !== 'paga' && days.includes(p.data_vencimento))
+      .filter((p) => p.status !== 'paga' && days.includes(dataPrev(p)))
       .forEach((p) => {
-        map.get(p.data_vencimento)?.push(p)
+        map.get(dataPrev(p))?.push(p)
       })
     return map
   }, [parcelas, days])
@@ -1610,13 +1614,13 @@ function PorPedidoTab() {
       const pendente = sorted.reduce((s, p) => s + Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0)), 0)
       const totalCount = sorted.length
       const pagasCount = sorted.filter((p) => p.status === 'paga').length
-      const vencidaCount = sorted.filter((p) => p.status !== 'paga' && p.data_vencimento < today).length
+      const vencidaCount = sorted.filter((p) => p.status !== 'paga' && dataPrev(p) < today).length
       const proxNaoVencida = sorted
-        .filter((p) => p.status !== 'paga' && p.data_vencimento >= today)
-        .sort((a, b) => a.data_vencimento.localeCompare(b.data_vencimento))[0]
+        .filter((p) => p.status !== 'paga' && dataPrev(p) >= today)
+        .sort((a, b) => dataPrev(a).localeCompare(dataPrev(b)))[0]
       const proxVencida = sorted
-        .filter((p) => p.status !== 'paga' && p.data_vencimento < today)
-        .sort((a, b) => a.data_vencimento.localeCompare(b.data_vencimento))[0]
+        .filter((p) => p.status !== 'paga' && dataPrev(p) < today)
+        .sort((a, b) => dataPrev(a).localeCompare(dataPrev(b)))[0]
       const fornecedor = fornecedores.find((f) => f.id === g.pedido?.fornecedor_id) ?? null
 
       let aggStatus: 'pago' | 'atrasado' | 'pendente' = 'pendente'
@@ -1634,8 +1638,8 @@ function PorPedidoTab() {
         totalCount,
         pagasCount,
         vencidaCount,
-        proxVenc: proxNaoVencida?.data_vencimento ?? null,
-        proxVencida: proxVencida?.data_vencimento ?? null,
+        proxVenc: proxNaoVencida ? dataPrev(proxNaoVencida) : null,
+        proxVencida: proxVencida ? dataPrev(proxVencida) : null,
         aggStatus,
       }
     })
@@ -1869,7 +1873,7 @@ function PorPedidoTab() {
                           <th className="py-1 text-center">#</th>
                           <th className="py-1 text-right">Valor</th>
                           <th className="py-1 text-right">Pago</th>
-                          <th className="py-1 text-center">Vencimento</th>
+                          <th className="py-1 text-center">Previsão</th>
                           <th className="py-1 text-center">Pagamento</th>
                           <th className="py-1 text-center">Status</th>
                           <th className="py-1 text-center">Ações</th>
@@ -1896,7 +1900,7 @@ function PorPedidoTab() {
                                 {formatCurrency(p.valor_pago)}
                               </td>
                               <td className="py-1.5 text-center">
-                                {localDate(p.data_vencimento).toLocaleDateString('pt-BR')}
+                                {localDate(dataPrev(p)).toLocaleDateString('pt-BR')}
                               </td>
                               <td className="py-1.5 text-center text-muted-foreground">
                                 {p.data_pagamento_real
@@ -2060,8 +2064,8 @@ function PorFornecedorTab() {
 
       const today = new Date().toISOString().split('T')[0]!
       const proxVenc = pendentes
-        .filter((p) => p.data_vencimento >= today)
-        .sort((a, b) => a.data_vencimento.localeCompare(b.data_vencimento))[0]
+        .filter((p) => dataPrev(p) >= today)
+        .sort((a, b) => dataPrev(a).localeCompare(dataPrev(b)))[0]
 
       return {
         id: fid,
@@ -2069,7 +2073,7 @@ function PorFornecedorTab() {
         pendentes,
         totalPendente: totalPend,
         totalPago,
-        proxVenc: proxVenc?.data_vencimento ?? null,
+        proxVenc: proxVenc ? dataPrev(proxVenc) : null,
       }
     }).sort((a, b) => b.totalPendente - a.totalPendente)
   }, [parcelas, pedidos, fornecedores])
@@ -2231,7 +2235,7 @@ function PorFornecedorTab() {
                               <th className="w-8 py-1"></th>
                               <th className="py-1 text-center">#</th>
                               <th className="py-1 text-right">Valor</th>
-                              <th className="py-1 text-center">Vencimento</th>
+                              <th className="py-1 text-center">Previsão</th>
                               <th className="py-1 text-center">Status</th>
                             </tr>
                           </thead>
@@ -2250,7 +2254,7 @@ function PorFornecedorTab() {
                                   </td>
                                   <td className="py-1.5 text-center text-muted-foreground">{p.numero_parcela}</td>
                                   <td className="py-1.5 text-right font-medium">{formatCurrency(p.valor - p.valor_pago)}</td>
-                                  <td className="py-1.5 text-center">{localDate(p.data_vencimento).toLocaleDateString('pt-BR')}</td>
+                                  <td className="py-1.5 text-center">{localDate(dataPrev(p)).toLocaleDateString('pt-BR')}</td>
                                   <td className="py-1.5 text-center">
                                     <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-semibold ${cfg.color}`}>{cfg.label}</span>
                                   </td>

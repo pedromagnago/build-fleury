@@ -82,11 +82,14 @@ const ITEM_COLS: ColDef[] = [
   { id: 'qtd_recebida',     group: 'compras',    label: 'Qtd c/ NF',    align: 'right',                width: 85  },
   { id: 'val_com_nf',       group: 'compras',    label: 'Valor c/ NF',   align: 'right',  sumable: true, width: 115 },
   // Pagamentos
-  { id: 'val_parcelas',     group: 'pagamentos', label: 'Parcelas',      align: 'right',  sumable: true, width: 115 },
-  { id: 'val_pago',         group: 'pagamentos', label: 'Pago',          align: 'right',  sumable: true, width: 100 },
-  { id: 'val_a_pagar',      group: 'pagamentos', label: 'A Pagar',       align: 'right',  sumable: true, width: 100 },
+  { id: 'val_parcelas',        group: 'pagamentos', label: 'Parcelas',      align: 'right',  sumable: true, width: 115 },
+  { id: 'val_pago',            group: 'pagamentos', label: 'Pago',          align: 'right',  sumable: true, width: 100 },
+  { id: 'val_a_pagar',         group: 'pagamentos', label: 'A Pagar',       align: 'right',  sumable: true, width: 100 },
+  { id: 'data_vencimento_prox',group: 'pagamentos', label: 'Próx. Venc.',   align: 'center',               width: 105 },
+  { id: 'data_prevista_pag',   group: 'pagamentos', label: 'Prev. Pagto.',  align: 'center',               width: 105 },
+  { id: 'data_pago_ult',       group: 'pagamentos', label: 'Último Pago',   align: 'center',               width: 105 },
   // Derivados
-  { id: 'saldo_orcado',     group: 'derivados',  label: 'Saldo Orç.',    align: 'right',  sumable: true, width: 115 },
+  { id: 'saldo_orcado',        group: 'derivados',  label: 'Saldo Orç.',    align: 'right',  sumable: true, width: 115 },
   { id: 'pct_comprometido', group: 'derivados',  label: '% Comp.',       align: 'right',                width: 78  },
   { id: 'pct_pago',         group: 'derivados',  label: '% Pago',        align: 'right',                width: 78  },
 ]
@@ -118,24 +121,31 @@ const PEDIDO_COLS: ColDef[] = [
   { id: 'status_pedido',    group: 'compras',    label: 'Status',        align: 'center',               width: 130 },
   { id: 'data_entrega_prev',group: 'compras',    label: 'Entrega Prev.', align: 'center',               width: 105 },
   { id: 'data_entrega_real',group: 'compras',    label: 'Entrega Real',  align: 'center',               width: 105 },
-  { id: 'val_parcelas',     group: 'pagamentos', label: 'Parcelas',      align: 'right',  sumable: true, width: 115 },
-  { id: 'val_pago',         group: 'pagamentos', label: 'Pago',          align: 'right',  sumable: true, width: 100 },
-  { id: 'val_a_pagar',      group: 'pagamentos', label: 'A Pagar',       align: 'right',  sumable: true, width: 100 },
-  { id: 'observacoes',      group: 'compras',    label: 'Observações',   align: 'left',                 width: 200 },
+  { id: 'val_parcelas',        group: 'pagamentos', label: 'Parcelas',      align: 'right',  sumable: true, width: 115 },
+  { id: 'val_pago',            group: 'pagamentos', label: 'Pago',          align: 'right',  sumable: true, width: 100 },
+  { id: 'val_a_pagar',         group: 'pagamentos', label: 'A Pagar',       align: 'right',  sumable: true, width: 100 },
+  { id: 'data_vencimento_ped', group: 'pagamentos', label: 'Vencimento',    align: 'center',               width: 105 },
+  { id: 'data_prevista_pag',   group: 'pagamentos', label: 'Prev. Pagto.',  align: 'center',               width: 105 },
+  { id: 'data_pago_real',      group: 'pagamentos', label: 'Data Pago',     align: 'center',               width: 105 },
+  { id: 'observacoes',         group: 'compras',    label: 'Observações',   align: 'left',                 width: 200 },
 ]
 
 const MEDICAO_COLS: ColDef[] = [
-  { id: 'numero',           group: 'orcamento',   label: 'Medição',       align: 'center', fixed: true, width: 80  },
-  { id: 'data_prevista',    group: 'orcamento',   label: 'Data Prevista', align: 'center',              width: 105 },
-  { id: 'status_med',       group: 'orcamento',   label: 'Status',        align: 'center',              width: 120 },
-  { id: 'pct_med_meta',     group: 'recebimentos',label: '% Meta',        align: 'right',               width: 85  },
-  { id: 'pct_med_real',     group: 'recebimentos',label: '% Real',        align: 'right',               width: 85  },
-  { id: 'val_med_plan',     group: 'recebimentos',label: 'Planejado',     align: 'right',  sumable: true, width: 115 },
-  { id: 'val_liberado',     group: 'recebimentos',label: 'Liberado',      align: 'right',  sumable: true, width: 115 },
-  { id: 'val_parcelas_med', group: 'recebimentos',label: 'Parcelas',      align: 'right',  sumable: true, width: 115 },
-  { id: 'val_recebido',     group: 'recebimentos',label: 'Recebido',      align: 'right',  sumable: true, width: 115 },
-  { id: 'val_a_receber',    group: 'recebimentos',label: 'A Receber',     align: 'right',  sumable: true, width: 115 },
-  { id: 'observacoes',      group: 'recebimentos',label: 'Observações',   align: 'left',                 width: 200 },
+  { id: 'numero',                group: 'orcamento',    label: 'Medição',        align: 'center', fixed: true, width: 80  },
+  { id: 'data_prevista',         group: 'orcamento',    label: 'Prev. Medição',  align: 'center',              width: 105 },
+  { id: 'data_liberacao',        group: 'orcamento',    label: 'Liberação',      align: 'center',              width: 105 },
+  { id: 'status_med',            group: 'orcamento',    label: 'Status',         align: 'center',              width: 120 },
+  { id: 'pct_med_meta',          group: 'recebimentos', label: '% Meta',         align: 'right',               width: 85  },
+  { id: 'pct_med_real',          group: 'recebimentos', label: '% Real',         align: 'right',               width: 85  },
+  { id: 'val_med_plan',          group: 'recebimentos', label: 'Planejado',      align: 'right',  sumable: true, width: 115 },
+  { id: 'val_liberado',          group: 'recebimentos', label: 'Liberado',       align: 'right',  sumable: true, width: 115 },
+  { id: 'val_parcelas_med',      group: 'recebimentos', label: 'Parcelas',       align: 'right',  sumable: true, width: 115 },
+  { id: 'val_recebido',          group: 'recebimentos', label: 'Recebido',       align: 'right',  sumable: true, width: 115 },
+  { id: 'val_a_receber',         group: 'recebimentos', label: 'A Receber',      align: 'right',  sumable: true, width: 115 },
+  { id: 'data_vencimento_med',   group: 'recebimentos', label: 'Vencimento',     align: 'center',               width: 105 },
+  { id: 'data_prevista_receb',   group: 'recebimentos', label: 'Prev. Receb.',   align: 'center',               width: 105 },
+  { id: 'data_recebimento_real', group: 'recebimentos', label: 'Recebido em',    align: 'center',               width: 105 },
+  { id: 'observacoes',           group: 'recebimentos', label: 'Observações',    align: 'left',                 width: 200 },
 ]
 
 const MUTUO_COLS: ColDef[] = [
@@ -145,8 +155,10 @@ const MUTUO_COLS: ColDef[] = [
   { id: 'data_captacao',    group: 'compras',    label: 'Captação',      align: 'center',               width: 100 },
   { id: 'val_captado',      group: 'compras',    label: 'Captado',       align: 'right',  sumable: true, width: 115 },
   { id: 'taxa_juros',       group: 'compras',    label: 'Taxa % m',      align: 'right',                width: 90  },
-  { id: 'val_pago_mutuo',   group: 'pagamentos', label: 'Pago',          align: 'right',  sumable: true, width: 100 },
-  { id: 'n_parcelas',       group: 'pagamentos', label: 'Parcelas',      align: 'center',               width: 70  },
+  { id: 'val_pago_mutuo',      group: 'pagamentos', label: 'Pago',           align: 'right',  sumable: true, width: 100 },
+  { id: 'n_parcelas',          group: 'pagamentos', label: 'Parcelas',       align: 'center',               width: 70  },
+  { id: 'data_prox_vencimento',group: 'pagamentos', label: 'Próx. Venc.',    align: 'center',               width: 105 },
+  { id: 'data_ult_pagamento',  group: 'pagamentos', label: 'Último Pago',    align: 'center',               width: 105 },
   { id: 'saldo_devedor',    group: 'derivados',  label: 'Saldo Devedor', align: 'right',  sumable: true, width: 120 },
   { id: 'status_mutuo',     group: 'derivados',  label: 'Status',        align: 'center',               width: 110 },
   { id: 'observacoes',      group: 'derivados',  label: 'Observações',   align: 'left',                 width: 200 },
@@ -577,14 +589,34 @@ export default function RelatorioAnaliticoPage() {
     }
 
     // pagMap: item_compra_id → parcelas data (via pedido.item_compra_id)
-    const pagMap = new Map<string, { val_parcelas: number; val_pago: number }>()
+    const pagMap = new Map<string, {
+      val_parcelas: number; val_pago: number
+      data_vencimento_prox: string | null; data_prevista_pag: string | null; data_pago_ult: string | null
+    }>()
     for (const par of parcelas as any[]) {
       const itemId = par.item_compra_id
       if (!itemId) continue
-      const existing = pagMap.get(itemId) ?? { val_parcelas: 0, val_pago: 0 }
+      const existing = pagMap.get(itemId) ?? {
+        val_parcelas: 0, val_pago: 0,
+        data_vencimento_prox: null, data_prevista_pag: null, data_pago_ult: null,
+      }
       const valor = Number(par.valor ?? 0)
+      const valorPago = Number(par.valor_pago ?? 0)
       existing.val_parcelas += valor
-      existing.val_pago += Math.min(Number(par.valor_pago ?? 0), valor)
+      existing.val_pago += Math.min(valorPago, valor)
+      const pendente = valorPago < valor - 0.01
+      if (pendente && par.data_vencimento) {
+        if (!existing.data_vencimento_prox || par.data_vencimento < existing.data_vencimento_prox)
+          existing.data_vencimento_prox = par.data_vencimento
+      }
+      if (pendente && par.data_prevista_pagamento) {
+        if (!existing.data_prevista_pag || par.data_prevista_pagamento < existing.data_prevista_pag)
+          existing.data_prevista_pag = par.data_prevista_pagamento
+      }
+      if (par.data_pagamento_real) {
+        if (!existing.data_pago_ult || par.data_pagamento_real > existing.data_pago_ult)
+          existing.data_pago_ult = par.data_pagamento_real
+      }
       pagMap.set(itemId, existing)
     }
 
@@ -626,6 +658,9 @@ export default function RelatorioAnaliticoPage() {
         saldo_orcado,
         pct_comprometido: val_orcado > 0 ? (val_comprometido / val_orcado) * 100 : null,
         pct_pago: val_comprometido > 0 ? (val_pago / val_comprometido) * 100 : null,
+        data_vencimento_prox: pag?.data_vencimento_prox ?? null,
+        data_prevista_pag: pag?.data_prevista_pag ?? null,
+        data_pago_ult: pag?.data_pago_ult ?? null,
       }
     })
   }, [itens, pedidoItens, parcelas, etapas])
@@ -690,13 +725,33 @@ export default function RelatorioAnaliticoPage() {
 
   // ── Data aggregation: pedido rows ────────────────────────────────────────────
   const pedidoRows = useMemo(() => {
-    const pagPedido = new Map<string, { val_parcelas: number; val_pago: number }>()
+    const pagPedido = new Map<string, {
+      val_parcelas: number; val_pago: number
+      data_vencimento_ped: string | null; data_prevista_pag: string | null; data_pago_real: string | null
+    }>()
     for (const par of parcelas as any[]) {
       if (!par.pedido_id) continue
-      const existing = pagPedido.get(par.pedido_id) ?? { val_parcelas: 0, val_pago: 0 }
+      const existing = pagPedido.get(par.pedido_id) ?? {
+        val_parcelas: 0, val_pago: 0,
+        data_vencimento_ped: null, data_prevista_pag: null, data_pago_real: null,
+      }
       const valor = Number(par.valor ?? 0)
+      const valorPago = Number(par.valor_pago ?? 0)
       existing.val_parcelas += valor
-      existing.val_pago += Math.min(Number(par.valor_pago ?? 0), valor)
+      existing.val_pago += Math.min(valorPago, valor)
+      const pendente = valorPago < valor - 0.01
+      if (pendente && par.data_vencimento) {
+        if (!existing.data_vencimento_ped || par.data_vencimento < existing.data_vencimento_ped)
+          existing.data_vencimento_ped = par.data_vencimento
+      }
+      if (pendente && par.data_prevista_pagamento) {
+        if (!existing.data_prevista_pag || par.data_prevista_pagamento < existing.data_prevista_pag)
+          existing.data_prevista_pag = par.data_prevista_pagamento
+      }
+      if (par.data_pagamento_real) {
+        if (!existing.data_pago_real || par.data_pagamento_real > existing.data_pago_real)
+          existing.data_pago_real = par.data_pagamento_real
+      }
       pagPedido.set(par.pedido_id, existing)
     }
     return pedidos.map(p => {
@@ -717,6 +772,9 @@ export default function RelatorioAnaliticoPage() {
         val_parcelas: pag?.val_parcelas ?? 0,
         val_pago: pag?.val_pago ?? 0,
         val_a_pagar: Math.max(0, (pag?.val_parcelas ?? 0) - (pag?.val_pago ?? 0)),
+        data_vencimento_ped: pag?.data_vencimento_ped ?? null,
+        data_prevista_pag: pag?.data_prevista_pag ?? null,
+        data_pago_real: pag?.data_pago_real ?? null,
         observacoes: p.observacoes ?? null,
       }
     })
@@ -724,11 +782,30 @@ export default function RelatorioAnaliticoPage() {
 
   // ── Data aggregation: medição rows ───────────────────────────────────────────
   const medicaoRows = useMemo(() => {
-    const parcelasByMed = new Map<string, { val_parcelas: number; val_recebido: number }>()
+    const parcelasByMed = new Map<string, {
+      val_parcelas: number; val_recebido: number
+      data_vencimento_med: string | null; data_prevista_receb: string | null; data_recebimento_real: string | null
+    }>()
     for (const mp of medParcelas) {
-      const existing = parcelasByMed.get(mp.medicao_id) ?? { val_parcelas: 0, val_recebido: 0 }
+      const existing = parcelasByMed.get(mp.medicao_id) ?? {
+        val_parcelas: 0, val_recebido: 0,
+        data_vencimento_med: null, data_prevista_receb: null, data_recebimento_real: null,
+      }
       existing.val_parcelas += Number(mp.valor ?? 0)
-      existing.val_recebido += Number(mp.valor_recebido ?? 0)
+      existing.val_recebido += Number((mp as any).valor_recebido ?? 0)
+      const pendente = Number((mp as any).valor_recebido ?? 0) < Number(mp.valor ?? 0) - 0.01
+      if (pendente && mp.data_vencimento) {
+        if (!existing.data_vencimento_med || mp.data_vencimento < existing.data_vencimento_med)
+          existing.data_vencimento_med = mp.data_vencimento
+      }
+      if (pendente && (mp as any).data_prevista_recebimento) {
+        if (!existing.data_prevista_receb || (mp as any).data_prevista_recebimento < existing.data_prevista_receb)
+          existing.data_prevista_receb = (mp as any).data_prevista_recebimento
+      }
+      if ((mp as any).data_recebimento_real) {
+        if (!existing.data_recebimento_real || (mp as any).data_recebimento_real > existing.data_recebimento_real)
+          existing.data_recebimento_real = (mp as any).data_recebimento_real
+      }
       parcelasByMed.set(mp.medicao_id, existing)
     }
     return medicoes.map(m => {
@@ -741,6 +818,7 @@ export default function RelatorioAnaliticoPage() {
         id: m.id,
         numero: m.numero,
         data_prevista: m.data_prevista,
+        data_liberacao: (m as any).data_liberacao ?? null,
         status_med: m.status,
         pct_med_meta: m.percentual_fisico_meta,
         pct_med_real: m.percentual_fisico_real,
@@ -749,6 +827,9 @@ export default function RelatorioAnaliticoPage() {
         val_parcelas_med,
         val_recebido,
         val_a_receber: Math.max(0, val_parcelas_med - val_recebido),
+        data_vencimento_med: mp?.data_vencimento_med ?? null,
+        data_prevista_receb: mp?.data_prevista_receb ?? null,
+        data_recebimento_real: mp?.data_recebimento_real ?? null,
         observacoes: m.observacoes ?? null,
       }
     })
@@ -759,6 +840,19 @@ export default function RelatorioAnaliticoPage() {
     const parcelas_list = m.parcelas ?? []
     const val_pago_mutuo = parcelas_list.reduce((s, p) => s + Number(p.valor_pago ?? 0), 0)
     const val_captado = Number(m.valor_captado ?? 0)
+    let data_prox_vencimento: string | null = null
+    let data_ult_pagamento: string | null = null
+    for (const p of parcelas_list) {
+      const pendente = Number(p.valor_pago ?? 0) < Number(p.valor ?? 0) - 0.01
+      if (pendente && p.data_vencimento) {
+        if (!data_prox_vencimento || p.data_vencimento < data_prox_vencimento)
+          data_prox_vencimento = p.data_vencimento
+      }
+      if (p.data_pagamento_real) {
+        if (!data_ult_pagamento || p.data_pagamento_real > data_ult_pagamento)
+          data_ult_pagamento = p.data_pagamento_real
+      }
+    }
     return {
       id: m.id,
       nome: m.nome,
@@ -771,6 +865,8 @@ export default function RelatorioAnaliticoPage() {
       n_parcelas: parcelas_list.length,
       saldo_devedor: Math.max(0, val_captado - val_pago_mutuo),
       status_mutuo: m.status,
+      data_prox_vencimento,
+      data_ult_pagamento,
       observacoes: m.observacoes ?? null,
     }
   }), [mutuos])
@@ -936,6 +1032,10 @@ export default function RelatorioAnaliticoPage() {
       case 'taxa_juros':
         return v != null ? <span className="tabular-nums">{Number(v).toFixed(2)}%</span> : <span className="text-muted-foreground">—</span>
       case 'data_entrega_prev': case 'data_entrega_real': case 'data_prevista': case 'data_captacao':
+      case 'data_vencimento_prox': case 'data_prevista_pag': case 'data_pago_ult':
+      case 'data_vencimento_ped': case 'data_pago_real':
+      case 'data_liberacao': case 'data_vencimento_med': case 'data_prevista_receb': case 'data_recebimento_real':
+      case 'data_prox_vencimento': case 'data_ult_pagamento':
         return v ? <span className="text-xs tabular-nums">{formatDate(v)}</span> : <span className="text-muted-foreground">—</span>
       case 'val_orcado': case 'val_comprometido': case 'val_com_nf': case 'val_parcelas': case 'val_med_plan':
       case 'val_parcelas_med': case 'val_captado':
