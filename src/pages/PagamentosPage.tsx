@@ -800,6 +800,7 @@ function ParcelasTab({ search }: { search: string }) {
                     className="h-3.5 w-3.5 rounded accent-primary" />
                 </th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Vencimento</th>
+                <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-blue-600/70">Previsto</th>
                 <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Parcela</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Pedido</th>
                 <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fornecedor</th>
@@ -831,26 +832,18 @@ function ParcelasTab({ search }: { search: string }) {
                         onChange={() => selection.toggle(p.id)}
                         className="h-3.5 w-3.5 rounded accent-primary" />
                     </td>
+                    <td className="px-3 py-2.5 text-center text-xs font-medium text-muted-foreground">
+                      {localDate(p.data_vencimento).toLocaleDateString('pt-BR')}
+                    </td>
                     <td className={`px-3 py-2.5 text-center text-xs font-medium ${
-                      isVencida ? 'text-red-600' : isHoje ? 'text-amber-600' : isSemana ? 'text-amber-500' : ''
+                      isVencida ? 'text-red-600' : isHoje ? 'text-amber-600' : isSemana ? 'text-amber-500' : 'text-blue-600 dark:text-blue-400'
                     }`}>
-                      <div className="flex flex-col items-center gap-0.5">
-                        <div className="flex items-center gap-1">
-                          {localDate(p.data_vencimento).toLocaleDateString('pt-BR')}
-                          {(!((p as any).data_prevista_pagamento) || (p as any).data_prevista_pagamento === p.data_vencimento) && (
-                            <>
-                              {isVencida && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[8px] font-bold text-red-600">VENC</span>}
-                              {isHoje && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[8px] font-bold text-amber-600">HOJE</span>}
-                            </>
-                          )}
-                        </div>
-                        {(p as any).data_prevista_pagamento && (p as any).data_prevista_pagamento !== p.data_vencimento && (
-                          <div className="flex items-center gap-1 text-[9px] font-semibold text-blue-600 dark:text-blue-400">
-                            Prev: {localDate((p as any).data_prevista_pagamento).toLocaleDateString('pt-BR')}
-                            {isVencida && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[8px] font-bold text-red-600">VENC</span>}
-                            {isHoje && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[8px] font-bold text-amber-600">HOJE</span>}
-                          </div>
-                        )}
+                      <div className="flex items-center justify-center gap-1">
+                        {(p as any).data_prevista_pagamento
+                          ? localDate((p as any).data_prevista_pagamento).toLocaleDateString('pt-BR')
+                          : <span className="text-muted-foreground/40">—</span>}
+                        {isVencida && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[8px] font-bold text-red-600">VENC</span>}
+                        {isHoje && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[8px] font-bold text-amber-600">HOJE</span>}
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-center text-xs text-muted-foreground">
