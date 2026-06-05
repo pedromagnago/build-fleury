@@ -143,7 +143,7 @@ export default function PagamentosPage() {
 
 type TypeFilter = 'todos' | 'pedidos' | 'mutuos' | 'avulsas' | 'amortizacoes'
 type ParcelaTipoFilter = 'todos' | 'contratual' | 'adiantamento'
-type DueFilter = 'todas' | 'hoje' | 'semana' | 'mes' | 'vencidas' | 'pagas'
+type DueFilter = 'todas' | 'hoje' | 'semana' | 'mes' | 'vencidas' | 'pagas' | 'parcial'
 
 // Estorno unificado: limpa conciliacao + mov + zera parcela/mutuo_parcela.
 async function estornarParcela(p: Parcela, isMutuo: boolean, qc: ReturnType<typeof useQueryClient>) {
@@ -354,6 +354,7 @@ function ParcelasTab({ search }: { search: string }) {
     if (vencDe && venc < vencDe) return false
     if (vencAte && venc > vencAte) return false
     if (dueFilter === 'pagas') return p.status === 'paga'
+    if (dueFilter === 'parcial') return p.status === 'parcialmente_paga'
     if (p.status === 'paga') return dueFilter === 'todas'
     if (dueFilter === 'hoje') return venc === today
     if (dueFilter === 'semana') return venc >= today && venc <= weekEnd
@@ -581,13 +582,15 @@ function ParcelasTab({ search }: { search: string }) {
             ['semana', 'Esta semana'],
             ['mes', 'Este mês'],
             ['pagas', 'Pagas'],
+            ['parcial', 'Parcial'],
           ] as const).map(([k, label]) => {
             const tone =
               k === 'vencidas' ? 'data-[on=true]:text-red-600' :
               k === 'hoje' ? 'data-[on=true]:text-amber-600' :
-              k === 'pagas' ? 'data-[on=true]:text-emerald-600' : ''
+              k === 'pagas' ? 'data-[on=true]:text-emerald-600' :
+              k === 'parcial' ? 'data-[on=true]:text-blue-600' : ''
             return (
-              <button key={k} onClick={() => { setDueFilter(k); if (k === 'pagas') setSoAberto(false) }} data-on={dueFilter === k}
+              <button key={k} onClick={() => { setDueFilter(k); if (k === 'pagas' || k === 'parcial') setSoAberto(false) }} data-on={dueFilter === k}
                 className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${tone} ${
                   dueFilter === k ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
                 }`}
