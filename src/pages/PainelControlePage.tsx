@@ -90,9 +90,6 @@ function AcaoRow({ check }: { check: HealthCheck }) {
           <div className={`text-sm font-semibold ${isCritical ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}`}>
             {check.title}
           </div>
-          {check.description && (
-            <div className="text-xs text-muted-foreground mt-0.5">{check.description}</div>
-          )}
           <div className="text-xs text-muted-foreground tabular-nums mt-0.5">
             {check.items.length} item{check.items.length !== 1 ? 's' : ''}
             {total > 0.01 && ` · ${formatCurrency(total)}`}
