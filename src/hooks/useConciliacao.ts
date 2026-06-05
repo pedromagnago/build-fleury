@@ -1151,6 +1151,91 @@ export function useUpdateConciliacao() {
       const dataPgto = (movData0?.data as string) || new Date().toISOString().split('T')[0]!
       const snapshot = { ...conc }
 
+      // ── Encargos de mora (juros/multa auto-criados) ──────────────────────────
+      // Calcula encargos nos novos vínculos; busca despesa previamente auto-criada
+      // pelo marker em observacoes; cria, atualiza ou remove conforme o caso.
+      const novosEncargos = novosVinculos
+        .filter(v => v.origem === 'parcela')
+        .reduce((s, v) => s + (v.valor_juros ?? 0) + (v.valor_multa ?? 0), 0)
+
+      const { data: encargosDesp } = await supabase
+        .from('despesas_indiretas')
+        .select('id')
+        .eq('company_id', currentCompany.id)
+        .eq('observacoes', `auto:encargos:conciliacao:${conciliacaoId}`)
+        .maybeSingle()
+
+      // Parcela auto-criada ligada à despesa de encargos (se existir)
+      let encargosParcId: string | null = null
+      if (encargosDesp) {
+        const { data: encargosPar } = await supabase
+          .from('parcelas')
+          .select('id')
+          .eq('despesa_indireta_id', encargosDesp.id)
+          .maybeSingle()
+        encargosParcId = encargosPar?.id ?? null
+      }
+
+      if (novosEncargos > 0.01) {
+        if (encargosDesp && encargosParcId) {
+          // Atualiza valores
+          await supabase.from('despesas_indiretas')
+            .update({ valor_orcado: novosEncargos })
+            .eq('id', encargosDesp.id)
+          await supabase.from('parcelas')
+            .update({ valor: novosEncargos, data_pagamento_real: dataPgto })
+            .eq('id', encargosParcId)
+        } else {
+          // Cria nova despesa + parcela
+          const { data: nd, error: ndErr } = await supabase.from('despesas_indiretas').insert({
+            company_id: currentCompany.id,
+            categoria: 'Juros e Multas',
+            descricao: 'Encargos de mora — gerado automaticamente na conciliação',
+            valor_orcado: novosEncargos,
+            recorrente: false,
+            frequencia: 'pontual',
+            data_inicio: dataPgto,
+            data_fim: null,
+            fornecedor_id: null,
+            cond_pagamento: null,
+            observacoes: `auto:encargos:conciliacao:${conciliacaoId}`,
+            ativo: true,
+          }).select('id').single()
+          if (ndErr) throw ndErr
+
+          const { data: np, error: npErr } = await supabase.from('parcelas').insert({
+            company_id: currentCompany.id,
+            despesa_indireta_id: nd!.id,
+            numero_parcela: 1,
+            valor: novosEncargos,
+            data_vencimento: dataPgto,
+            data_pagamento_real: dataPgto,
+            descricao: 'Juros/multa — gerado automaticamente na conciliação',
+          }).select('id').single()
+          if (npErr) throw npErr
+
+          encargosParcId = np!.id
+        }
+
+        // Zera encargos nos vínculos originais e adiciona vínculo para despesa
+        for (const v of novosVinculos) {
+          if (v.origem === 'parcela') { v.valor_juros = 0; v.valor_multa = 0 }
+        }
+        novosVinculos.push({
+          origem: 'parcela',
+          origem_id: encargosParcId!,
+          valor_aplicado: novosEncargos,
+          valor_juros: 0,
+          valor_multa: 0,
+          valor_desconto: 0,
+        })
+      } else if (encargosDesp) {
+        // Novos encargos = 0 → remove despesa e parcela auto-criadas
+        if (encargosParcId) await supabase.from('parcelas').delete().eq('id', encargosParcId)
+        await supabase.from('despesas_indiretas').delete().eq('id', encargosDesp.id)
+      }
+      // ────────────────────────────────────────────────────────────────────────
+
       // Mapa de links antigos por chave `${origem}:${id}` → valor_aplicado
       const antigoMap = new Map<string, number>()
       for (const link of (conc.conciliacao_parcelas ?? []) as any[]) {
@@ -1235,6 +1320,7 @@ export function useUpdateConciliacao() {
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['medicoes'] })
       qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['despesas_indiretas'] })
       toast.success('Conciliação atualizada')
     },
     onError: (err: Error) => toast.error('Erro ao atualizar: ' + err.message),
@@ -1295,6 +1381,72 @@ export function useCreateConciliacao() {
         vinculosFinal.push(...expandido)
       }
 
+      // Auto-criar despesa "Juros e Multas" quando encargos de mora foram informados
+      // na conciliação. Encargos ficam num link separado (despesa indireta) para
+      // aparecer no custo e fechar as fórmulas A e B do painel de controle.
+      const totalEncargos = vinculosFinal
+        .filter(v => v.origem === 'parcela')
+        .reduce((s, v) => s + (v.valor_juros ?? 0) + (v.valor_multa ?? 0), 0)
+
+      if (totalEncargos > 0.01) {
+        const { data: novaDesp, error: despErr } = await supabase
+          .from('despesas_indiretas')
+          .insert({
+            company_id: currentCompany.id,
+            categoria: 'Juros e Multas',
+            descricao: 'Encargos de mora — gerado automaticamente na conciliação',
+            valor_orcado: totalEncargos,
+            recorrente: false,
+            frequencia: 'pontual',
+            data_inicio: dataPgto,
+            data_fim: null,
+            fornecedor_id: null,
+            cond_pagamento: null,
+            observacoes: `auto:encargos:conciliacao:${conc.id}`,
+            ativo: true,
+          })
+          .select('id')
+          .single()
+        if (despErr) throw despErr
+
+        const { data: novaParcela, error: parErr } = await supabase
+          .from('parcelas')
+          .insert({
+            company_id: currentCompany.id,
+            despesa_indireta_id: novaDesp!.id,
+            numero_parcela: 1,
+            valor: totalEncargos,
+            data_vencimento: dataPgto,
+            data_pagamento_real: dataPgto,
+            descricao: 'Juros/multa — gerado automaticamente na conciliação',
+          })
+          .select('id')
+          .single()
+        if (parErr) throw parErr
+
+        // Zera juros/multa nos vínculos originais — os encargos agora têm link próprio
+        // e o display da conciliação não vai dobrar os valores
+        for (const v of vinculosFinal) {
+          if (v.origem === 'parcela') {
+            v.valor_juros = 0
+            v.valor_multa = 0
+          }
+        }
+
+        // Vínculo extra: encargos → parcela da despesa "Juros e Multas"
+        vinculosFinal.push({
+          origem: 'parcela',
+          origem_id: novaParcela!.id,
+          valor_aplicado: totalEncargos,
+          valor_juros: 0,
+          valor_multa: 0,
+          valor_desconto: 0,
+        })
+
+        // Conciliação agora 100% alocada (principal + encargos = valor da mov)
+        await supabase.from('conciliacoes').update({ diferenca: 0 }).eq('id', conc.id)
+      }
+
       await supabase.from('conciliacao_parcelas').insert(
         vinculosFinal.map(v => buildLinkRow(conc.id, v))
       )
@@ -1353,6 +1505,7 @@ export function useCreateConciliacao() {
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['medicoes'] })
       qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['despesas_indiretas'] })
       toast.success('V\u00ednculo criado')
     },
     onError: (err: Error) => toast.error('Erro ao vincular: ' + err.message),

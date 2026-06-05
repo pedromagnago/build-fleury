@@ -7,8 +7,8 @@
  */
 import { useMemo, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { X, ArrowDownCircle, ArrowUpCircle, ExternalLink, Calendar, Link as LinkIcon } from 'lucide-react'
-import { useConciliacoes } from '@/hooks/useConciliacao'
+import { X, ArrowDownCircle, ArrowUpCircle, ExternalLink, Calendar, Link as LinkIcon, RotateCcw } from 'lucide-react'
+import { useConciliacoes, useUndoConciliacao } from '@/hooks/useConciliacao'
 import { useMovimentacoes } from '@/hooks/useOperacional'
 import { useContasBancarias } from '@/hooks/useFinanceiro'
 import { formatCurrency } from '@/lib/utils'
@@ -33,6 +33,12 @@ export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, 
   const { data: concs = [] } = useConciliacoes()
   const { data: movs = [] } = useMovimentacoes()
   const { data: contas = [] } = useContasBancarias()
+  const undoConc = useUndoConciliacao()
+
+  const handleUndo = async (concId: string) => {
+    if (!confirm('Desfazer este vínculo? A parcela volta ao status anterior e o movimento fica pendente para revinculação.')) return
+    await undoConc.mutateAsync(concId)
+  }
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -165,7 +171,15 @@ export function VinculosMovsPanel({ origem, origemId, titulo, subtitulo, valor, 
                         📝 {observacao}
                       </p>
                     )}
-                    <div className="mt-2 flex items-center justify-end">
+                    <div className="mt-2 flex items-center justify-between">
+                      <button
+                        onClick={() => handleUndo(conc.id)}
+                        disabled={undoConc.isPending}
+                        className="text-[10px] inline-flex items-center gap-1 text-red-500 hover:text-red-700 hover:underline disabled:opacity-40"
+                      >
+                        <RotateCcw className="h-2.5 w-2.5" />
+                        Desfazer vínculo
+                      </button>
                       <Link to="/conciliacao"
                         className="text-[10px] inline-flex items-center gap-1 text-primary hover:underline">
                         Ver no extrato <ExternalLink className="h-2.5 w-2.5" />

@@ -80,6 +80,10 @@ interface GapInspectorDrawerProps {
   fcTotalPedidos: number
   pedidosTotal: number
   despesaFcMap?: Record<string, number>
+  pedidoFcMap?: Record<string, number>
+  medicaoFcMap?: Record<string, number>
+  mutuoCaptacaoFcMap?: Record<string, number>
+  mutuoDevolucaoFcMap?: Record<string, number>
 }
 
 // ─── helpers visuais ─────────────────────────────────────────────────────────
@@ -132,27 +136,69 @@ function InlineDate({
 
 // ─── seções por origem ────────────────────────────────────────────────────────
 
-function SecaoMedicoes({ medicoes }: { medicoes: Medicao[] }) {
+function SecaoMedicoes({ medicoes, medicaoFcMap }: { medicoes: Medicao[]; medicaoFcMap?: Record<string, number> }) {
   const update = useUpdateMedicao()
   const semData = medicoes.filter(m => !m.data_prevista)
-  if (semData.length === 0) return <EmptyState msg="Todas as medições têm data prevista." />
+  const comOverrun = medicaoFcMap
+    ? medicoes.filter(m => {
+        const banco = medicaoFcMap[m.id] ?? 0
+        return banco > 0 && Math.abs(banco - (Number(m.valor_liberado) || 0)) > 0.5
+      })
+    : []
+
   return (
-    <ul className="space-y-3">
-      {semData.map(m => (
-        <ItemCard key={m.id}
-          badge={`Medição nº ${m.numero}`}
-          valor={m.valor_planejado}
-          alerta="Sem data prevista — invisível ao FC"
-        >
-          <InlineDate
-            label="Data prevista"
-            value={m.data_prevista || ''}
-            saving={update.isPending}
-            onSave={v => update.mutate({ id: m.id, data_prevista: v })}
-          />
-        </ItemCard>
-      ))}
-    </ul>
+    <>
+      {comOverrun.length > 0 && (
+        <div className="space-y-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-600">Banco ≠ valor liberado</div>
+          <ul className="space-y-3">
+            {comOverrun.map(m => {
+              const banco = medicaoFcMap![m.id] ?? 0
+              const liberado = Number(m.valor_liberado) || 0
+              const diff = banco - liberado
+              return (
+                <li key={m.id} className="rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-950/20 dark:border-rose-800 p-3 space-y-2">
+                  <span className="text-xs font-semibold">Medição nº {m.numero}</span>
+                  <div className="grid grid-cols-3 gap-1 text-[11px]">
+                    <div><div className="text-muted-foreground">Planejado</div><div className="font-semibold tabular-nums">{formatCurrency(Number(m.valor_planejado) || 0)}</div></div>
+                    <div><div className="text-muted-foreground">Liberado</div><div className="font-semibold tabular-nums">{formatCurrency(liberado)}</div></div>
+                    <div><div className="text-muted-foreground">Banco (FC)</div><div className="font-semibold tabular-nums">{formatCurrency(banco)}</div></div>
+                  </div>
+                  <div className={`flex items-center gap-1.5 text-[11px] ${diff > 0 ? 'text-rose-600' : 'text-amber-600'}`}>
+                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                    {diff > 0
+                      ? `Banco creditou ${formatCurrency(diff)} a mais que o liberado`
+                      : `Banco creditou ${formatCurrency(Math.abs(diff))} a menos que o liberado`}
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+      {semData.length > 0 && (
+        <div className={`space-y-3 ${comOverrun.length > 0 ? 'mt-5' : ''}`}>
+          {comOverrun.length > 0 && <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Sem data prevista</div>}
+          <ul className="space-y-3">
+            {semData.map(m => (
+              <ItemCard key={m.id}
+                badge={`Medição nº ${m.numero}`}
+                valor={m.valor_planejado}
+                alerta="Sem data prevista — invisível ao FC"
+              >
+                <InlineDate
+                  label="Data prevista"
+                  value={m.data_prevista || ''}
+                  saving={update.isPending}
+                  onSave={v => update.mutate({ id: m.id, data_prevista: v })}
+                />
+              </ItemCard>
+            ))}
+          </ul>
+        </div>
+      )}
+      {semData.length === 0 && comOverrun.length === 0 && <EmptyState msg="Todas as medições têm data prevista." />}
+    </>
   )
 }
 
@@ -164,7 +210,7 @@ interface GerarState {
   nfDate: string | null  // date fetched from NF, null if not available
 }
 
-function SecaoPedidos({ pedidos, parcelas }: { pedidos: Pedido[]; parcelas: Parcela[] }) {
+function SecaoPedidos({ pedidos, parcelas, pedidoFcMap }: { pedidos: Pedido[]; parcelas: Parcela[]; pedidoFcMap?: Record<string, number> }) {
   const [openId, setOpenId] = useState<string | null>(null)
   const [gerar, setGerar] = useState<GerarState | null>(null)
   const [fetchingId, setFetchingId] = useState<string | null>(null)
@@ -173,6 +219,17 @@ function SecaoPedidos({ pedidos, parcelas }: { pedidos: Pedido[]; parcelas: Parc
 
   const pedidosComParcela = new Set(parcelas.filter(p => p.pedido_id).map(p => p.pedido_id))
   const semParcela = pedidos.filter(p => !pedidosComParcela.has(p.id))
+  const comParcela = pedidos.filter(p => pedidosComParcela.has(p.id))
+
+  // Pedidos com parcela onde banco ≠ soma de valor_pago das parcelas
+  const comOverrun = pedidoFcMap
+    ? comParcela.filter(p => {
+        const banco = pedidoFcMap[p.id] ?? 0
+        if (banco === 0) return false
+        const pago = parcelas.filter(par => par.pedido_id === p.id).reduce((s, par) => s + (Number(par.valor_pago) || 0), 0)
+        return Math.abs(banco - pago) > 0.5
+      })
+    : []
 
   const iniciarGerar = async (p: Pedido) => {
     setFetchingId(p.id)
@@ -241,13 +298,52 @@ function SecaoPedidos({ pedidos, parcelas }: { pedidos: Pedido[]; parcelas: Parc
     }
   }
 
-  if (semParcela.length === 0) return <EmptyState msg="Todos os pedidos têm parcelas geradas." />
+  if (semParcela.length === 0 && comOverrun.length === 0) return <EmptyState msg="Todos os pedidos têm parcelas e os valores batem com o banco." />
 
   return (
     <>
-      <div className="mb-3 text-[11px] text-muted-foreground">
+      {/* Seção: banco diverge das parcelas */}
+      {comOverrun.length > 0 && (
+        <div className="space-y-3 mb-5">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-600">Banco ≠ parcelas pagas</div>
+          <ul className="space-y-3">
+            {comOverrun.map(p => {
+              const banco = pedidoFcMap![p.id] ?? 0
+              const parcs = parcelas.filter(par => par.pedido_id === p.id)
+              const pago = parcs.reduce((s, par) => s + (Number(par.valor_pago) || 0), 0)
+              const diff = banco - pago
+              return (
+                <li key={p.id} className="rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-950/20 dark:border-rose-800 p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-semibold">{p.numero_pedido != null ? `Pedido #${p.numero_pedido}` : 'Pedido s/ nº'}</span>
+                      <div className="text-[11px] text-muted-foreground mt-0.5 leading-tight">{[p.fornecedor_nome, p.item_descricao].filter(Boolean).join(' · ')}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 text-[11px]">
+                    <div><div className="text-muted-foreground">Contratado</div><div className="font-semibold tabular-nums">{formatCurrency(p.valor_total_real)}</div></div>
+                    <div><div className="text-muted-foreground">Parcelas pagas</div><div className="font-semibold tabular-nums">{formatCurrency(pago)}</div></div>
+                    <div><div className="text-muted-foreground">Banco (FC)</div><div className="font-semibold tabular-nums">{formatCurrency(banco)}</div></div>
+                  </div>
+                  <div className={`flex items-center gap-1.5 text-[11px] ${diff > 0 ? 'text-rose-600' : 'text-amber-600'}`}>
+                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                    {diff > 0
+                      ? `Banco debitou ${formatCurrency(diff)} a mais — ajuste as parcelas`
+                      : `Banco debitou ${formatCurrency(Math.abs(diff))} a menos que as parcelas`}
+                  </div>
+                  <button onClick={() => setOpenId(p.id)} className={`${BTN_SM} border hover:bg-muted text-muted-foreground`}>
+                    <Pencil className="h-3 w-3" /> Abrir pedido
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      {semParcela.length > 0 && <div className="mb-3 text-[11px] text-muted-foreground">
         {semParcela.length} pedido(s) sem parcela · clique em <strong>Gerar parcelas</strong> para criar as parcelas com base na condição de pagamento e data de entrada.
-      </div>
+      </div>}
 
       {/* Preview de geração */}
       {gerar && (
@@ -310,34 +406,36 @@ function SecaoPedidos({ pedidos, parcelas }: { pedidos: Pedido[]; parcelas: Parc
         </div>
       )}
 
-      <ul className="space-y-3">
-        {semParcela.map(p => (
-          <ItemCard key={p.id}
-            badge={p.numero_pedido != null ? `Pedido #${p.numero_pedido}` : 'Pedido s/ nº'}
-            descricao={[p.fornecedor_nome, p.item_descricao].filter(Boolean).join(' · ')}
-            valor={p.valor_total_real}
-            alerta="Sem parcela — FC usa estimativa sem data precisa"
-          >
-            <div className="flex gap-2 flex-wrap">
-              <button
-                onClick={() => iniciarGerar(p)}
-                disabled={fetchingId === p.id || (gerar?.pedido.id === p.id && gerar.loading)}
-                className={`${BTN_SM} bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50`}
-              >
-                {fetchingId === p.id
-                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Buscando data…</>
-                  : <><ChevronRight className="h-3 w-3" /> Gerar parcelas</>}
-              </button>
-              <button
-                onClick={() => setOpenId(p.id)}
-                className={`${BTN_SM} border hover:bg-muted text-muted-foreground`}
-              >
-                <Pencil className="h-3 w-3" /> Abrir pedido
-              </button>
-            </div>
-          </ItemCard>
-        ))}
-      </ul>
+      {semParcela.length > 0 && (
+        <ul className="space-y-3">
+          {semParcela.map(p => (
+            <ItemCard key={p.id}
+              badge={p.numero_pedido != null ? `Pedido #${p.numero_pedido}` : 'Pedido s/ nº'}
+              descricao={[p.fornecedor_nome, p.item_descricao].filter(Boolean).join(' · ')}
+              valor={p.valor_total_real}
+              alerta="Sem parcela — FC usa estimativa sem data precisa"
+            >
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={() => iniciarGerar(p)}
+                  disabled={fetchingId === p.id || (gerar?.pedido.id === p.id && gerar.loading)}
+                  className={`${BTN_SM} bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50`}
+                >
+                  {fetchingId === p.id
+                    ? <><Loader2 className="h-3 w-3 animate-spin" /> Buscando data…</>
+                    : <><ChevronRight className="h-3 w-3" /> Gerar parcelas</>}
+                </button>
+                <button
+                  onClick={() => setOpenId(p.id)}
+                  className={`${BTN_SM} border hover:bg-muted text-muted-foreground`}
+                >
+                  <Pencil className="h-3 w-3" /> Abrir pedido
+                </button>
+              </div>
+            </ItemCard>
+          ))}
+        </ul>
+      )}
 
       {openId && <PedidoDrilldownModal pedidoId={openId} onClose={() => setOpenId(null)} />}
     </>
@@ -471,35 +569,80 @@ function SecaoIndiretos({
   )
 }
 
-function SecaoCapital({ mutuos }: { mutuos: Mutuo[] }) {
+function SecaoCapital({ mutuos, mutuoCaptacaoFcMap }: { mutuos: Mutuo[]; mutuoCaptacaoFcMap?: Record<string, number> }) {
   const update = useUpdateMutuo()
-  const comProblema = mutuos.filter(m =>
+  const validos = mutuos.filter(m =>
     String(m.categoria ?? '').toUpperCase() !== 'STUB_DEDUPE' &&
     String(m.status ?? '') !== 'cancelado'
   )
-  if (comProblema.length === 0) return <EmptyState msg="Todos os mútuos estão configurados." />
+  const semData = validos.filter(m => !m.data_captacao)
+  const comOverrun = mutuoCaptacaoFcMap
+    ? validos.filter(m => {
+        const banco = mutuoCaptacaoFcMap[m.id] ?? 0
+        return banco > 0 && Math.abs(banco - (Number(m.valor_captado) || 0)) > 0.5
+      })
+    : []
+
+  if (validos.length === 0 && comOverrun.length === 0) return <EmptyState msg="Todos os mútuos estão configurados." />
+
   return (
-    <ul className="space-y-3">
-      {comProblema.map(m => (
-        <ItemCard key={m.id}
-          badge={m.tipo}
-          descricao={m.nome}
-          valor={m.valor_captado}
-          alerta={!m.data_captacao ? 'Sem data de captação → invisível ao FC' : undefined}
-        >
-          <InlineDate
-            label="Data de captação"
-            value={m.data_captacao || ''}
-            saving={update.isPending}
-            onSave={v => update.mutate({ id: m.id, data_captacao: v })}
-          />
-        </ItemCard>
-      ))}
-    </ul>
+    <>
+      {comOverrun.length > 0 && (
+        <div className="space-y-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-600">Banco ≠ valor captado</div>
+          <ul className="space-y-3">
+            {comOverrun.map(m => {
+              const banco = mutuoCaptacaoFcMap![m.id] ?? 0
+              const captado = Number(m.valor_captado) || 0
+              const diff = banco - captado
+              return (
+                <li key={m.id} className="rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-950/20 dark:border-rose-800 p-3 space-y-2">
+                  <div>
+                    <span className="text-xs font-semibold">{m.nome}</span>
+                    <div className="text-[11px] text-muted-foreground mt-0.5">{m.tipo}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1 text-[11px]">
+                    <div><div className="text-muted-foreground">Valor captado</div><div className="font-semibold tabular-nums">{formatCurrency(captado)}</div></div>
+                    <div><div className="text-muted-foreground">Banco (FC)</div><div className="font-semibold tabular-nums">{formatCurrency(banco)}</div></div>
+                  </div>
+                  <div className={`flex items-center gap-1.5 text-[11px] ${diff > 0 ? 'text-rose-600' : 'text-amber-600'}`}>
+                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                    {diff > 0
+                      ? `Banco creditou ${formatCurrency(diff)} a mais que o registrado`
+                      : `Banco creditou ${formatCurrency(Math.abs(diff))} a menos que o registrado`}
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+      {semData.length > 0 && (
+        <ul className={`space-y-3 ${comOverrun.length > 0 ? 'mt-5' : ''}`}>
+          {comOverrun.length > 0 && <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Sem data de captação</div>}
+          {semData.map(m => (
+            <ItemCard key={m.id}
+              badge={m.tipo}
+              descricao={m.nome}
+              valor={m.valor_captado}
+              alerta="Sem data de captação → invisível ao FC"
+            >
+              <InlineDate
+                label="Data de captação"
+                value={m.data_captacao || ''}
+                saving={update.isPending}
+                onSave={v => update.mutate({ id: m.id, data_captacao: v })}
+              />
+            </ItemCard>
+          ))}
+        </ul>
+      )}
+      {semData.length === 0 && comOverrun.length === 0 && <EmptyState msg="Todos os mútuos estão configurados." />}
+    </>
   )
 }
 
-function SecaoDevolucoes({ mutuos }: { mutuos: Mutuo[]; parcelas?: Parcela[] }) {
+function SecaoDevolucoes({ mutuos, mutuoDevolucaoFcMap }: { mutuos: Mutuo[]; parcelas?: Parcela[]; mutuoDevolucaoFcMap?: Record<string, number> }) {
   const [openParcela, setOpenParcela] = useState<Parcela | null>(null)
   const updateParcela = useUpdateMutuoParcela()
 
@@ -531,10 +674,53 @@ function SecaoDevolucoes({ mutuos }: { mutuos: Mutuo[]; parcelas?: Parcela[] }) 
     created_at: p.created_at,
   } as Parcela)
 
+  // Mútuos onde banco (saída) ≠ soma de valor_pago das parcelas
+  const mutuosComOverrun = mutuoDevolucaoFcMap
+    ? mutuos.filter(m => {
+        if (String(m.categoria ?? '').toUpperCase() === 'STUB_DEDUPE') return false
+        const banco = mutuoDevolucaoFcMap[m.id] ?? 0
+        if (banco === 0) return false
+        const pago = (m.parcelas ?? []).reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
+        return Math.abs(banco - pago) > 0.5
+      })
+    : []
+
   return (
     <>
-      {semData.length > 0 && (
+      {mutuosComOverrun.length > 0 && (
         <div className="space-y-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-600">Banco ≠ parcelas pagas</div>
+          <ul className="space-y-3">
+            {mutuosComOverrun.map(m => {
+              const banco = mutuoDevolucaoFcMap![m.id] ?? 0
+              const pago = (m.parcelas ?? []).reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
+              const planejado = (m.parcelas ?? []).reduce((s, p) => s + (Number(p.valor) || 0), 0)
+              const diff = banco - pago
+              return (
+                <li key={m.id} className="rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-950/20 dark:border-rose-800 p-3 space-y-2">
+                  <div>
+                    <span className="text-xs font-semibold">{m.nome}</span>
+                    <div className="text-[11px] text-muted-foreground mt-0.5">{m.tipo}</div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 text-[11px]">
+                    <div><div className="text-muted-foreground">Planejado</div><div className="font-semibold tabular-nums">{formatCurrency(planejado)}</div></div>
+                    <div><div className="text-muted-foreground">Parcelas pagas</div><div className="font-semibold tabular-nums">{formatCurrency(pago)}</div></div>
+                    <div><div className="text-muted-foreground">Banco (FC)</div><div className="font-semibold tabular-nums">{formatCurrency(banco)}</div></div>
+                  </div>
+                  <div className={`flex items-center gap-1.5 text-[11px] ${diff > 0 ? 'text-rose-600' : 'text-amber-600'}`}>
+                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                    {diff > 0
+                      ? `Banco debitou ${formatCurrency(diff)} a mais que as parcelas`
+                      : `Banco debitou ${formatCurrency(Math.abs(diff))} a menos que as parcelas`}
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+      {semData.length > 0 && (
+        <div className={`space-y-3 ${mutuosComOverrun.length > 0 ? 'mt-5' : ''}`}>
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Sem data de vencimento</div>
           <ul className="space-y-3">
             {semData.map(({ mutuo: m, parcela: p }) => (
@@ -555,7 +741,7 @@ function SecaoDevolucoes({ mutuos }: { mutuos: Mutuo[]; parcelas?: Parcela[] }) 
         </div>
       )}
       {comData.length > 0 && (
-        <div className="space-y-3 mt-4">
+        <div className={`space-y-3 ${semData.length > 0 || mutuosComOverrun.length > 0 ? 'mt-4' : ''}`}>
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Com data — editar parcela</div>
           <ul className="space-y-3">
             {comData.map(({ mutuo: m, parcela: p }) => (
@@ -575,7 +761,7 @@ function SecaoDevolucoes({ mutuos }: { mutuos: Mutuo[]; parcelas?: Parcela[] }) 
           </ul>
         </div>
       )}
-      {semData.length === 0 && comData.length === 0 && <EmptyState msg="Nenhuma parcela de mútuo encontrada." />}
+      {semData.length === 0 && comData.length === 0 && mutuosComOverrun.length === 0 && <EmptyState msg="Nenhuma parcela de mútuo encontrada." />}
       {openParcela && (
         <EditParcelaModal
           parcela={openParcela}
@@ -701,7 +887,8 @@ function SecaoOrfas({ parcelas, pedidos }: { parcelas: Parcela[]; pedidos: Pedid
 
 export function GapInspectorDrawer({
   origin, onClose,
-  medicoes, pedidos, parcelas, mutuos, despesas, despesaFcMap,
+  medicoes, pedidos, parcelas, mutuos, despesas,
+  despesaFcMap, pedidoFcMap, medicaoFcMap, mutuoCaptacaoFcMap, mutuoDevolucaoFcMap,
 }: GapInspectorDrawerProps) {
   if (!origin) return null
   const { title, subtitle } = ORIGIN_LABELS[origin]
@@ -729,11 +916,11 @@ export function GapInspectorDrawer({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          {origin === 'medicoes'   && <SecaoMedicoes medicoes={medicoes} />}
-          {origin === 'pedidos'    && <SecaoPedidos pedidos={pedidos} parcelas={parcelas} />}
+          {origin === 'medicoes'   && <SecaoMedicoes medicoes={medicoes} medicaoFcMap={medicaoFcMap} />}
+          {origin === 'pedidos'    && <SecaoPedidos pedidos={pedidos} parcelas={parcelas} pedidoFcMap={pedidoFcMap} />}
           {origin === 'indiretos'  && <SecaoIndiretos despesas={despesas} parcelas={parcelas} despesaFcMap={despesaFcMap} />}
-          {origin === 'capital'    && <SecaoCapital mutuos={mutuos} />}
-          {origin === 'devolucoes' && <SecaoDevolucoes mutuos={mutuos} parcelas={parcelas} />}
+          {origin === 'capital'    && <SecaoCapital mutuos={mutuos} mutuoCaptacaoFcMap={mutuoCaptacaoFcMap} />}
+          {origin === 'devolucoes' && <SecaoDevolucoes mutuos={mutuos} parcelas={parcelas} mutuoDevolucaoFcMap={mutuoDevolucaoFcMap} />}
           {origin === 'orfas'      && <SecaoOrfas parcelas={parcelas} pedidos={pedidos} />}
         </div>
       </div>

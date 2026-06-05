@@ -120,6 +120,9 @@ export interface Pedido {
   /** Acumulado de NFs externas que realizaram parte deste pedido previsão.
    *  Reduz o saldo efetivo a pagar sem mexer em parcelas. */
   valor_coberto_por_realizacao?: number
+  /** Frete informado na NF de recepção; somado ao valor_total_real para compor
+   *  o total efetivo a pagar (itens + frete = soma das parcelas geradas). */
+  valor_frete?: number
   created_at: string
   /** Eixo de entrega: derivado de pedido_itens.qtd_recebida vs qtd (trigger). */
   status_entrega?: 'aguardando_entrega' | 'pedido_enviado' | 'parcialmente_entregue' | 'entregue' | null

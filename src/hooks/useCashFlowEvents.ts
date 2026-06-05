@@ -31,6 +31,8 @@ export interface CashFlowEvent {
     pedidoId?: string     // ID do pedido (para rastreamento)
     pedidoNumero?: number // Número humano do pedido
     despesaId?: string    // ID da despesa indireta (para rastreamento de overrun)
+    medicaoId?: string    // ID da medição (para rastreamento de overrun)
+    mutuoId?: string      // ID do mútuo (captação ou devolução)
     parcelaNumero?: number
     parcelaTotal?: number
     parcelaTipo?: 'contratual' | 'adiantamento'
@@ -411,6 +413,8 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       let pedidoId: string | undefined
       let pedidoNumero: number | undefined
       let despesaId: string | undefined
+      let medicaoId: string | undefined
+      let mutuoId: string | undefined
       let parcelaNumero: number | undefined
       let parcelaTipo: 'contratual' | 'adiantamento' | undefined
       let descPrefix = ''
@@ -448,21 +452,23 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
         }
       } else {
         // Sem parcela vinculada — verifica medição, depois mútuo (captação ou parcela)
-        const medicaoId = medicaoIdByMovId.get(mv.id)
-        if (medicaoId) {
-          const med = medicaoById.get(medicaoId)
+        const medId = medicaoIdByMovId.get(mv.id)
+        if (medId) {
+          const med = medicaoById.get(medId)
           cat = 'Cliente'
           etapa = `M${med?.numero ?? '?'}`
+          medicaoId = medId
           origemMov = 'medicao'
           descPrefix = `Medição ${med?.numero ?? ''} · `
         } else {
-          const mutuoId = mutuoIdByMovId.get(mv.id)
+          const mutuoIdDirect = mutuoIdByMovId.get(mv.id)
           const mpId = mutuoParcelaIdByMovId.get(mv.id)
-          if (mutuoId || mpId) {
-            const mut: any = mutuoId ? mutuoById.get(mutuoId) : mutuoByParcelaId.get(mpId!)
+          if (mutuoIdDirect || mpId) {
+            const mut: any = mutuoIdDirect ? mutuoById.get(mutuoIdDirect) : mutuoByParcelaId.get(mpId!)
             cat = mut?.tipo || 'Mútuo'
             etapa = 'Capital'
             forn = mut?.instituicao || mut?.nome
+            mutuoId = mutuoIdDirect ?? mut?.id
             origemMov = 'mutuo'
             descPrefix = mut?.nome ? `${mut.nome} · ` : 'Mútuo · '
           } else {
@@ -494,6 +500,8 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           pedidoId,
           pedidoNumero,
           despesaId,
+          medicaoId,
+          mutuoId,
           parcelaNumero,
           parcelaTipo,
           origem: origemMov,
@@ -782,12 +790,23 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // 6. SAÍDAS BRUTAS — Previsto de itens sem pedido ("planejado" e "completo")
     // ═══════════════════════════════════════════════════════════
     if (viewMode === 'completo') {
+      // Alinhado com useDashboardKPIs.planejadoBruto:
+      //   1. Exclui pedidos cancelados (não representam compromisso real)
+      //   2. Usa valor líquido: valor_total_real − valor_coberto_por_realizacao
+      //      (para previsões parcialmente cobertas por NF externas)
+      //   3. NÃO subtrai valor_consumido — o consumo via NF já está no pedMap
+      //      (via pedido âncora); subtrair causava double-count de ~R$400k no Realize SFP
       const pedMap = new Map<string, number>()
-      pedidos.forEach(p => pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + Number(p.valor_total_real || 0)))
+      pedidos
+        .filter(p => p.status !== 'cancelado')
+        .forEach(p => {
+          const vlLiquido = Math.max(0, Number(p.valor_total_real || 0) - Number((p as any).valor_coberto_por_realizacao || 0))
+          pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + vlLiquido)
+        })
 
       itens.forEach(item => {
         const comPed = Math.min(pedMap.get(item.id) || 0, Number(item.valor_total_orcado))
-        const semPed = Math.max(0, Number(item.valor_total_orcado) - comPed - Number(item.valor_consumido))
+        const semPed = Math.max(0, Number(item.valor_total_orcado) - comPed)
         if (semPed <= 0) return
 
         const etapa = etapas.find(e => e.id === item.etapa_id)

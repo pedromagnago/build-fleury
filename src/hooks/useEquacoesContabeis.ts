@@ -109,7 +109,7 @@ export function useEquacoesContabeis() {
     const sigmaPedidos = pedidos
       .filter(p => p.status !== 'cancelado')
       .reduce((s, p) => {
-        const v = Number(p.valor_total_real || 0)
+        const v = Number(p.valor_total_real || 0) + Number(p.valor_frete || 0)
         const coberto = Number(p.valor_coberto_por_realizacao || 0)
         return s + Math.max(0, v - coberto)
       }, 0)
@@ -124,7 +124,7 @@ export function useEquacoesContabeis() {
     const bPedExcesso: BucketItem[] = []
     for (const ped of pedidos) {
       if (ped.status === 'cancelado') continue
-      const valorBruto = Number(ped.valor_total_real || 0)
+      const valorBruto = Number(ped.valor_total_real || 0) + Number(ped.valor_frete || 0)
       if (valorBruto <= 0.5) continue
       // Desconta valor já coberto por NF/realização — esse saldo fica no FC
       // via seção 5 (projeção de saldo não faturado) e não precisa de parcela.

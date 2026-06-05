@@ -1661,8 +1661,8 @@ export default function RecepcaoPage() {
                 />
               </div>
               <div>
-                <p className="text-[10px] uppercase text-muted-foreground">Itens + frete</p>
-                <p className={`font-bold text-sm ${Math.abs(diferenca) > 0.01 ? 'text-amber-600' : 'text-emerald-600'}`} title={`Itens: ${formatCurrency(totalLinhas)} + Frete: ${formatCurrency(valorFrete)}`}>{formatCurrency(totalAParcelar)}</p>
+                <p className="text-[10px] uppercase text-muted-foreground">Itens + acréscimos</p>
+                <p className={`font-bold text-sm ${Math.abs(diferenca) > 0.01 ? 'text-amber-600' : 'text-emerald-600'}`} title={`Itens: ${formatCurrency(totalLinhas)} + Acréscimos NF: ${formatCurrency(valorFrete)}`}>{formatCurrency(totalAParcelar)}</p>
               </div>
               <div>
                 <p className="text-[10px] uppercase text-muted-foreground">Diferença</p>
@@ -1686,7 +1686,7 @@ export default function RecepcaoPage() {
             {/* Campos editáveis aplicados no insert do pedido âncora da NF */}
             <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
               <div>
-                <label className="text-[10px] uppercase text-muted-foreground">Frete (CIF)</label>
+                <label className="text-[10px] uppercase text-muted-foreground">Frete / Acréscimos NF</label>
                 <input
                   type="text"
                   inputMode="decimal"
@@ -1694,7 +1694,7 @@ export default function RecepcaoPage() {
                   onChange={e => setValorFreteInput(e.target.value)}
                   placeholder="0,00"
                   className="w-full rounded-md border bg-background px-2 py-1.5 text-xs font-mono text-right"
-                  title="Frete cobrado pelo fornecedor na NF. Entra no total a parcelar mas NÃO é diluído nos itens."
+                  title="Frete, juros de mora ou qualquer acréscimo cobrado na NF. Entra no total a parcelar mas NÃO é diluído nos itens."
                 />
               </div>
               <div>
@@ -1974,7 +1974,7 @@ export default function RecepcaoPage() {
                 <div className="flex items-center gap-1.5">
                   <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
                   <span>
-                    Itens + frete ({formatCurrency(totalAParcelar)}) difere do total da NF ({formatCurrency(extracao.documento.valor_total ?? 0)}) — diferença <strong>{formatCurrency(diferenca)}</strong>.
+                    Itens + acréscimos ({formatCurrency(totalAParcelar)}) difere do total da NF ({formatCurrency(extracao.documento.valor_total ?? 0)}) — diferença <strong>{formatCurrency(diferenca)}</strong>.
                     {divergenciaBloqueia ? ' Confira os valores ou aceite a diferença pra aplicar.' : ' Diferença aceita pelo operador.'}
                   </span>
                 </div>
@@ -1982,7 +1982,7 @@ export default function RecepcaoPage() {
                   <button
                     onClick={() => setDiferencaAceita(true)}
                     className="inline-flex items-center gap-1 rounded bg-amber-500 hover:bg-amber-600 text-white px-2 py-1 text-[10px] font-bold whitespace-nowrap"
-                    title="Aceita conscientemente a diferença (frete, desconto, imposto não-detalhado) e libera o Aplicar"
+                    title="Aceita conscientemente a diferença (acréscimo não informado, desconto, imposto não detalhado) e libera o Aplicar"
                   >
                     <Check className="h-3 w-3" /> Aceitar diferença
                   </button>
