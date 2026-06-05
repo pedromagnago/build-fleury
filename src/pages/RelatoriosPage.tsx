@@ -2,13 +2,14 @@ import { useState, useMemo, Fragment as React_Fragment } from 'react'
 // Alias para usar como <React.Fragment>
 const React = { Fragment: React_Fragment }
 import { PageHeader } from '@/components/ui/PageHeader'
-import { useOrcamentoRealizado, useReconciliacao, useAmortizacoesAvulsas } from '@/hooks/useFinanceiro'
+import { useOrcamentoRealizado, useReconciliacao, useAmortizacoesAvulsas, useContasBancarias } from '@/hooks/useFinanceiro'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useMutuos } from '@/hooks/useMutuos'
 import { useMedicoes } from '@/hooks/useOperacional'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useItensCompra } from '@/hooks/useCompras'
 import { formatCurrency, formatPercent, formatDate } from '@/lib/utils'
+import { BaixasDrawer } from '@/components/relatorios/BaixasDrawer'
 import { FileBarChart, Download, Printer, AlertTriangle } from 'lucide-react'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
@@ -26,6 +27,9 @@ export default function RelatoriosPage() {
   const { data: orcamento } = useOrcamentoRealizado()
   const { data: mutuos = [] } = useMutuos()
   const { data: amortizacoesAvulsas = [] } = useAmortizacoesAvulsas()
+  const { data: contas = [] } = useContasBancarias()
+  const contasMap = useMemo(() => new Map(contas.map(c => [c.id, c.nome])), [contas])
+  const [baixasTarget, setBaixasTarget] = useState<{ filterField: 'parcela_id' | 'mutuo_parcela_id'; ids: string[]; titulo: string } | null>(null)
   const [filtroRec, setFiltroRec] = useState<{ inicio: string; fim: string }>({ inicio: '', fim: '' })
   const { data: reconciliacao = [], isLoading: carregandoRec } = useReconciliacao({ dataInicio: filtroRec.inicio || undefined, dataFim: filtroRec.fim || undefined })
 
@@ -491,7 +495,23 @@ export default function RelatoriosPage() {
                           : <span className="text-muted-foreground">—</span>}
                       </td>
                       <td className="px-3 py-2 text-center text-xs capitalize">{p.status.replace('_', ' ')}</td>
-                      <td className="px-3 py-2 text-right text-emerald-500">{formatCurrency(p.valor_pago)}</td>
+                      <td className="px-3 py-2 text-right">
+                        {p.valor_pago > 0 && p.origem !== 'amortizacao' ? (
+                          <button
+                            onClick={() => setBaixasTarget({
+                              filterField: p.origem === 'mutuo' ? 'mutuo_parcela_id' : 'parcela_id',
+                              ids: [p.id],
+                              titulo: `${p.fornecedor_nome ?? '—'} — ${p.item}`,
+                            })}
+                            className="tabular-nums text-emerald-500 hover:underline cursor-pointer"
+                            title="Ver histórico de baixas"
+                          >
+                            {formatCurrency(p.valor_pago)}
+                          </button>
+                        ) : (
+                          <span className="tabular-nums text-emerald-500">{formatCurrency(p.valor_pago)}</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                   {parcelasFiltradas.length > 0 && (
@@ -679,6 +699,16 @@ export default function RelatoriosPage() {
           </>
         )}
       </div>
+
+      {baixasTarget && (
+        <BaixasDrawer
+          filterField={baixasTarget.filterField}
+          filterValues={baixasTarget.ids}
+          titulo={baixasTarget.titulo}
+          contasMap={contasMap}
+          onClose={() => setBaixasTarget(null)}
+        />
+      )}
     </div>
   )
 }
