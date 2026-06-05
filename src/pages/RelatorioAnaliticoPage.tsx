@@ -575,9 +575,6 @@ export default function RelatorioAnaliticoPage() {
     parcelasByDespRef.current   = byDesp
   }, [parcelas])
 
-  const grainRef = useRef<Grain>(config.grain)
-  grainRef.current = config.grain
-
   // ── Builder state ───────────────────────────────────────────────────────────
   const [config, setConfig] = usePersistedState<BuilderConfig>('relatorio-analitico-v2', {
     grain: 'item',
@@ -585,6 +582,9 @@ export default function RelatorioAnaliticoPage() {
     visibleCols: DEFAULT_VISIBLE.item,
     filters: { etapas: [], fornecedores: [], tipos: [], search: '', statusMed: [] },
   })
+  const grainRef = useRef<Grain>(config.grain)
+  grainRef.current = config.grain
+
   const [panelOpen, setPanelOpen] = usePersistedState<boolean>('relatorio-analitico-panel', true)
   const [sort, setSort] = useState<{ col: string; dir: SortDir }>({ col: 'item_codigo', dir: 'asc' })
   const [search, setSearch] = useState('')
