@@ -1042,8 +1042,17 @@ export default function RelatorioAnaliticoPage() {
   }, [allRows, search, config.filters])
 
   // ── Sort rows ───────────────────────────────────────────────────────────────
+  // Linhas virtuais (indiretos + capital) sempre ficam no final, independente do sort.
   const sortedRows = useMemo(() => {
-    return [...filteredRows].sort((a, b) => {
+    const isVirtual = (r: any) => r.etapa_id === '__INDIRETOS__' || r.etapa_id === '__CAPITAL__'
+    const real    = filteredRows.filter(r => !isVirtual(r))
+    const virtual = filteredRows.filter(r =>  isVirtual(r))
+      .sort((a, b) => {
+        // IND antes de CG, depois por descricao
+        if (a.etapa_id !== b.etapa_id) return a.etapa_id === '__INDIRETOS__' ? -1 : 1
+        return String(a.item_descricao ?? '').localeCompare(String(b.item_descricao ?? ''), 'pt-BR')
+      })
+    const sorted = [...real].sort((a, b) => {
       const va = a[sort.col]
       const vb = b[sort.col]
       if (va == null && vb == null) return 0
@@ -1052,6 +1061,7 @@ export default function RelatorioAnaliticoPage() {
       const cmp = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb), 'pt-BR')
       return sort.dir === 'asc' ? cmp : -cmp
     })
+    return [...sorted, ...virtual]
   }, [filteredRows, sort])
 
   // ── Group rows (item grain only) ─────────────────────────────────────────────
@@ -1228,10 +1238,38 @@ export default function RelatorioAnaliticoPage() {
 
   // ── Render ───────────────────────────────────────────────────────────────────
   const tableContent = () => {
-    const rows = groupedRows ?? [{ key: '_all', label: '', rows: sortedRows }]
-    const showGroups = groupedRows !== null
     const nonFixedCols = visibleCols.filter(c => !c.fixed)
 
+    // Sem agrupamento no grain=item: separa visualmente orçamento / indiretos / capital
+    if (!groupedRows && config.grain === 'item') {
+      const isVirtual = (r: any) => r.etapa_id === '__INDIRETOS__' || r.etapa_id === '__CAPITAL__'
+      const realRows    = sortedRows.filter(r => !isVirtual(r))
+      const virtualRows = sortedRows.filter(r =>  isVirtual(r))
+      const sections: Array<{ key: string; label: string; rows: any[]; accent: string }> = [
+        { key: '_orc',  label: '',                rows: realRows,    accent: '' },
+      ]
+      const indRows = virtualRows.filter(r => r.etapa_id === '__INDIRETOS__')
+      const capRows = virtualRows.filter(r => r.etapa_id === '__CAPITAL__')
+      if (indRows.length) sections.push({ key: '_ind', label: 'Custos Indiretos', rows: indRows, accent: 'bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300' })
+      if (capRows.length) sections.push({ key: '_cap', label: 'Capital de Giro',  rows: capRows, accent: 'bg-indigo-50 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300' })
+
+      return sections.map(({ key, label, rows: sRows, accent }) => (
+        <GroupBlock
+          key={key}
+          label={label}
+          rows={sRows}
+          showGroupHeader={!!label}
+          visibleCols={visibleCols}
+          renderCell={renderCell}
+          footerCols={nonFixedCols}
+          subtotals={label ? getSubtotals(sRows) : null}
+          headerAccent={accent}
+        />
+      ))
+    }
+
+    const rows = groupedRows ?? [{ key: '_all', label: '', rows: sortedRows }]
+    const showGroups = groupedRows !== null
     return rows.map(({ key, label, rows: groupRows }) => (
       <GroupBlock
         key={key}
@@ -1424,9 +1462,10 @@ interface GroupBlockProps {
   renderCell: (col: ColDef, row: any) => React.ReactNode
   footerCols: ColDef[]
   subtotals: Record<string, number> | null
+  headerAccent?: string
 }
 
-function GroupBlock({ label, rows, showGroupHeader, visibleCols, renderCell, subtotals }: GroupBlockProps) {
+function GroupBlock({ label, rows, showGroupHeader, visibleCols, renderCell, subtotals, headerAccent }: GroupBlockProps) {
   const [expanded, setExpanded] = useState(true)
   const fixedCount = visibleCols.filter(c => c.fixed).length
   const nonFixed = visibleCols.filter(c => !c.fixed)
@@ -1435,16 +1474,16 @@ function GroupBlock({ label, rows, showGroupHeader, visibleCols, renderCell, sub
     <>
       {showGroupHeader && (
         <tr
-          className="cursor-pointer bg-muted/40 hover:bg-muted/60"
+          className={`cursor-pointer ${headerAccent ? headerAccent + ' border-t-2 border-current/20' : 'bg-muted/40 hover:bg-muted/60'}`}
           onClick={() => setExpanded(v => !v)}
         >
           <td colSpan={visibleCols.length} className="px-2 py-1.5 border-b">
             <div className="flex items-center gap-2">
-              {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+              {expanded ? <ChevronDown className="h-3.5 w-3.5 opacity-60" /> : <ChevronRight className="h-3.5 w-3.5 opacity-60" />}
               <span className="font-semibold text-xs">{label}</span>
-              <span className="text-muted-foreground text-[10px]">{rows.length} {rows.length === 1 ? 'item' : 'itens'}</span>
+              <span className="opacity-60 text-[10px]">{rows.length} {rows.length === 1 ? 'item' : 'itens'}</span>
               {!expanded && subtotals && nonFixed.filter(c => c.sumable).map(c => (
-                <span key={c.id} className="text-[10px] text-muted-foreground">
+                <span key={c.id} className="text-[10px] opacity-70">
                   {c.label}: {formatCurrency(subtotals[c.id] ?? 0)}
                 </span>
               ))}
