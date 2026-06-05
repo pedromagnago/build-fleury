@@ -30,6 +30,7 @@ export interface CashFlowEvent {
     orig?: number         // Valor original (pré-override)
     pedidoId?: string     // ID do pedido (para rastreamento)
     pedidoNumero?: number // Número humano do pedido
+    despesaId?: string    // ID da despesa indireta (para rastreamento de overrun)
     parcelaNumero?: number
     parcelaTotal?: number
     parcelaTipo?: 'contratual' | 'adiantamento'
@@ -409,6 +410,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       let item: string | undefined
       let pedidoId: string | undefined
       let pedidoNumero: number | undefined
+      let despesaId: string | undefined
       let parcelaNumero: number | undefined
       let parcelaTipo: 'contratual' | 'adiantamento' | undefined
       let descPrefix = ''
@@ -439,6 +441,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             etapa = 'Custos Indiretos'
             forn = di.fornecedor_nome || di.categoria || 'Indireto'
             item = di.descricao
+            despesaId = par.despesa_indireta_id
             descPrefix = `Parc ${par.numero_parcela}${forn ? ' — ' + forn : ''} · `
             origemMov = 'despesa'
           }
@@ -490,6 +493,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
           orig: val,
           pedidoId,
           pedidoNumero,
+          despesaId,
           parcelaNumero,
           parcelaTipo,
           origem: origemMov,

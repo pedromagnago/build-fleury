@@ -380,8 +380,9 @@ export default function PainelControlePage() {
   const [expandedSection, setExpandedSection] = useState<'diretos' | 'indiretos' | 'capital' | null>(null)
   const qtdCasas = currentCompany?.qtd_casas ?? 1
 
-  const fcTotals = useMemo(() => {
+  const { fcTotals, despesaFcMap } = useMemo(() => {
     const t = { medicoes: 0, capitalMutuo: 0, pedidosObra: 0, despesasIndiretas: 0, mutuoDevolucoes: 0 }
+    const dMap: Record<string, number> = {}
     for (const ev of fcEvents) {
       const origem = ev.meta?.origem
       const cat = ev.meta?.cat ?? ''
@@ -392,12 +393,15 @@ export default function PainelControlePage() {
         if (origem === 'medicao') t.medicoes += ev.valor
         else if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) t.capitalMutuo += ev.valor
       } else {
-        if (origem === 'despesa') t.despesasIndiretas += ev.valor
+        if (origem === 'despesa') {
+          t.despesasIndiretas += ev.valor
+          if (ev.meta?.despesaId) dMap[ev.meta.despesaId] = (dMap[ev.meta.despesaId] ?? 0) + ev.valor
+        }
         else if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) t.mutuoDevolucoes += ev.valor
         else if (cat !== 'Banco' && origem !== 'avulsa') t.pedidosObra += ev.valor
       }
     }
-    return t
+    return { fcTotals: t, despesaFcMap: dMap }
   }, [fcEvents])
 
   // ─── Agregações ────────────────────────────────────────────────────────────
@@ -516,7 +520,7 @@ export default function PainelControlePage() {
   const integridadeRows: OrigemRow[] = [
     { label: 'Medições', sublabel: 'entradas do contrato', dot: 'bg-purple-500', route: '/recebimentos', inspectKey: 'medicoes', registrado: agg.medicoesPlanejadas, noFC: agg.medicoesComData, gap: agg.medicoesGap, gapNote: agg.medicoesGap > 0.5 ? 'sem data prevista → invisíveis ao FC' : undefined, severity: agg.medicoesGap > 0.5 ? 'gap' : 'ok' },
     { label: 'Pedidos de Obra', sublabel: 'saídas diretas', dot: 'bg-blue-500', route: '/compras', inspectKey: 'pedidos', registrado: agg.pedidosTotal, noFC: fcTotals.pedidosObra, gap: Math.abs(agg.pedidosTotal - fcTotals.pedidosObra), gapNote: Math.abs(agg.pedidosTotal - fcTotals.pedidosObra) > 0.5 ? (fcTotals.pedidosObra > agg.pedidosTotal ? 'FC inclui overrun acima do contratado' : 'parcelas cobrem menos que o contratado') : undefined, severity: Math.abs(agg.pedidosTotal - fcTotals.pedidosObra) > 0.5 ? 'warn' : 'ok' },
-    { label: 'Custos Indiretos', sublabel: 'saídas indiretas', dot: 'bg-rose-500', route: '/custos-indiretos', inspectKey: 'indiretos', registrado: agg.orcadoIndiretos, noFC: fcTotals.despesasIndiretas, gap: Math.abs(agg.orcadoIndiretos - fcTotals.despesasIndiretas), gapNote: Math.abs(agg.orcadoIndiretos - fcTotals.despesasIndiretas) > 0.5 ? (fcTotals.despesasIndiretas > agg.orcadoIndiretos ? 'banco pagou acima do orçado' : 'sem parcela → AUSENTES do FC') : undefined, severity: Math.abs(agg.orcadoIndiretos - fcTotals.despesasIndiretas) > 0.5 ? 'warn' : 'ok' },
+    { label: 'Custos Indiretos', sublabel: 'saídas indiretas', dot: 'bg-rose-500', route: '/custos-indiretos', inspectKey: 'indiretos', registrado: agg.pagoIndiretos, noFC: fcTotals.despesasIndiretas, gap: Math.abs(agg.pagoIndiretos - fcTotals.despesasIndiretas), gapNote: Math.abs(agg.pagoIndiretos - fcTotals.despesasIndiretas) > 0.5 ? (fcTotals.despesasIndiretas > agg.pagoIndiretos ? 'banco debitou acima do registrado nas parcelas' : 'sem parcela → AUSENTES do FC') : undefined, severity: Math.abs(agg.pagoIndiretos - fcTotals.despesasIndiretas) > 0.5 ? 'warn' : 'ok' },
     { label: 'Capital de Giro', sublabel: 'captações (entradas)', dot: 'bg-indigo-500', route: '/mutuos', inspectKey: 'capital', registrado: agg.capitalCaptado, noFC: fcTotals.capitalMutuo, gap: Math.abs(agg.capitalCaptado - fcTotals.capitalMutuo), gapNote: Math.abs(agg.capitalCaptado - fcTotals.capitalMutuo) > 0.5 ? (fcTotals.capitalMutuo > agg.capitalCaptado ? 'banco creditou acima do planejado' : 'sem data de captação') : undefined, severity: Math.abs(agg.capitalCaptado - fcTotals.capitalMutuo) > 0.5 ? 'warn' : 'ok' },
     { label: 'Devoluções de Mútuo', sublabel: 'saídas financeiras', dot: 'bg-amber-500', route: '/mutuos', inspectKey: 'devolucoes', registrado: agg.capitalContratadoParcelas, noFC: fcTotals.mutuoDevolucoes, gap: Math.abs(agg.capitalContratadoParcelas - fcTotals.mutuoDevolucoes), gapNote: Math.abs(agg.capitalContratadoParcelas - fcTotals.mutuoDevolucoes) > 0.5 ? (fcTotals.mutuoDevolucoes > agg.capitalContratadoParcelas ? 'banco pagou acima do planejado' : 'adiantamentos aguardando retorno') : undefined, severity: Math.abs(agg.capitalContratadoParcelas - fcTotals.mutuoDevolucoes) > 0.5 ? 'warn' : 'ok' },
     { label: 'Adiantamentos', sublabel: 'saídas antecipadas', dot: 'bg-orange-500', route: '/adiantamentos', registrado: aggNovo.adiantamentosTotal, noFC: aggNovo.adiantamentosComData, gap: aggNovo.adiantamentosGap, gapNote: aggNovo.adiantamentosGap > 0.5 ? 'sem data de pagamento → invisíveis ao FC' : undefined, severity: aggNovo.adiantamentosGap > 0.5 ? 'gap' : 'ok' },
@@ -810,6 +814,7 @@ export default function PainelControlePage() {
         despesas={despesas as any}
         fcTotalPedidos={fcTotals.pedidosObra}
         pedidosTotal={agg.pedidosTotal}
+        despesaFcMap={despesaFcMap}
       />
     </div>
   )

@@ -591,6 +591,12 @@ export default function RelatorioAnaliticoPage() {
     }
 
     // pagMap: item_compra_id → parcelas data (via pedido.item_compra_id)
+    // Exclui parcelas de pedidos cancelados para não inflar val_pago sem contrapartida no comprometido
+    const cancelledPedidoIds = new Set<string>()
+    for (const pi of pedidoItens as any[]) {
+      if (pi.pedidos?.status === 'cancelado') cancelledPedidoIds.add(pi.pedido_id)
+    }
+
     const pagMap = new Map<string, {
       val_parcelas: number; val_pago: number
       data_vencimento_prox: string | null; data_prevista_pag: string | null; data_pago_ult: string | null
@@ -598,6 +604,7 @@ export default function RelatorioAnaliticoPage() {
     for (const par of parcelas as any[]) {
       const itemId = par.item_compra_id
       if (!itemId) continue
+      if (par.pedido_id && cancelledPedidoIds.has(par.pedido_id)) continue
       const existing = pagMap.get(itemId) ?? {
         val_parcelas: 0, val_pago: 0,
         data_vencimento_prox: null, data_prevista_pag: null, data_pago_ult: null,
@@ -972,7 +979,7 @@ export default function RelatorioAnaliticoPage() {
       return [
         { label: 'Orçado',        value: formatCurrency(val_orcado),       cls: '' },
         { label: 'Comprometido',  value: formatCurrency(val_comprometido), sub: val_orcado > 0 ? fmtPct((val_comprometido/val_orcado)*100) : null, cls: 'text-blue-600' },
-        { label: 'Pago',          value: formatCurrency(val_pago),         sub: val_comprometido > 0 ? fmtPct((val_pago/val_comprometido)*100) : null, cls: 'text-emerald-600' },
+        { label: 'Pago',          value: formatCurrency(val_pago),         sub: val_orcado > 0 ? fmtPct((val_pago/val_orcado)*100) : null, cls: 'text-emerald-600' },
         { label: 'A Pagar',       value: formatCurrency(val_a_pagar),      cls: 'text-amber-600' },
         { label: 'Saldo Orç.',    value: formatCurrency(val_orcado - val_comprometido), cls: (val_orcado - val_comprometido) >= 0 ? '' : 'text-red-600' },
       ]

@@ -79,6 +79,7 @@ interface GapInspectorDrawerProps {
   despesas: Despesa[]
   fcTotalPedidos: number
   pedidosTotal: number
+  despesaFcMap?: Record<string, number>
 }
 
 // ─── helpers visuais ─────────────────────────────────────────────────────────
@@ -343,17 +344,88 @@ function SecaoPedidos({ pedidos, parcelas }: { pedidos: Pedido[]; parcelas: Parc
   )
 }
 
-function SecaoIndiretos({ despesas, parcelas }: { despesas: Despesa[]; parcelas: Parcela[] }) {
+function SecaoIndiretos({
+  despesas, parcelas, despesaFcMap,
+}: {
+  despesas: Despesa[]
+  parcelas: Parcela[]
+  despesaFcMap?: Record<string, number>
+}) {
   const [openDespesa, setOpenDespesa] = useState<Despesa | null>(null)
   const [openParcela, setOpenParcela] = useState<Parcela | null>(null)
   const despesasComParcela = new Set(parcelas.filter(p => p.despesa_indireta_id).map(p => p.despesa_indireta_id))
   const semParcela = despesas.filter(d => !despesasComParcela.has(d.id))
   const comParcela = despesas.filter(d => despesasComParcela.has(d.id))
 
+  // Despesas onde o banco pagou diferente do registrado na parcela
+  const comOverrun = despesaFcMap
+    ? comParcela.filter(d => {
+        const banco = despesaFcMap[d.id] ?? 0
+        const parcs = parcelas.filter(p => p.despesa_indireta_id === d.id)
+        const pago = parcs.reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
+        return Math.abs(banco - pago) > 0.5
+      })
+    : []
+
   return (
     <>
-      {semParcela.length > 0 && (
+      {/* Seção: banco diverge do registrado (overrun ou underrun) */}
+      {comOverrun.length > 0 && (
         <div className="space-y-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-600">Banco ≠ parcela registrada</div>
+          <ul className="space-y-3">
+            {comOverrun.map(d => {
+              const banco = despesaFcMap![d.id] ?? 0
+              const parcs = parcelas.filter(p => p.despesa_indireta_id === d.id)
+              const pago = parcs.reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
+              const diff = banco - pago
+              return (
+                <li key={d.id} className="rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-950/20 dark:border-rose-800 p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-semibold">{d.categoria}</span>
+                      <div className="text-[11px] text-muted-foreground mt-0.5 leading-tight">{d.descricao}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 text-[11px]">
+                    <div>
+                      <div className="text-muted-foreground">Orçado</div>
+                      <div className="font-semibold tabular-nums">{formatCurrency(d.valor_orcado)}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Parcela paga</div>
+                      <div className="font-semibold tabular-nums">{formatCurrency(pago)}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Banco (FC)</div>
+                      <div className="font-semibold tabular-nums">{formatCurrency(banco)}</div>
+                    </div>
+                  </div>
+                  <div className={`flex items-center gap-1.5 text-[11px] ${diff > 0 ? 'text-rose-600' : 'text-amber-600'}`}>
+                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                    {diff > 0
+                      ? `Banco debitou ${formatCurrency(diff)} a mais — ajuste o valor_pago na parcela`
+                      : `Banco debitou ${formatCurrency(Math.abs(diff))} a menos que o registrado`}
+                  </div>
+                  <div className="flex gap-2">
+                    {parcs.map(p => (
+                      <button key={p.id} onClick={() => setOpenParcela(p)} className={`${BTN_SM} bg-primary text-primary-foreground hover:bg-primary/90`}>
+                        <Pencil className="h-3 w-3" /> Editar parcela {p.numero_parcela}
+                      </button>
+                    ))}
+                    <button onClick={() => setOpenDespesa(d as any)} className={`${BTN_SM} border hover:bg-muted text-muted-foreground`}>
+                      <Pencil className="h-3 w-3" /> Editar despesa
+                    </button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      {semParcela.length > 0 && (
+        <div className={`space-y-3 ${comOverrun.length > 0 ? 'mt-5' : ''}`}>
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Sem parcela gerada</div>
           <ul className="space-y-3">
             {semParcela.map(d => (
@@ -372,7 +444,7 @@ function SecaoIndiretos({ despesas, parcelas }: { despesas: Despesa[]; parcelas:
         </div>
       )}
       {comParcela.length > 0 && (
-        <div className="space-y-3 mt-4">
+        <div className={`space-y-3 ${semParcela.length > 0 || comOverrun.length > 0 ? 'mt-5' : ''}`}>
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Com parcela — editar condições</div>
           <ul className="space-y-3">
             {comParcela.map(d => {
@@ -392,7 +464,7 @@ function SecaoIndiretos({ despesas, parcelas }: { despesas: Despesa[]; parcelas:
           </ul>
         </div>
       )}
-      {semParcela.length === 0 && comParcela.length === 0 && <EmptyState msg="Nenhuma despesa indireta encontrada." />}
+      {semParcela.length === 0 && comParcela.length === 0 && comOverrun.length === 0 && <EmptyState msg="Nenhuma despesa indireta encontrada." />}
       {openDespesa && <DespesaIndiretaModal initialData={openDespesa as any} onClose={() => setOpenDespesa(null)} />}
       {openParcela && <EditParcelaModal parcela={openParcela} onClose={() => setOpenParcela(null)} onDone={() => setOpenParcela(null)} />}
     </>
@@ -629,7 +701,7 @@ function SecaoOrfas({ parcelas, pedidos }: { parcelas: Parcela[]; pedidos: Pedid
 
 export function GapInspectorDrawer({
   origin, onClose,
-  medicoes, pedidos, parcelas, mutuos, despesas,
+  medicoes, pedidos, parcelas, mutuos, despesas, despesaFcMap,
 }: GapInspectorDrawerProps) {
   if (!origin) return null
   const { title, subtitle } = ORIGIN_LABELS[origin]
@@ -659,7 +731,7 @@ export function GapInspectorDrawer({
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {origin === 'medicoes'   && <SecaoMedicoes medicoes={medicoes} />}
           {origin === 'pedidos'    && <SecaoPedidos pedidos={pedidos} parcelas={parcelas} />}
-          {origin === 'indiretos'  && <SecaoIndiretos despesas={despesas} parcelas={parcelas} />}
+          {origin === 'indiretos'  && <SecaoIndiretos despesas={despesas} parcelas={parcelas} despesaFcMap={despesaFcMap} />}
           {origin === 'capital'    && <SecaoCapital mutuos={mutuos} />}
           {origin === 'devolucoes' && <SecaoDevolucoes mutuos={mutuos} parcelas={parcelas} />}
           {origin === 'orfas'      && <SecaoOrfas parcelas={parcelas} pedidos={pedidos} />}
