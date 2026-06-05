@@ -823,7 +823,7 @@ export default function RelatorioAnaliticoPage() {
     const etapaIndiretos = {
       id: '__INDIRETOS__', codigo: 'IND', nome: 'Custos Indiretos',
       casas_meta: 0, casas_real: 0, pct_fisico: null,
-      qtd_itens: indAgg.qtd_itens, qtd_pedidos: 0, val_com_nf: 0,
+      qtd_pedidos: 0, val_com_nf: 0,
       ...indAgg,
       saldo_orcado: indAgg.val_orcado - indAgg.val_comprometido,
       pct_comprometido: indAgg.val_orcado > 0 ? (indAgg.val_comprometido / indAgg.val_orcado) * 100 : null,
