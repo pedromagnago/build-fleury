@@ -7,14 +7,13 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  AlertTriangle, CheckCircle2, ArrowRight,
+  ArrowRight,
   Wallet, TrendingDown, TrendingUp, Scale,
   CalendarClock, CalendarCheck,
 } from 'lucide-react'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useSaldoContas } from '@/hooks/useFinanceiro'
 import { useMedicoes } from '@/hooks/useOperacional'
-import { useHealthChecks, type HealthCheck } from '@/hooks/useHealthChecks'
 import { formatCurrency } from '@/lib/utils'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -33,27 +32,6 @@ function addDays(iso: string, days: number): string {
 function fmtDate(iso: string): string {
   return new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
 }
-
-// Checks que são alertas críticos (vermelho)
-const CRITICAL_CHECK_IDS = new Set([
-  'parcelas-vencidas',
-  'saidas-sem-vinculo',
-  'entradas-sem-vinculo',
-  'parcelas-orfas',
-  'pago-vs-movs',
-])
-
-// Checks que são pendências operacionais (amarelo)
-const PENDING_CHECK_IDS = new Set([
-  'pedidos-sem-parcela',
-  'despesa-sem-parcela',
-  'mutuos-vencidos',
-  'estouro-orcamento',
-  'medicoes-sem-dist',
-  'parcela-parcial-atrasada',
-  'parcelas-dessinc',
-  'pedido-cancelado-com-parcela',
-])
 
 // ─── Sub-componentes ──────────────────────────────────────────────────────────
 
@@ -104,47 +82,12 @@ function SaldoCard({
   return link ? <Link to={link}>{content}</Link> : content
 }
 
-function AlertRow({ check, isCritical }: { check: HealthCheck; isCritical: boolean }) {
-  const totalValue = check.items.reduce((s, i) => s + (i.value ?? 0), 0)
-  return (
-    <div className={`flex items-center justify-between gap-3 py-2 px-3 rounded-lg ${
-      isCritical ? 'bg-red-500/5 border border-red-300/40' : 'bg-amber-500/5 border border-amber-300/40'
-    }`}>
-      <div className="flex items-center gap-2 min-w-0">
-        <span className={`inline-flex h-2 w-2 shrink-0 rounded-full ${isCritical ? 'bg-red-500' : 'bg-amber-500'}`} />
-        <div className="min-w-0">
-          <span className="text-sm font-medium">{check.title}</span>
-          {check.items.length > 0 && (
-            <span className="ml-2 text-xs text-muted-foreground">
-              {check.items.length} item{check.items.length > 1 ? 's' : ''}
-              {totalValue > 0 && ` · ${formatCurrency(totalValue)}`}
-            </span>
-          )}
-        </div>
-      </div>
-      {check.route && (
-        <Link
-          to={check.route}
-          className={`shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
-            isCritical
-              ? 'bg-red-600 text-white hover:bg-red-700'
-              : 'bg-amber-500 text-white hover:bg-amber-600'
-          }`}
-        >
-          {check.routeLabel ?? 'Ver'} <ArrowRight className="h-3 w-3" />
-        </Link>
-      )}
-    </div>
-  )
-}
-
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function Zona1Panel() {
   const { data: parcelas = [] } = useParcelas()
   const { data: medicoes = [] } = useMedicoes()
   const saldosContas = useSaldoContas()
-  const { checks } = useHealthChecks()
 
   const today = todayISO()
   const in7   = addDays(today, 7)
@@ -193,19 +136,7 @@ export function Zona1Panel() {
     return { saldoAtual, aPagar30d, aReceber30d, posicaoLiquida30d, vencimentos7d: { saidas, entradas } }
   }, [saldosContas, parcelas, medicoes, today, in7, in30])
 
-  // ─── Alertas dos health checks ────────────────────────────────────────────
-  const { criticos, pendencias } = useMemo(() => {
-    const criticos = checks.filter(
-      c => c.severity !== 'ok' && c.items.length > 0 && CRITICAL_CHECK_IDS.has(c.id)
-    )
-    const pendencias = checks.filter(
-      c => c.severity !== 'ok' && c.items.length > 0 && PENDING_CHECK_IDS.has(c.id)
-    )
-    return { criticos, pendencias }
-  }, [checks])
-
   const posicaoTone = posicaoLiquida30d >= 0 ? 'success' : 'danger'
-  const semAlertas = criticos.length === 0 && pendencias.length === 0
 
   return (
     <div className="space-y-4">
@@ -249,48 +180,6 @@ export function Zona1Panel() {
           />
         </div>
       </div>
-
-      {/* ─── Alertas e Pendências ─── */}
-      {semAlertas ? (
-        <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
-          <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-          <span className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
-            Nenhum alerta crítico ou pendência operacional no momento.
-          </span>
-        </div>
-      ) : (
-        <div className="grid gap-3 md:grid-cols-2">
-          {/* Críticos */}
-          {criticos.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-1.5">
-                <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-red-600">
-                  Crítico — ação imediata ({criticos.length})
-                </span>
-              </div>
-              {criticos.map(c => (
-                <AlertRow key={c.id} check={c} isCritical />
-              ))}
-            </div>
-          )}
-
-          {/* Pendências */}
-          {pendencias.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-1.5">
-                <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-600">
-                  Pendências operacionais ({pendencias.length})
-                </span>
-              </div>
-              {pendencias.map(c => (
-                <AlertRow key={c.id} check={c} isCritical={false} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ─── Próximos Vencimentos (7 dias) ─── */}
       {(vencimentos7d.saidas.length > 0 || vencimentos7d.entradas.length > 0) && (
