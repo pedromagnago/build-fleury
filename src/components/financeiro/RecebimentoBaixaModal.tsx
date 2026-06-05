@@ -8,6 +8,7 @@ import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useDropzone } from 'react-dropzone'
 import { X, Check, Upload, CircleDollarSign } from 'lucide-react'
+import { aplicarDeltaOrigem } from '@/hooks/useConciliacao'
 
 const INPUT = 'flex h-9 w-full rounded-lg border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary disabled:opacity-50'
 const LABEL = 'mb-1 block text-xs font-semibold text-muted-foreground uppercase tracking-wider'
@@ -131,29 +132,10 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
       if (eMov) throw eMov
       if (!movRow) throw new Error('Movimentação não criada')
 
-      // 3. Atualizar origem (só após movimentação criada com sucesso)
-      if (item.origem === 'medicao') {
-        const novoLiberado = Number(item.raw.valor_liberado ?? 0) + valorRecebido
-        const total = Number(item.raw.valor_planejado ?? item.valor_total)
-        const novoStatus = novoLiberado >= total - 0.01 ? 'paga' : 'em_medicao'
-        const { error } = await supabase.from('medicoes').update({
-          valor_liberado: novoLiberado,
-          status: novoStatus,
-          data_liberacao: form.data_recebimento,
-          ...(form.observacoes.trim() ? { observacoes: form.observacoes.trim() } : {}),
-        }).eq('id', item.raw.id)
-        if (error) throw error
-      } else if (item.origem === 'adiantamento') {
-        const novoPago = Number(item.raw.valor_pago ?? 0) + valorRecebido
-        const total = Number(item.raw.valor ?? item.valor_total)
-        const novoStatus = novoPago >= total - 0.01 ? 'paga' : 'parcialmente_paga'
-        const { error } = await supabase.from('mutuo_parcelas').update({
-          valor_pago: novoPago,
-          data_pagamento_real: form.data_recebimento,
-          status: novoStatus,
-          ...(form.observacoes.trim() ? { observacoes: form.observacoes.trim() } : {}),
-        }).eq('id', item.raw.id)
-        if (error) throw error
+      // 3. Observações opcionais da origem (sem tocar em valor_liberado/valor_pago — feito
+      //    via aplicarDeltaOrigem abaixo, que lê do banco fresco evitando sobrescrita stale)
+      if (form.observacoes.trim() && item.origem === 'medicao') {
+        await supabase.from('medicoes').update({ observacoes: form.observacoes.trim() }).eq('id', item.raw.id)
       }
       // captacao: status derivado pelas conciliações — sem UPDATE direto
 
@@ -183,6 +165,13 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
 
       const { error: eCp } = await supabase.from('conciliacao_parcelas').insert(linkRow)
       if (eCp) throw eCp
+
+      // 5b. Recalcular saldo/status da origem lendo do banco (nunca usa item.raw que pode estar stale)
+      if (item.origem === 'medicao') {
+        await aplicarDeltaOrigem('medicao', item.raw.id, valorRecebido, form.data_recebimento)
+      } else if (item.origem === 'adiantamento') {
+        await aplicarDeltaOrigem('mutuo_parcela', item.raw.id, valorRecebido, form.data_recebimento)
+      }
 
       // 6. Audit log
       await supabase.from('audit_logs').insert({
