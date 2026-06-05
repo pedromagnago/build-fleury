@@ -296,7 +296,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
 
   const totals = filtered.reduce(
     (acc, i) => {
-      const itemConsumido = pedidos.filter(p => p.item_compra_id === i.id).reduce((s, p) => s + (p.valor_total_real || 0), 0)
+      const itemConsumido = consumoPorItem.get(i.id)?.valor_comprometido ?? 0
       const pago = parcelas.filter(p => p.item_compra_id === i.id).reduce((s, p) => s + (p.valor_pago || 0), 0)
       return { orcado: acc.orcado + i.valor_total_orcado, consumido: acc.consumido + itemConsumido, pago: acc.pago + pago }
     },
