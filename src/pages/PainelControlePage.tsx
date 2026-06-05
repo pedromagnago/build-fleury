@@ -502,12 +502,28 @@ export default function PainelControlePage() {
     const map = new Map<string, { etapa_nome: string; etapa_ordem: number; orcado: number; pedidos: number; pago: number; itensCount: number }>()
     const parcPorPedido = new Map<string, number>()
     for (const p of parcelas) { if (p.pedido_id) parcPorPedido.set(p.pedido_id, (parcPorPedido.get(p.pedido_id) ?? 0) + (Number(p.valor_pago) || 0)) }
+    // pedidosPorItem híbrido: mesma lógica do pedMap em useCashFlowEvents
+    // Pedidos COM linhas → cada pi.item_compra_id recebe sua parte; SEM linhas → header recebe tudo
     const pedidosPorItem = new Map<string, { total: number; pago: number }>()
     for (const ped of pedidos) {
-      const curr = pedidosPorItem.get(ped.item_compra_id) ?? { total: 0, pago: 0 }
-      curr.total += Number(ped.valor_total_real) || 0
-      curr.pago += parcPorPedido.get(ped.id) ?? 0
-      pedidosPorItem.set(ped.item_compra_id, curr)
+      const pagoPed = parcPorPedido.get(ped.id) ?? 0
+      if (ped.itens && ped.itens.length > 0) {
+        for (const pi of ped.itens) {
+          if ((pi as any).fora_orcamento === true) continue
+          const curr = pedidosPorItem.get(pi.item_compra_id) ?? { total: 0, pago: 0 }
+          curr.total += Number(pi.valor_total_real) || 0
+          pedidosPorItem.set(pi.item_compra_id, curr)
+        }
+        // pago é do pedido inteiro — atribui ao item_compra_id do header (proxy)
+        const curr = pedidosPorItem.get(ped.item_compra_id) ?? { total: 0, pago: 0 }
+        curr.pago += pagoPed
+        pedidosPorItem.set(ped.item_compra_id, curr)
+      } else {
+        const curr = pedidosPorItem.get(ped.item_compra_id) ?? { total: 0, pago: 0 }
+        curr.total += Number(ped.valor_total_real) || 0
+        curr.pago += pagoPed
+        pedidosPorItem.set(ped.item_compra_id, curr)
+      }
     }
     for (const item of itens) {
       const etapa = etapas.find(e => e.id === item.etapa_id)

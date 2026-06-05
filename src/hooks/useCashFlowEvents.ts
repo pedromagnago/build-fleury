@@ -790,19 +790,32 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // 6. SAÍDAS BRUTAS — Previsto de itens sem pedido ("planejado" e "completo")
     // ═══════════════════════════════════════════════════════════
     if (viewMode === 'completo') {
-      // Alinhado com useDashboardKPIs.planejadoBruto:
-      //   1. Exclui pedidos cancelados (não representam compromisso real)
-      //   2. Usa valor líquido: valor_total_real − valor_coberto_por_realizacao
-      //      (para previsões parcialmente cobertas por NF externas)
-      //   3. NÃO subtrai valor_consumido — o consumo via NF já está no pedMap
-      //      (via pedido âncora); subtrair causava double-count de ~R$400k no Realize SFP
+      // pedMap híbrido — atribuição correta por item:
+      //   • Pedidos COM pedido_itens (pós-migration): cada linha vai pro seu item_compra_id real
+      //   • Pedidos SEM pedido_itens (legado, entrada manual): todo o valor vai pro header item
+      //   • Pedidos cancelados excluídos; valor líquido (− valor_coberto_por_realizacao) para previsões
+      //   • fora_orcamento excluído (sobra de NF, não representa orçamento real)
+      //   Sem essa separação, pedidos multi-item atribuíam o valor total ao item-cabeçalho
+      //   (ex: Ferramentas Geral orçado R$5k aparecia comprometido com R$81k do pedido inteiro).
       const pedMap = new Map<string, number>()
-      pedidos
-        .filter(p => p.status !== 'cancelado')
-        .forEach(p => {
-          const vlLiquido = Math.max(0, Number(p.valor_total_real || 0) - Number((p as any).valor_coberto_por_realizacao || 0))
-          pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + vlLiquido)
-        })
+      for (const p of pedidos) {
+        if (p.status === 'cancelado') continue
+        const coberto = Number((p as any).valor_coberto_por_realizacao || 0)
+        if (p.itens && p.itens.length > 0) {
+          // Pedido com linhas: atribui cada linha ao seu item_compra_id
+          for (const pi of p.itens) {
+            if ((pi as any).fora_orcamento === true) continue
+            const val = Number(pi.valor_total_real || 0)
+            if (val <= 0) continue
+            pedMap.set(pi.item_compra_id, (pedMap.get(pi.item_compra_id) || 0) + val)
+          }
+        } else {
+          // Pedido legado (sem linhas): atribui valor líquido ao header item
+          const val = Math.max(0, Number(p.valor_total_real || 0) - coberto)
+          if (val <= 0) continue
+          pedMap.set(p.item_compra_id, (pedMap.get(p.item_compra_id) || 0) + val)
+        }
+      }
 
       itens.forEach(item => {
         const comPed = Math.min(pedMap.get(item.id) || 0, Number(item.valor_total_orcado))
