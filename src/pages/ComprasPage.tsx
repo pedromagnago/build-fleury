@@ -174,6 +174,7 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
   // Drill-down: item de orçamento selecionado pra ver detalhes de consumo
   const [drillDownItemId, setDrillDownItemId] = useState<string | null>(null)
   const selection = useSelection()
+  const [filterAcimaOrcado, setFilterAcimaOrcado] = useState(false)
 
   // Pós-migration: consumo é derivado de pedido_itens agrupado por item_compra_id.
   // Antes a tabela usava pedido.valor_total_real direto, o que sobre-contava em
@@ -288,7 +289,9 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
     const matchSearch = i.descricao.toLowerCase().includes(search.toLowerCase()) ||
       i.codigo.toLowerCase().includes(search.toLowerCase())
     const matchEtapa = filterEtapa ? i.etapa_id === filterEtapa : true
-    return matchSearch && matchEtapa
+    const comprometido = consumoPorItem.get(i.id)?.valor_comprometido ?? 0
+    const matchOverrun = filterAcimaOrcado ? comprometido > i.valor_total_orcado + 0.01 : true
+    return matchSearch && matchEtapa && matchOverrun
   })
 
   const totals = filtered.reduce(
@@ -311,7 +314,23 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
         <MiniCard label="Saldo" value={formatCurrency(totals.orcado - totals.consumido)} accent={totals.orcado - totals.consumido >= 0 ? 'emerald' : 'red'} />
       </div>
 
-      <div className="mb-4 flex justify-end">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <button
+          onClick={() => setFilterAcimaOrcado(v => !v)}
+          className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+            filterAcimaOrcado
+              ? 'border-red-400 bg-red-500/10 text-red-600'
+              : 'border-border text-muted-foreground hover:text-foreground hover:bg-accent'
+          }`}
+        >
+          <AlertTriangle className="h-3.5 w-3.5" />
+          Acima do orçado
+          {filterAcimaOrcado && (
+            <span className="rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+              {filtered.length}
+            </span>
+          )}
+        </button>
         <button onClick={() => { resetForm(); setShowForm(true) }} className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
           <Plus className="h-4 w-4" /> Novo Item
         </button>
