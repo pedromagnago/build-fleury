@@ -26,6 +26,7 @@ import { useItensCompra, usePedidos } from '@/hooks/useCompras'
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
 import { useMutuos } from '@/hooks/useMutuos'
+import { useProjetoKPIs } from '@/hooks/useProjetoKPIs'
 import { useMedicoes, useMovimentacoes } from '@/hooks/useOperacional'
 import { useEtapas } from '@/hooks/useEtapas'
 import { useProject } from '@/contexts/ProjectContext'
@@ -352,6 +353,7 @@ export default function PainelControlePage() {
   const { data: parcelas = [] } = useParcelas()
   const { despesas = [] } = useDespesasIndiretas()
   const { data: mutuos = [] } = useMutuos()
+  const projetoKPIs = useProjetoKPIs()
   const { data: medicoes = [] } = useMedicoes()
   const { data: movimentacoes = [] } = useMovimentacoes()
   const { data: etapas = [] } = useEtapas()
@@ -380,9 +382,13 @@ export default function PainelControlePage() {
   const [expandedSection, setExpandedSection] = useState<'diretos' | 'indiretos' | 'capital' | null>(null)
   const qtdCasas = currentCompany?.qtd_casas ?? 1
 
-  const { fcTotals, despesaFcMap } = useMemo(() => {
+  const { fcTotals, despesaFcMap, pedidoFcMap, medicaoFcMap, mutuoCaptacaoFcMap, mutuoDevolucaoFcMap } = useMemo(() => {
     const t = { medicoes: 0, capitalMutuo: 0, pedidosObra: 0, despesasIndiretas: 0, mutuoDevolucoes: 0 }
     const dMap: Record<string, number> = {}
+    const pMap: Record<string, number> = {}
+    const mMap: Record<string, number> = {}
+    const mcMap: Record<string, number> = {}
+    const mdMap: Record<string, number> = {}
     for (const ev of fcEvents) {
       const origem = ev.meta?.origem
       const cat = ev.meta?.cat ?? ''
@@ -390,18 +396,34 @@ export default function PainelControlePage() {
       if ((origem as string) === 'transferencia' || cat === 'Transferência Interna') continue
       if (ev.type === 'bruto') continue
       if (ev.type === 'entrada') {
-        if (origem === 'medicao') t.medicoes += ev.valor
-        else if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) t.capitalMutuo += ev.valor
+        if (origem === 'medicao') {
+          t.medicoes += ev.valor
+          if (ev.meta?.medicaoId) mMap[ev.meta.medicaoId] = (mMap[ev.meta.medicaoId] ?? 0) + ev.valor
+        } else if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) {
+          t.capitalMutuo += ev.valor
+          if (ev.meta?.mutuoId) mcMap[ev.meta.mutuoId] = (mcMap[ev.meta.mutuoId] ?? 0) + ev.valor
+        }
       } else {
         if (origem === 'despesa') {
           t.despesasIndiretas += ev.valor
           if (ev.meta?.despesaId) dMap[ev.meta.despesaId] = (dMap[ev.meta.despesaId] ?? 0) + ev.valor
+        } else if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) {
+          t.mutuoDevolucoes += ev.valor
+          if (ev.meta?.mutuoId) mdMap[ev.meta.mutuoId] = (mdMap[ev.meta.mutuoId] ?? 0) + ev.valor
+        } else if (cat !== 'Banco' && origem !== 'avulsa') {
+          t.pedidosObra += ev.valor
+          if (ev.meta?.pedidoId) pMap[ev.meta.pedidoId] = (pMap[ev.meta.pedidoId] ?? 0) + ev.valor
         }
-        else if (origem === 'mutuo' || etapa === 'Capital' || cat.toLowerCase().includes('mútuo')) t.mutuoDevolucoes += ev.valor
-        else if (cat !== 'Banco' && origem !== 'avulsa') t.pedidosObra += ev.valor
       }
     }
-    return { fcTotals: t, despesaFcMap: dMap }
+    return {
+      fcTotals: t,
+      despesaFcMap: dMap,
+      pedidoFcMap: pMap,
+      medicaoFcMap: mMap,
+      mutuoCaptacaoFcMap: mcMap,
+      mutuoDevolucaoFcMap: mdMap,
+    }
   }, [fcEvents])
 
   // ─── Agregações ────────────────────────────────────────────────────────────
@@ -547,9 +569,9 @@ export default function PainelControlePage() {
 
       {/* ── KPIs macro ── */}
       <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
-        <KpiCard icon={Wallet} label="Orçado Operacional" value={formatCurrency(agg.orcadoOperacional)} sub={`R$/casa: ${formatCurrency(agg.orcadoOperacional / qtdCasas)}`} tone="primary" />
-        <KpiCard icon={Package} label="Pedidos" value={formatCurrency(agg.pedidosTotal)} sub={`${pct(agg.pedidosTotal, agg.orcadoDiretos)} do orç. diretos`} />
-        <KpiCard icon={CreditCard} label="Pago Operacional" value={formatCurrency(agg.pagoOperacional)} sub={`${pct(agg.pagoOperacional, agg.orcadoOperacional)} do orçado`} tone="success" />
+        <KpiCard icon={Wallet} label="Orçado Operacional" value={formatCurrency(projetoKPIs.orcadoOperacional)} sub={`R$/casa: ${formatCurrency(projetoKPIs.orcadoOperacional / qtdCasas)}`} tone="primary" />
+        <KpiCard icon={Package} label="Pedidos" value={formatCurrency(projetoKPIs.pedidosTotal)} sub={`${pct(projetoKPIs.pedidosTotal, projetoKPIs.orcadoDiretos)} do orç. diretos`} />
+        <KpiCard icon={CreditCard} label="Pago" value={formatCurrency(projetoKPIs.pagoTotal)} sub={`${pct(projetoKPIs.pagoTotal, projetoKPIs.orcadoOperacional)} do orçado`} tone="success" />
         <KpiCard icon={Landmark} label="Custo Financeiro" value={formatCurrency(agg.custoFinanceiroProjetado)} sub={`juros pago: ${formatCurrency(agg.custoFinanceiroRealizado)}`} tone="warning" />
         <KpiCard icon={FileCheck2} label="Medições Lib." value={formatCurrency(agg.medicoesLiberadas)} sub={`planejado: ${formatCurrency(agg.medicoesPlanejadas)}`} />
         <KpiCard icon={Math.abs(agg.gap) > 1 ? TrendingDown : TrendingUp} label="Gap Pago↔Banco" value={formatCurrency(agg.gap)} sub={Math.abs(agg.gap) <= 1 ? 'conciliado' : 'divergência'} tone={Math.abs(agg.gap) > 1 ? 'danger' : 'success'} />
@@ -815,6 +837,10 @@ export default function PainelControlePage() {
         fcTotalPedidos={fcTotals.pedidosObra}
         pedidosTotal={agg.pedidosTotal}
         despesaFcMap={despesaFcMap}
+        pedidoFcMap={pedidoFcMap}
+        medicaoFcMap={medicaoFcMap}
+        mutuoCaptacaoFcMap={mutuoCaptacaoFcMap}
+        mutuoDevolucaoFcMap={mutuoDevolucaoFcMap}
       />
     </div>
   )

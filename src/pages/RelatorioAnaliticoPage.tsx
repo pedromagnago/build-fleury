@@ -7,6 +7,8 @@ import { useParcelas } from '@/hooks/useFinanceiro'
 import { useMedicoes } from '@/hooks/useOperacional'
 import { useMedicaoParcelas } from '@/hooks/useMedicaoParcelas'
 import { useMutuos } from '@/hooks/useMutuos'
+import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
+import { useProjetoKPIs } from '@/hooks/useProjetoKPIs'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import {
@@ -197,6 +199,8 @@ const TIPO_LABEL: Record<string, { label: string; cls: string }> = {
   MATERIAL:      { label: 'Material',    cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200' },
   MAO_DE_OBRA:   { label: 'Mão de Obra', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-200' },
   EQUIPAMENTO:   { label: 'Equip.',      cls: 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-200' },
+  DESPESA:       { label: 'Indireta',    cls: 'bg-rose-100 text-rose-700 dark:bg-rose-900 dark:text-rose-200' },
+  CAPITAL:       { label: 'Capital',     cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200' },
 }
 
 const STATUS_PEDIDO_LABEL: Record<string, { label: string; cls: string }> = {
@@ -533,8 +537,10 @@ export default function RelatorioAnaliticoPage() {
   const { data: medicoes = [] }       = useMedicoes()
   const { data: medParcelas = [] }    = useMedicaoParcelas()
   const { data: mutuos = [] }         = useMutuos()
+  const { despesas = [] }             = useDespesasIndiretas()
   const { data: fornecedores = [] }   = useFornecedores()
   const { data: avancos = [] }        = useAvancos()
+  const kpis                          = useProjetoKPIs()
 
   // ── Builder state ───────────────────────────────────────────────────────────
   const [config, setConfig] = usePersistedState<BuilderConfig>('relatorio-analitico-v2', {
@@ -548,9 +554,11 @@ export default function RelatorioAnaliticoPage() {
   const [search, setSearch] = useState('')
 
   // ── Filter options ──────────────────────────────────────────────────────────
-  const etapasOptions = useMemo(() =>
-    etapas.map(e => ({ id: e.id, label: `${e.codigo} ${e.nome}` })).sort((a, b) => a.label.localeCompare(b.label)),
-  [etapas])
+  const etapasOptions = useMemo(() => [
+    ...etapas.map(e => ({ id: e.id, label: `${e.codigo} ${e.nome}` })).sort((a, b) => a.label.localeCompare(b.label)),
+    { id: '__INDIRETOS__', label: 'IND Custos Indiretos' },
+    { id: '__CAPITAL__',   label: 'CG Capital de Giro' },
+  ], [etapas])
 
   const fornecedoresOptions = useMemo(() => {
     const names = new Set<string>()
@@ -674,6 +682,76 @@ export default function RelatorioAnaliticoPage() {
     })
   }, [itens, pedidoItens, parcelas, etapas])
 
+  // ── Virtual rows: despesas indiretas ─────────────────────────────────────────
+  const despesaVirtualRows = useMemo(() => {
+    const despPagMap = new Map<string, { val_parcelas: number; val_pago: number }>()
+    for (const par of parcelas as any[]) {
+      const despId = par.despesa_indireta_id
+      if (!despId) continue
+      const ex = despPagMap.get(despId) ?? { val_parcelas: 0, val_pago: 0 }
+      ex.val_parcelas += Number(par.valor ?? 0)
+      ex.val_pago += Math.min(Number(par.valor_pago ?? 0), Number(par.valor ?? 0))
+      despPagMap.set(despId, ex)
+    }
+    return despesas.map(d => {
+      const pag = despPagMap.get(d.id)
+      const val_orcado       = Number(d.valor_orcado ?? 0)
+      const val_comprometido = pag?.val_parcelas ?? 0
+      const val_pago         = pag?.val_pago ?? 0
+      const val_a_pagar      = Math.max(0, val_comprometido - val_pago)
+      return {
+        id: `DESP__${d.id}`,
+        etapa_id: '__INDIRETOS__',
+        etapa_nome: 'Custos Indiretos',
+        etapa_codigo: 'IND',
+        item_codigo: d.categoria,
+        item_descricao: d.descricao,
+        item_tipo: 'DESPESA',
+        item_unidade: null, item_qtd_total: null, item_custo_unit: null,
+        fornecedor: d.fornecedor_nome ?? null,
+        fornecedor_id: d.fornecedor_id ?? null,
+        observacoes: d.observacoes ?? null,
+        val_orcado, val_comprometido,
+        qtd_pedida: 0, qtd_recebida: 0, val_com_nf: 0, num_pedidos: 0,
+        val_parcelas: val_comprometido, val_pago, val_a_pagar,
+        saldo_orcado: val_orcado - val_comprometido,
+        pct_comprometido: val_orcado > 0 ? (val_comprometido / val_orcado) * 100 : null,
+        pct_pago: val_comprometido > 0 ? (val_pago / val_comprometido) * 100 : null,
+        data_vencimento_prox: null, data_prevista_pag: null, data_pago_ult: null,
+      }
+    })
+  }, [despesas, parcelas])
+
+  // ── Virtual rows: capital de giro (mutuos) ───────────────────────────────────
+  const capitalVirtualRows = useMemo(() => {
+    return mutuos.map(m => {
+      const parc           = (m as any).parcelas ?? []
+      const val_comprometido = parc.reduce((s: number, p: any) => s + Number(p.valor ?? 0), 0)
+      const val_pago         = parc.reduce((s: number, p: any) => s + Number(p.valor_pago ?? 0), 0)
+      const val_a_pagar      = Math.max(0, val_comprometido - val_pago)
+      return {
+        id: `MUT__${m.id}`,
+        etapa_id: '__CAPITAL__',
+        etapa_nome: 'Capital de Giro',
+        etapa_codigo: 'CG',
+        item_codigo: (m as any).tipo ?? 'CG',
+        item_descricao: m.nome,
+        item_tipo: 'CAPITAL',
+        item_unidade: null, item_qtd_total: null, item_custo_unit: null,
+        fornecedor: (m as any).instituicao ?? null,
+        fornecedor_id: null,
+        observacoes: m.observacoes ?? null,
+        val_orcado: 0, val_comprometido,
+        qtd_pedida: 0, qtd_recebida: 0, val_com_nf: 0, num_pedidos: 0,
+        val_parcelas: val_comprometido, val_pago, val_a_pagar,
+        saldo_orcado: -val_comprometido,
+        pct_comprometido: null,
+        pct_pago: val_comprometido > 0 ? (val_pago / val_comprometido) * 100 : null,
+        data_vencimento_prox: null, data_prevista_pag: null, data_pago_ult: null,
+      }
+    })
+  }, [mutuos])
+
   // ── Data aggregation: etapa rows ─────────────────────────────────────────────
   const etapaRows = useMemo(() => {
     // Aggregate from itemRows
@@ -704,7 +782,7 @@ export default function RelatorioAnaliticoPage() {
       casasRealMap.set(av.etapa_id, (casasRealMap.get(av.etapa_id) ?? 0) + Number(av.casas_concluidas ?? 0))
     }
 
-    return etapas.map(e => {
+    const realEtapas = etapas.map(e => {
       const a = agg.get(e.id) ?? {
         val_orcado: 0, val_comprometido: 0, qtd_itens: 0, qtd_pedidos: 0,
         val_com_nf: 0, val_parcelas: 0, val_pago: 0, val_a_pagar: 0, pedido_ids: new Set()
@@ -730,7 +808,48 @@ export default function RelatorioAnaliticoPage() {
         pct_comprometido: a.val_orcado > 0 ? (a.val_comprometido / a.val_orcado) * 100 : null,
       }
     })
-  }, [etapas, itemRows, avancos])
+
+    // Etapa virtual: Custos Indiretos
+    const indAgg = despesaVirtualRows.reduce(
+      (acc, r) => ({
+        val_orcado: acc.val_orcado + r.val_orcado,
+        val_comprometido: acc.val_comprometido + r.val_comprometido,
+        val_pago: acc.val_pago + r.val_pago,
+        val_a_pagar: acc.val_a_pagar + r.val_a_pagar,
+        qtd_itens: acc.qtd_itens + 1,
+      }),
+      { val_orcado: 0, val_comprometido: 0, val_pago: 0, val_a_pagar: 0, qtd_itens: 0 }
+    )
+    const etapaIndiretos = {
+      id: '__INDIRETOS__', codigo: 'IND', nome: 'Custos Indiretos',
+      casas_meta: 0, casas_real: 0, pct_fisico: null,
+      qtd_itens: indAgg.qtd_itens, qtd_pedidos: 0, val_com_nf: 0,
+      ...indAgg,
+      saldo_orcado: indAgg.val_orcado - indAgg.val_comprometido,
+      pct_comprometido: indAgg.val_orcado > 0 ? (indAgg.val_comprometido / indAgg.val_orcado) * 100 : null,
+    }
+
+    // Etapa virtual: Capital de Giro
+    const capAgg = capitalVirtualRows.reduce(
+      (acc, r) => ({
+        val_comprometido: acc.val_comprometido + r.val_comprometido,
+        val_pago: acc.val_pago + r.val_pago,
+        val_a_pagar: acc.val_a_pagar + r.val_a_pagar,
+        qtd_itens: acc.qtd_itens + 1,
+      }),
+      { val_comprometido: 0, val_pago: 0, val_a_pagar: 0, qtd_itens: 0 }
+    )
+    const etapaCapital = {
+      id: '__CAPITAL__', codigo: 'CG', nome: 'Capital de Giro',
+      casas_meta: 0, casas_real: 0, pct_fisico: null,
+      val_orcado: 0, ...capAgg,
+      qtd_pedidos: 0, val_com_nf: 0, val_parcelas: capAgg.val_comprometido,
+      saldo_orcado: -capAgg.val_comprometido,
+      pct_comprometido: null,
+    }
+
+    return [...realEtapas, etapaIndiretos, etapaCapital]
+  }, [etapas, itemRows, avancos, despesaVirtualRows, capitalVirtualRows])
 
   // ── Data aggregation: pedido rows ────────────────────────────────────────────
   const pedidoRows = useMemo(() => {
@@ -883,13 +1002,14 @@ export default function RelatorioAnaliticoPage() {
   // ── Active rows (select by grain) ───────────────────────────────────────────
   const allRows = useMemo((): any[] => {
     const { grain } = config
-    if (grain === 'item')    return itemRows
+    // grain=item inclui linhas virtuais de indiretos e capital ao final
+    if (grain === 'item')    return [...itemRows, ...despesaVirtualRows, ...capitalVirtualRows]
     if (grain === 'etapa')   return etapaRows
     if (grain === 'pedido')  return pedidoRows
     if (grain === 'medicao') return medicaoRows
     if (grain === 'mutuo')   return mutualRows
     return []
-  }, [config.grain, itemRows, etapaRows, pedidoRows, medicaoRows, mutualRows])
+  }, [config.grain, itemRows, etapaRows, pedidoRows, medicaoRows, mutualRows, despesaVirtualRows, capitalVirtualRows])
 
   // ── Filter rows ─────────────────────────────────────────────────────────────
   const filteredRows = useMemo(() => {
@@ -969,19 +1089,15 @@ export default function RelatorioAnaliticoPage() {
     return spans
   }, [visibleCols])
 
-  // ── KPI totals ───────────────────────────────────────────────────────────────
-  const kpis = useMemo(() => {
+  // ── KPI totals — fonte única: useProjetoKPIs (mesmos números do Painel) ────────
+  const kpiCards = useMemo(() => {
     if (config.grain === 'item' || config.grain === 'etapa' || config.grain === 'pedido') {
-      const val_orcado     = sortedRows.reduce((s, r) => s + (r.val_orcado ?? 0), 0)
-      const val_comprometido = sortedRows.reduce((s, r) => s + (r.val_comprometido ?? 0), 0)
-      const val_pago       = sortedRows.reduce((s, r) => s + (r.val_pago ?? 0), 0)
-      const val_a_pagar    = sortedRows.reduce((s, r) => s + (r.val_a_pagar ?? 0), 0)
       return [
-        { label: 'Orçado',        value: formatCurrency(val_orcado),       cls: '' },
-        { label: 'Comprometido',  value: formatCurrency(val_comprometido), sub: val_orcado > 0 ? fmtPct((val_comprometido/val_orcado)*100) : null, cls: 'text-blue-600' },
-        { label: 'Pago',          value: formatCurrency(val_pago),         sub: val_orcado > 0 ? fmtPct((val_pago/val_orcado)*100) : null, cls: 'text-emerald-600' },
-        { label: 'A Pagar',       value: formatCurrency(val_a_pagar),      cls: 'text-amber-600' },
-        { label: 'Saldo Orç.',    value: formatCurrency(val_orcado - val_comprometido), cls: (val_orcado - val_comprometido) >= 0 ? '' : 'text-red-600' },
+        { label: 'Orçado Operacional', value: formatCurrency(kpis.orcadoOperacional), cls: '' },
+        { label: 'Pedidos',            value: formatCurrency(kpis.pedidosTotal),       sub: kpis.orcadoDiretos > 0 ? fmtPct((kpis.pedidosTotal/kpis.orcadoDiretos)*100) + ' do orç. diretos' : null, cls: 'text-blue-600' },
+        { label: 'Pago',               value: formatCurrency(kpis.pagoTotal),          sub: kpis.orcadoOperacional > 0 ? fmtPct((kpis.pagoTotal/kpis.orcadoOperacional)*100) + ' do orçado' : null, cls: 'text-emerald-600' },
+        { label: 'A Pagar',            value: formatCurrency(kpis.aPagarTotal),        cls: 'text-amber-600' },
+        { label: 'Saldo Orç.',         value: formatCurrency(kpis.saldoOrcadoOperacional), cls: kpis.saldoOrcadoOperacional >= 0 ? '' : 'text-red-600' },
       ]
     }
     if (config.grain === 'medicao') {
@@ -990,24 +1106,21 @@ export default function RelatorioAnaliticoPage() {
       const val_recebido  = sortedRows.reduce((s, r) => s + (r.val_recebido ?? 0), 0)
       const val_a_receber = sortedRows.reduce((s, r) => s + (r.val_a_receber ?? 0), 0)
       return [
-        { label: 'Planejado',   value: formatCurrency(val_med_plan),  cls: '' },
-        { label: 'Liberado',    value: formatCurrency(val_liberado),  sub: val_med_plan > 0 ? fmtPct((val_liberado/val_med_plan)*100) : null, cls: 'text-blue-600' },
-        { label: 'Recebido',    value: formatCurrency(val_recebido),  cls: 'text-emerald-600' },
-        { label: 'A Receber',   value: formatCurrency(val_a_receber), cls: 'text-amber-600' },
+        { label: 'Planejado',  value: formatCurrency(val_med_plan),  cls: '' },
+        { label: 'Liberado',   value: formatCurrency(val_liberado),  sub: val_med_plan > 0 ? fmtPct((val_liberado/val_med_plan)*100) + ' do planejado' : null, cls: 'text-blue-600' },
+        { label: 'Recebido',   value: formatCurrency(val_recebido),  cls: 'text-emerald-600' },
+        { label: 'A Receber',  value: formatCurrency(val_a_receber), cls: 'text-amber-600' },
       ]
     }
     if (config.grain === 'mutuo') {
-      const val_captado = sortedRows.reduce((s, r) => s + (r.val_captado ?? 0), 0)
-      const val_pago    = sortedRows.reduce((s, r) => s + (r.val_pago_mutuo ?? 0), 0)
-      const saldo       = sortedRows.reduce((s, r) => s + (r.saldo_devedor ?? 0), 0)
       return [
-        { label: 'Captado',       value: formatCurrency(val_captado), cls: '' },
-        { label: 'Pago',          value: formatCurrency(val_pago),    cls: 'text-emerald-600' },
-        { label: 'Saldo Devedor', value: formatCurrency(saldo),       cls: 'text-amber-600' },
+        { label: 'Captado',       value: formatCurrency(kpis.capitalCaptado),      cls: '' },
+        { label: 'Pago',          value: formatCurrency(kpis.pagoCapital),         cls: 'text-emerald-600' },
+        { label: 'Saldo Devedor', value: formatCurrency(kpis.capitalSaldoDevedor), cls: 'text-amber-600' },
       ]
     }
     return []
-  }, [sortedRows, config.grain])
+  }, [config.grain, kpis, sortedRows])
 
   // ── Sort handler ─────────────────────────────────────────────────────────────
   const handleSort = useCallback((colId: string) => {
@@ -1146,7 +1259,7 @@ export default function RelatorioAnaliticoPage() {
       {/* KPI bar */}
       <div className="flex-none px-4 pb-2">
         <div className="flex flex-wrap gap-2">
-          {kpis.map(k => (
+          {kpiCards.map(k => (
             <div key={k.label} className="rounded-xl border bg-card px-3 py-2 min-w-[130px]">
               <p className="text-[10px] uppercase text-muted-foreground tracking-wide">{k.label}</p>
               <p className={`mt-0.5 text-sm font-bold tabular-nums ${k.cls}`}>{k.value}</p>
