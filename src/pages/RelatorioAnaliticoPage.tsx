@@ -568,15 +568,13 @@ export default function RelatorioAnaliticoPage() {
     for (const pi of pedidoItens as any[]) {
       const ped = pi.pedidos
       if (!ped || ped.status === 'cancelado') continue
-      const foraOrc = pi.fora_orcamento === true
       const existing = comprMap.get(pi.item_compra_id) ?? {
         comprometido: 0, qtd_pedida: 0, qtd_recebida: 0, val_com_nf: 0,
         pedido_ids: new Set<string>(), fornecedor: null, observacoes: null,
       }
-      if (!foraOrc) {
-        existing.comprometido += Number(pi.valor_total_real ?? 0)
-        existing.qtd_pedida += Number(pi.qtd ?? 0)
-      }
+      // Inclui fora_orcamento no comprometido — alinha com WBS (consumidoPorItem)
+      existing.comprometido += Number(pi.valor_total_real ?? 0)
+      existing.qtd_pedida += Number(pi.qtd ?? 0)
       const qtdRec = Number(pi.qtd_recebida ?? 0)
       existing.qtd_recebida += qtdRec
       existing.val_com_nf += qtdRec * Number(pi.valor_unitario_real ?? 0)
