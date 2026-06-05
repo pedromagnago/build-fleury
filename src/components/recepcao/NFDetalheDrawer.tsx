@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
 import {
-  X, Loader2, Trash2, AlertTriangle, CheckCircle2, Clock, AlertCircle, Edit2, Check, Package,
+  X, Loader2, Trash2, AlertTriangle, CheckCircle2, Clock, AlertCircle, Edit2, Check,
 } from 'lucide-react'
 
 export type NFDocRef = {
