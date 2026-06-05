@@ -546,7 +546,7 @@ export function useDashboardKPIs() {
         supabase.from('parcelas').select('valor, data_vencimento, data_prevista_pagamento, data_pagamento_real, status, valor_pago, pedidos!inner(status, itens_compra(deleted_at))').eq('company_id', companyId).is('deleted_at', null),
         supabase.from('etapas').select('status').eq('company_id', companyId),
         // Filtra pedidos cancelados via status (não há soft-delete em pedidos).
-        supabase.from('pedidos').select('item_compra_id, valor_total_real, status').eq('company_id', companyId),
+        supabase.from('pedidos').select('item_compra_id, valor_total_real, valor_coberto_por_realizacao, status').eq('company_id', companyId),
       ])
 
       const itens = (itensRes.data ?? []) as Array<{ id: string; valor_total_orcado: number; valor_consumido: number }>
@@ -568,13 +568,15 @@ export function useDashboardKPIs() {
         .filter(p => p.status !== 'cancelado')
 
       const totalOrcado = itens.reduce((s, i) => s + (i.valor_total_orcado ?? 0), 0)
-      const totalConsumido = pedidos.reduce((s, p) => s + (p.valor_total_real ?? 0), 0)
+      // Espelha useProjetoKPIs: deduz valor_coberto_por_realizacao (NF externa que cobre pedido previsão)
+      const totalConsumido = pedidos.reduce((s, p) => s + Math.max(0, (p.valor_total_real ?? 0) - (p.valor_coberto_por_realizacao ?? 0)), 0)
       const totalPago = parcelas.filter(p => p.status === 'paga').reduce((s, p) => s + (p.valor_pago ?? 0), 0)
 
-      // Level 1/Level 2 coverage
+      // Level 1/Level 2 coverage (também usa valor líquido)
       const pedidosPorItem = new Map<string, number>()
       for (const p of pedidos) {
-        pedidosPorItem.set(p.item_compra_id, (pedidosPorItem.get(p.item_compra_id) ?? 0) + (p.valor_total_real ?? 0))
+        const vlLiquido = Math.max(0, (p.valor_total_real ?? 0) - (p.valor_coberto_por_realizacao ?? 0))
+        pedidosPorItem.set(p.item_compra_id, (pedidosPorItem.get(p.item_compra_id) ?? 0) + vlLiquido)
       }
       const comPedido = itens.reduce((s, i) => s + Math.min(pedidosPorItem.get(i.id) ?? 0, i.valor_total_orcado ?? 0), 0)
       const semPedido = Math.max(0, totalOrcado - comPedido)
