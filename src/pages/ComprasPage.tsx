@@ -163,7 +163,6 @@ function ItensTab({ search, filterEtapa }: { search: string; filterEtapa: string
   const { data: etapas = [] } = useEtapas()
   const { data: fornecedores = [] } = useFornecedores()
   const { data: parcelas = [] } = useParcelas()
-  const { data: pedidos = [] } = usePedidos()
   const { data: pedidoItens = [] } = usePedidoItens()
   const createItem = useCreateItemCompra()
   const updateItem = useUpdateItemCompra()
