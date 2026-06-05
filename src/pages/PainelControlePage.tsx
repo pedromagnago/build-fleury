@@ -422,7 +422,7 @@ export default function PainelControlePage() {
     const capitalSaldoDevedor = Math.max(0, capitalContratadoParcelas - capitalPagoTotal)
     const medicoesLiberadas = medicoes.reduce((s, m) => s + (Number(m.valor_liberado) || 0), 0)
     const medicoesPlanejadas = medicoes.reduce((s, m) => s + (Number(m.valor_planejado) || 0), 0)
-    const conciliado = movimentacoes.filter(m => m.conciliado).reduce((s, m) => s + Math.abs(Number(m.valor) || 0), 0)
+    const conciliado = movimentacoes.filter(m => m.conciliado && m.tipo === 'saida').reduce((s, m) => s + Math.abs(Number(m.valor) || 0), 0)
     const orcadoOperacional = orcadoDiretos + orcadoIndiretos
     const pagoOperacional = pagoDiretos + pagoIndiretos
     const orcadoComFinanceiro = orcadoOperacional + custoFinanceiroProjetado
