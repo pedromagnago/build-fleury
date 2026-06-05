@@ -46,6 +46,7 @@ export default function RelatoriosPage() {
     valor: number
     valor_pago: number
     data_vencimento: string
+    data_prevista_pagamento: string | null
     status: string
   }
   const parcelasUnificadas: ParcelaFinanceira[] = useMemo(() => {
@@ -63,6 +64,7 @@ export default function RelatoriosPage() {
         valor: Number(p.valor) || 0,
         valor_pago: Number(p.valor_pago) || 0,
         data_vencimento: p.data_vencimento,
+        data_prevista_pagamento: p.data_prevista_pagamento ?? null,
         status: p.status,
       })
     }
@@ -82,6 +84,7 @@ export default function RelatoriosPage() {
           valor: Number(mp.valor) || 0,
           valor_pago: Number(mp.valor_pago) || 0,
           data_vencimento: mp.data_vencimento,
+          data_prevista_pagamento: null,
           status: mp.status,
         })
       }
@@ -100,6 +103,7 @@ export default function RelatoriosPage() {
         valor: a.valor,
         valor_pago: a.valor,
         data_vencimento: a.data,
+        data_prevista_pagamento: null,
         status: 'paga',
       })
     }
@@ -191,11 +195,12 @@ export default function RelatoriosPage() {
       }
       filename = 'relatorio_orcamento.csv'
     } else if (activeReport === 'financeiro') {
-      csv = 'Origem;Fornecedor;Item;Parcela;Valor;Vencimento;Status;Valor Pago\n'
+      csv = 'Origem;Fornecedor;Item;Parcela;Valor;Vencimento;Previsto;Status;Valor Pago\n'
       parcelasFiltradas.forEach((p) => {
-        csv += `${p.origem_label};${p.fornecedor_nome ?? ''};${(p.item ?? '').replace(/;/g, ',')};${p.numero_parcela};${p.valor};${p.data_vencimento};${p.status};${p.valor_pago}\n`
+        const previsto = p.data_prevista_pagamento && p.data_prevista_pagamento !== p.data_vencimento ? p.data_prevista_pagamento : ''
+        csv += `${p.origem_label};${p.fornecedor_nome ?? ''};${(p.item ?? '').replace(/;/g, ',')};${p.numero_parcela};${p.valor};${p.data_vencimento};${previsto};${p.status};${p.valor_pago}\n`
       })
-      csv += `;;;TOTAL;${totalFinanceiro.valor};;;${totalFinanceiro.pago}\n`
+      csv += `;;;TOTAL;${totalFinanceiro.valor};;;;${totalFinanceiro.pago}\n`
       filename = 'relatorio_financeiro.csv'
     } else if (activeReport === 'medicoes') {
       csv = 'Nº;Planejado;Liberado;Prevista;Status;%Meta;%Real\n'
@@ -456,6 +461,7 @@ export default function RelatoriosPage() {
                     <th className="px-3 py-2 text-center text-xs font-medium text-muted-foreground">#</th>
                     <th className="px-3 py-2 text-right text-xs font-medium text-muted-foreground">Valor</th>
                     <th className="px-3 py-2 text-center text-xs font-medium text-muted-foreground">Vencimento</th>
+                    <th className="px-3 py-2 text-center text-xs font-medium text-muted-foreground">Previsto</th>
                     <th className="px-3 py-2 text-center text-xs font-medium text-muted-foreground">Status</th>
                     <th className="px-3 py-2 text-right text-xs font-medium text-muted-foreground">Pago</th>
                   </tr>
@@ -479,6 +485,11 @@ export default function RelatoriosPage() {
                       <td className="px-3 py-2 text-center text-xs">{p.numero_parcela || '—'}</td>
                       <td className="px-3 py-2 text-right">{formatCurrency(p.valor)}</td>
                       <td className="px-3 py-2 text-center text-xs">{formatDate(p.data_vencimento)}</td>
+                      <td className="px-3 py-2 text-center text-xs">
+                        {p.data_prevista_pagamento && p.data_prevista_pagamento !== p.data_vencimento
+                          ? <span className="font-semibold text-blue-600 dark:text-blue-400">{formatDate(p.data_prevista_pagamento)}</span>
+                          : <span className="text-muted-foreground">—</span>}
+                      </td>
                       <td className="px-3 py-2 text-center text-xs capitalize">{p.status.replace('_', ' ')}</td>
                       <td className="px-3 py-2 text-right text-emerald-500">{formatCurrency(p.valor_pago)}</td>
                     </tr>
@@ -487,7 +498,7 @@ export default function RelatoriosPage() {
                     <tr className="bg-primary/10 font-bold">
                       <td colSpan={4} className="px-3 py-2 text-right">TOTAL</td>
                       <td className="px-3 py-2 text-right">{formatCurrency(totalFinanceiro.valor)}</td>
-                      <td colSpan={2}></td>
+                      <td colSpan={3}></td>
                       <td className="px-3 py-2 text-right text-emerald-700">{formatCurrency(totalFinanceiro.pago)}</td>
                     </tr>
                   )}

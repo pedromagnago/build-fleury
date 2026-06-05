@@ -31,7 +31,7 @@ import {
   Wallet, Plus, X, Check, AlertTriangle, Clock,
   CheckCircle2, CreditCard, Search, CalendarClock,
   Calendar, Users, Upload, Paperclip, ChevronDown, ChevronRight, Trash2,
-  Pencil, Package, Power, PowerOff, Link as LinkIcon, Inbox,
+  Pencil, Package, Power, PowerOff, Link as LinkIcon, Inbox, Download,
 } from 'lucide-react'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
@@ -501,6 +501,36 @@ function ParcelasTab({ search }: { search: string }) {
     return { vencidas, vencidasValor, hoje, hojeValor, semana, semanaValor }
   }, [allParcelasCombined, today, weekEnd])
 
+  const handleExportCSV = () => {
+    const headers = ['Vencimento', 'Previsto', 'Parcela', 'Pedido', 'Fornecedor', 'Descrição', 'NF', 'Valor', 'Valor Pago', 'Pgto Real', 'Status']
+    const rows = allFiltered.map(p => [
+      localDate(p.data_vencimento).toLocaleDateString('pt-BR'),
+      (p as any).data_prevista_pagamento && (p as any).data_prevista_pagamento !== p.data_vencimento
+        ? localDate((p as any).data_prevista_pagamento).toLocaleDateString('pt-BR')
+        : '',
+      String(p.numero_parcela ?? ''),
+      (p as any).pedido_numero != null ? `PED #${(p as any).pedido_numero}` : ((p as any)._source === 'mutuo' ? 'MÚTUO' : ''),
+      ((p as any).fornecedor_nome ?? (p as any)._mutuoNome ?? ''),
+      (p.pedido_item ?? p.descricao ?? 'Avulsa'),
+      (p as any).nf_numero ?? '',
+      p.valor.toFixed(2).replace('.', ','),
+      (p.valor_pago ?? 0).toFixed(2).replace('.', ','),
+      p.data_pagamento_real ? localDate(p.data_pagamento_real).toLocaleDateString('pt-BR') : '',
+      p.status,
+    ])
+    const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(';')).join('\n')
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `pagamentos_${new Date().toISOString().split('T')[0]}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    toast.success(`${allFiltered.length} parcela(s) exportada(s)`)
+  }
+
   return (
     <>
       <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
@@ -586,6 +616,9 @@ function ParcelasTab({ search }: { search: string }) {
         </div>
 
         <div className="ml-auto flex gap-1.5">
+          <button onClick={handleExportCSV} className="flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground" title={`Exportar ${allFiltered.length} parcelas como CSV`}>
+            <Download className="h-3 w-3" /> Exportar ({allFiltered.length})
+          </button>
           <button onClick={selectVencidas} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-red-500 hover:bg-red-500/10" title="Selecionar parcelas vencidas">Sel. vencidas</button>
           <button onClick={selectSemana} className="rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-amber-600 hover:bg-amber-500/10" title="Selecionar parcelas desta semana">Sel. semana</button>
           {/* Botão filtros avançados */}
@@ -801,10 +834,23 @@ function ParcelasTab({ search }: { search: string }) {
                     <td className={`px-3 py-2.5 text-center text-xs font-medium ${
                       isVencida ? 'text-red-600' : isHoje ? 'text-amber-600' : isSemana ? 'text-amber-500' : ''
                     }`}>
-                      <div className="flex items-center justify-center gap-1">
-                        {localDate(dataPrev(p)).toLocaleDateString('pt-BR')}
-                        {isVencida && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[8px] font-bold text-red-600">VENC</span>}
-                        {isHoje && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[8px] font-bold text-amber-600">HOJE</span>}
+                      <div className="flex flex-col items-center gap-0.5">
+                        <div className="flex items-center gap-1">
+                          {localDate(p.data_vencimento).toLocaleDateString('pt-BR')}
+                          {(!((p as any).data_prevista_pagamento) || (p as any).data_prevista_pagamento === p.data_vencimento) && (
+                            <>
+                              {isVencida && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[8px] font-bold text-red-600">VENC</span>}
+                              {isHoje && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[8px] font-bold text-amber-600">HOJE</span>}
+                            </>
+                          )}
+                        </div>
+                        {(p as any).data_prevista_pagamento && (p as any).data_prevista_pagamento !== p.data_vencimento && (
+                          <div className="flex items-center gap-1 text-[9px] font-semibold text-blue-600 dark:text-blue-400">
+                            Prev: {localDate((p as any).data_prevista_pagamento).toLocaleDateString('pt-BR')}
+                            {isVencida && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[8px] font-bold text-red-600">VENC</span>}
+                            {isHoje && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[8px] font-bold text-amber-600">HOJE</span>}
+                          </div>
+                        )}
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-center text-xs text-muted-foreground">
