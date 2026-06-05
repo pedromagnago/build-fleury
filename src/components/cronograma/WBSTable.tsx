@@ -35,6 +35,7 @@ interface WBSTableProps {
   onEdit: (e: Etapa) => void
   onDelete: (id: string) => void
   selection: { selected: Set<string>; toggle: (id: string) => void; toggleAll: (ids: string[]) => void; isSelected: (id: string) => boolean }
+  custoIndireto?: { orcado: number; consumido: number; pago: number; aPagar: number }
 }
 
 // ── Mini stacked bar: Pago (blue) | A Pagar (amber/red) | Saldo (muted) ──────
@@ -72,7 +73,7 @@ function CostBar({ orcado, consumido, pago }: { orcado: number; consumido: numbe
 export default function WBSTable({
   etapas, itemsByEtapa, distByEtapa, pedidosByItem, parcelasByPedido, consumidoPorItem,
   expandedIds, toggleExpand, expandedItems, toggleItem,
-  onEdit, onDelete, selection,
+  onEdit, onDelete, selection, custoIndireto,
 }: WBSTableProps) {
   const updateEtapa = useUpdateEtapa()
   const createDist  = useCreateDistribuicao()
@@ -141,8 +142,8 @@ export default function WBSTable({
     return arr
   }, [enriched, sortField, sortDir])
 
-  // ── Totals ──────────────────────────────────────────────────────────────────
-  const totals = useMemo(() => enriched.reduce(
+  // ── Totals (etapas diretas apenas) ──────────────────────────────────────────
+  const etapasTotals = useMemo(() => enriched.reduce(
     (t, r) => ({
       receita:   t.receita   + r.receita,
       orcado:    t.orcado    + r.orcado,
@@ -154,6 +155,17 @@ export default function WBSTable({
     }),
     { receita: 0, orcado: 0, consumido: 0, pago: 0, aPagar: 0, saldo: 0, margem: 0 },
   ), [enriched])
+
+  // Total geral inclui indiretos para fechar o projeto
+  const totals = useMemo(() => ({
+    receita:   etapasTotals.receita,
+    orcado:    etapasTotals.orcado    + (custoIndireto?.orcado    ?? 0),
+    consumido: etapasTotals.consumido + (custoIndireto?.consumido ?? 0),
+    pago:      etapasTotals.pago      + (custoIndireto?.pago      ?? 0),
+    aPagar:    etapasTotals.aPagar    + (custoIndireto?.aPagar    ?? 0),
+    saldo:     etapasTotals.saldo     - (custoIndireto?.orcado    ?? 0),
+    margem:    etapasTotals.margem    - (custoIndireto?.orcado    ?? 0),
+  }), [etapasTotals, custoIndireto])
 
   const totalMargemPct = totals.receita > 0
     ? ((totals.receita - totals.orcado) / totals.receita) * 100
@@ -468,10 +480,36 @@ export default function WBSTable({
 
         {/* ── Totals footer ───────────────────────────────────────────────────── */}
         <tfoot>
+          {/* Linha virtual: Custos Indiretos */}
+          {custoIndireto && (custoIndireto.orcado > 0 || custoIndireto.pago > 0) && (
+            <tr className="border-t bg-rose-50/60 dark:bg-rose-950/20 text-xs">
+              <td colSpan={3} className="px-2 py-1.5" />
+              <td className="px-2 py-1.5 text-rose-700 dark:text-rose-300 font-semibold">
+                Custos Indiretos
+              </td>
+              <td colSpan={2} className="px-2 py-1.5" />
+              <td className="px-2 py-1.5 text-right text-muted-foreground">—</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{formatCurrency(custoIndireto.orcado)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-amber-600">{formatCurrency(custoIndireto.consumido)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-orange-600">
+                {custoIndireto.aPagar > 0 ? formatCurrency(custoIndireto.aPagar) : <span className="text-muted-foreground/40">—</span>}
+              </td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-emerald-600">{formatCurrency(custoIndireto.pago)}</td>
+              <td className={`px-2 py-1.5 text-right tabular-nums ${custoIndireto.orcado - custoIndireto.consumido >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                {formatCurrency(custoIndireto.orcado - custoIndireto.consumido)}
+              </td>
+              <td className="px-2 py-1.5 text-right text-muted-foreground">—</td>
+              <td className="px-2 py-1.5">
+                <CostBar orcado={custoIndireto.orcado} consumido={custoIndireto.consumido} pago={custoIndireto.pago} />
+              </td>
+              <td className="px-2 py-1.5" />
+            </tr>
+          )}
+
           <tr className="border-t-2 bg-muted/30 font-bold text-xs">
             <td colSpan={3} className="px-2 py-2" />
             <td className="px-2 py-2 text-[10px] text-muted-foreground font-bold uppercase tracking-wide">
-              Total ({etapas.length} etapas)
+              Total ({etapas.length} etapas{custoIndireto && (custoIndireto.orcado > 0 || custoIndireto.pago > 0) ? ' + indiretos' : ''})
             </td>
             <td colSpan={2} className="px-2 py-2" />
 

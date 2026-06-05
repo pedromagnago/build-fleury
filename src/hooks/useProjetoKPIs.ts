@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useItensCompra, usePedidos } from './useCompras'
-import { useParcelas } from './useFinanceiro'
+import { useParcelas, useAmortizacoesAvulsas } from './useFinanceiro'
 import { useDespesasIndiretas } from './useDespesasIndiretas'
 import { useMutuos } from './useMutuos'
 
@@ -43,11 +43,12 @@ export interface ProjetoKPIs {
 }
 
 export function useProjetoKPIs(): ProjetoKPIs {
-  const { data: itens = [] }     = useItensCompra()
-  const { data: pedidos = [] }   = usePedidos()
-  const { data: parcelas = [] }  = useParcelas()
-  const { despesas = [] }        = useDespesasIndiretas()
-  const { data: mutuos = [] }    = useMutuos()
+  const { data: itens = [] }              = useItensCompra()
+  const { data: pedidos = [] }            = usePedidos()
+  const { data: parcelas = [] }           = useParcelas()
+  const { despesas = [] }                 = useDespesasIndiretas()
+  const { data: mutuos = [] }             = useMutuos()
+  const { data: amortizacoesAvulsas = [] } = useAmortizacoesAvulsas()
 
   return useMemo<ProjetoKPIs>(() => {
     // ── Orçado ──────────────────────────────────────────────────────────────
@@ -74,11 +75,15 @@ export function useProjetoKPIs(): ProjetoKPIs {
     const totalParcelasValor     = parcelasDiretasValor + parcelasIndiretasValor + parcelasOrfasValor + capitalParcelasValor
 
     // ── Pago ────────────────────────────────────────────────────────────────
-    const pagoDiretos   = (parcelas as any[]).filter(p => p.pedido_id != null && !p.despesa_indireta_id).reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
-    const pagoIndiretos = (parcelas as any[]).filter(p => p.despesa_indireta_id != null).reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
-    const pagoOrfas     = (parcelas as any[]).filter(p => !p.pedido_id && !p.despesa_indireta_id).reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
-    const pagoCapital   = (mutuos as any[]).reduce((s, m) => s + ((m.parcelas ?? []).reduce((ss: number, mp: any) => ss + (Number(mp.valor_pago) || 0), 0)), 0)
-    const pagoTotal     = pagoDiretos + pagoIndiretos + pagoCapital + pagoOrfas
+    const pagoDiretos       = (parcelas as any[]).filter(p => p.pedido_id != null && !p.despesa_indireta_id).reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
+    const pagoIndiretos     = (parcelas as any[]).filter(p => p.despesa_indireta_id != null).reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
+    const pagoOrfas         = (parcelas as any[]).filter(p => !p.pedido_id && !p.despesa_indireta_id).reduce((s, p) => s + (Number(p.valor_pago) || 0), 0)
+    const pagoCapitalFormal = (mutuos as any[]).reduce((s, m) => s + ((m.parcelas ?? []).reduce((ss: number, mp: any) => ss + (Number(mp.valor_pago) || 0), 0)), 0)
+    // Amortizações avulsas = pagamentos de mútuo conciliados no banco sem parcela formal.
+    // Aparecem na página de Pagamentos mas não em mutuo.parcelas — incluir aqui para fechar o gap.
+    const pagoAvulsas       = (amortizacoesAvulsas as any[]).reduce((s, a) => s + (Number(a.valor) || 0), 0)
+    const pagoCapital       = pagoCapitalFormal + pagoAvulsas
+    const pagoTotal         = pagoDiretos + pagoIndiretos + pagoCapital + pagoOrfas
 
     // ── A pagar ─────────────────────────────────────────────────────────────
     const aPagarDiretos   = Math.max(0, parcelasDiretasValor   - pagoDiretos)
@@ -104,5 +109,5 @@ export function useProjetoKPIs(): ProjetoKPIs {
       capitalCaptado, capitalSaldoDevedor,
       saldoOrcadoOperacional,
     }
-  }, [itens, pedidos, parcelas, despesas, mutuos])
+  }, [itens, pedidos, parcelas, despesas, mutuos, amortizacoesAvulsas])
 }
