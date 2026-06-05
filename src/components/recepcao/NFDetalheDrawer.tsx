@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
 import {
-  X, Loader2, Trash2, AlertTriangle, CheckCircle2, Clock, AlertCircle, Edit2, Check,
+  X, Loader2, Trash2, AlertTriangle, CheckCircle2, Clock, AlertCircle, Edit2, Check, Package,
 } from 'lucide-react'
 
 export type NFDocRef = {
@@ -26,6 +26,20 @@ type ParcelaRow = {
   tipo: string | null
   pedido_id: string | null
   pedidos: { numero: number | null } | null
+}
+
+type PedidoItemRow = {
+  id: string
+  pedido_id: string
+  item_compra_id: string
+  qtd: number | string
+  qtd_recebida: number | string
+  valor_unitario_real: number | string
+  valor_total_real: number | string
+  fora_orcamento: boolean
+  ordem: number | null
+  item_codigo: string | null
+  item_descricao: string | null
 }
 
 type RastreioRow = {
@@ -70,10 +84,13 @@ function StatusBadge({ status }: { status: string }) {
 
 export function NFDetalheDrawer({ doc, companyId, onClose, onEstornoSuccess }: Props) {
   const qc = useQueryClient()
-  const [tab, setTab] = useState<'parcelas' | 'rastreio'>('parcelas')
+  const [tab, setTab] = useState<'parcelas' | 'rastreio' | 'itens'>('parcelas')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDate, setEditDate] = useState('')
   const [confirmEstorno, setConfirmEstorno] = useState(false)
+  // Estado de edição dos itens do pedido
+  const [editingItemId, setEditingItemId] = useState<string | null>(null)
+  const [editItemFields, setEditItemFields] = useState<{ qtd: string; qtd_recebida: string; valor_unitario_real: string }>({ qtd: '', qtd_recebida: '', valor_unitario_real: '' })
 
   const { data: parcelas = [], isLoading: parcelasLoading } = useQuery<ParcelaRow[]>({
     queryKey: ['parcelas_por_nf', doc.id],
@@ -122,6 +139,56 @@ export function NFDetalheDrawer({ doc, companyId, onClose, onEstornoSuccess }: P
 
       return merged as unknown as ParcelaRow[]
     },
+  })
+
+  const { data: pedidoItens = [], isLoading: itensLoading } = useQuery<PedidoItemRow[]>({
+    queryKey: ['pedido_itens_por_nf', doc.id],
+    staleTime: 0,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('pedido_itens')
+        .select(`
+          id, pedido_id, item_compra_id, qtd, qtd_recebida, valor_unitario_real,
+          valor_total_real, fora_orcamento, ordem,
+          itens_compra(codigo, descricao)
+        `)
+        .in(
+          'pedido_id',
+          (await supabase
+            .from('pedidos')
+            .select('id')
+            .eq('nf_origem_id', doc.id)
+            .eq('company_id', companyId)
+          ).data?.map((p: any) => p.id) ?? []
+        )
+        .order('ordem')
+      if (error) throw error
+      return (data ?? []).map((pi: any) => ({
+        ...pi,
+        item_codigo: pi.itens_compra?.codigo ?? null,
+        item_descricao: pi.itens_compra?.descricao ?? null,
+      })) as PedidoItemRow[]
+    },
+  })
+
+  const updatePedidoItem = useMutation({
+    mutationFn: async ({ id, qtd, qtd_recebida, valor_unitario_real }: {
+      id: string; qtd: number; qtd_recebida: number; valor_unitario_real: number
+    }) => {
+      const { error } = await supabase
+        .from('pedido_itens')
+        .update({ qtd, qtd_recebida, valor_unitario_real })
+        .eq('id', id)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      toast.success('Item corrigido')
+      setEditingItemId(null)
+      qc.invalidateQueries({ queryKey: ['pedido_itens_por_nf', doc.id] })
+      qc.invalidateQueries({ queryKey: ['pedido_itens'] })
+      qc.invalidateQueries({ queryKey: ['pedidos'] })
+    },
+    onError: (err: any) => toast.error('Erro ao salvar: ' + (err?.message ?? String(err))),
   })
 
   const { data: rastreioRows = [], isLoading: rastreioLoading } = useQuery<RastreioRow[]>({
@@ -211,6 +278,12 @@ export function NFDetalheDrawer({ doc, companyId, onClose, onEstornoSuccess }: P
             className={`py-2 mr-5 border-b-2 font-medium transition-colors ${tab === 'parcelas' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
           >
             Parcelas {parcelas.length > 0 && `(${parcelas.length})`}
+          </button>
+          <button
+            onClick={() => setTab('itens')}
+            className={`py-2 mr-5 border-b-2 font-medium transition-colors ${tab === 'itens' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          >
+            Itens {pedidoItens.length > 0 && `(${pedidoItens.length})`}
           </button>
           <button
             onClick={() => setTab('rastreio')}
@@ -367,6 +440,171 @@ export function NFDetalheDrawer({ doc, companyId, onClose, onEstornoSuccess }: P
                         A pagar: <span className="font-mono font-medium text-amber-700">{formatCurrency(saldoAberto)}</span>
                       </span>
                     )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── ITENS ── */}
+          {tab === 'itens' && (
+            <div className="space-y-3">
+              {itensLoading && (
+                <div className="flex items-center gap-2 text-muted-foreground py-6 justify-center text-xs">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Carregando itens…
+                </div>
+              )}
+              {!itensLoading && pedidoItens.length === 0 && (
+                <p className="text-muted-foreground italic text-center py-6 text-xs">
+                  Nenhum item de pedido vinculado a esta NF.
+                </p>
+              )}
+              {!itensLoading && pedidoItens.length > 0 && (
+                <>
+                  <p className="text-[11px] text-muted-foreground">
+                    Corrija <strong>Qtd</strong> e <strong>Qtd c/ NF</strong> se o parse do XML gerou valor errado (ex: decimal lido como inteiro).
+                    O <strong>Valor Total</strong> da NF não é alterado aqui — apenas a quantidade e o preço unitário.
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-[9px] uppercase text-muted-foreground border-b">
+                          <th className="py-1.5 text-left">Item</th>
+                          <th className="py-1.5 text-right w-24">Qtd Pedida</th>
+                          <th className="py-1.5 text-right w-24">Qtd c/ NF</th>
+                          <th className="py-1.5 text-right w-28">Valor Unit.</th>
+                          <th className="py-1.5 text-right w-28">Valor Total NF</th>
+                          <th className="py-1.5 w-8" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/40">
+                        {pedidoItens.map(pi => {
+                          const isEditing = editingItemId === pi.id
+                          const qtd = Number(pi.qtd)
+                          const qtdRec = Number(pi.qtd_recebida)
+                          const vu = Number(pi.valor_unitario_real)
+                          const vt = Number(pi.valor_total_real)
+                          const qtdXvu = qtd * vu
+                          const inconsistente = Math.abs(qtdXvu - vt) > vt * 0.01 && vt > 0
+
+                          return (
+                            <tr key={pi.id} className={`hover:bg-muted/10 ${inconsistente ? 'bg-amber-500/5' : ''}`}>
+                              <td className="py-2 pr-2">
+                                {pi.item_codigo && (
+                                  <div className="font-mono text-[10px] text-muted-foreground">{pi.item_codigo}</div>
+                                )}
+                                <div className="text-[11px] truncate max-w-[160px]">
+                                  {pi.item_descricao ?? <span className="text-muted-foreground italic">—</span>}
+                                </div>
+                                {pi.fora_orcamento && (
+                                  <span className="text-[9px] rounded bg-orange-500/15 text-orange-700 px-1 font-semibold">fora orç.</span>
+                                )}
+                                {inconsistente && (
+                                  <div className="text-[9px] text-amber-700 mt-0.5 flex items-center gap-0.5">
+                                    <AlertTriangle className="h-2.5 w-2.5" />
+                                    qtd × unit ≠ total
+                                  </div>
+                                )}
+                              </td>
+
+                              {isEditing ? (
+                                <>
+                                  <td className="py-2">
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      value={editItemFields.qtd}
+                                      onChange={e => setEditItemFields(f => ({ ...f, qtd: e.target.value }))}
+                                      className="w-24 rounded border bg-background px-1.5 py-0.5 text-xs font-mono text-right"
+                                    />
+                                  </td>
+                                  <td className="py-2">
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      value={editItemFields.qtd_recebida}
+                                      onChange={e => setEditItemFields(f => ({ ...f, qtd_recebida: e.target.value }))}
+                                      className="w-24 rounded border bg-background px-1.5 py-0.5 text-xs font-mono text-right"
+                                    />
+                                  </td>
+                                  <td className="py-2">
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      value={editItemFields.valor_unitario_real}
+                                      onChange={e => setEditItemFields(f => ({ ...f, valor_unitario_real: e.target.value }))}
+                                      className="w-28 rounded border bg-background px-1.5 py-0.5 text-xs font-mono text-right"
+                                    />
+                                  </td>
+                                  <td className="py-2 text-right font-mono text-[11px]">
+                                    {formatCurrency(vt)}
+                                  </td>
+                                  <td className="py-2">
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        onClick={() => updatePedidoItem.mutate({
+                                          id: pi.id,
+                                          qtd: Number(editItemFields.qtd),
+                                          qtd_recebida: Number(editItemFields.qtd_recebida),
+                                          valor_unitario_real: Number(editItemFields.valor_unitario_real),
+                                        })}
+                                        disabled={updatePedidoItem.isPending}
+                                        className="rounded p-0.5 hover:bg-emerald-500/10 text-emerald-600 disabled:opacity-40"
+                                        title="Salvar"
+                                      >
+                                        {updatePedidoItem.isPending
+                                          ? <Loader2 className="h-3 w-3 animate-spin" />
+                                          : <Check className="h-3 w-3" />}
+                                      </button>
+                                      <button
+                                        onClick={() => setEditingItemId(null)}
+                                        className="rounded p-0.5 hover:bg-muted text-muted-foreground"
+                                        title="Cancelar"
+                                      >
+                                        <X className="h-3 w-3" />
+                                      </button>
+                                    </div>
+                                  </td>
+                                </>
+                              ) : (
+                                <>
+                                  <td className="py-2 text-right font-mono text-[11px]">
+                                    {qtd.toLocaleString('pt-BR', { maximumFractionDigits: 4 })}
+                                  </td>
+                                  <td className="py-2 text-right font-mono text-[11px]">
+                                    <span className={qtdRec < qtd ? 'text-amber-700' : ''}>
+                                      {qtdRec.toLocaleString('pt-BR', { maximumFractionDigits: 4 })}
+                                    </span>
+                                  </td>
+                                  <td className="py-2 text-right font-mono text-[11px]">
+                                    {formatCurrency(vu)}
+                                  </td>
+                                  <td className="py-2 text-right font-mono text-[11px] font-medium">
+                                    {formatCurrency(vt)}
+                                  </td>
+                                  <td className="py-2">
+                                    <button
+                                      onClick={() => {
+                                        setEditingItemId(pi.id)
+                                        setEditItemFields({
+                                          qtd: String(qtd),
+                                          qtd_recebida: String(qtdRec),
+                                          valor_unitario_real: String(vu),
+                                        })
+                                      }}
+                                      className="rounded p-0.5 hover:bg-blue-500/10 text-blue-600"
+                                      title="Corrigir qtd / valor unitário"
+                                    >
+                                      <Edit2 className="h-3 w-3" />
+                                    </button>
+                                  </td>
+                                </>
+                              )}
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 </>
               )}

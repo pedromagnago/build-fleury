@@ -577,7 +577,11 @@ export default function RelatorioAnaliticoPage() {
       existing.qtd_pedida += Number(pi.qtd ?? 0)
       const qtdRec = Number(pi.qtd_recebida ?? 0)
       existing.qtd_recebida += qtdRec
-      existing.val_com_nf += qtdRec * Number(pi.valor_unitario_real ?? 0)
+      // val_com_nf: usa proporção de valor_total_real para evitar explosão quando
+      // qtd e valor_unitario_real têm unidades inconsistentes (ex: tonelada vs kg).
+      const qtdTotal = Number(pi.qtd ?? 0)
+      const pctRec = qtdTotal > 0 ? Math.min(qtdRec / qtdTotal, 1) : (qtdRec > 0 ? 1 : 0)
+      existing.val_com_nf += pctRec * Number(pi.valor_total_real ?? 0)
       if (!existing.pedido_ids.has(pi.pedido_id)) {
         existing.pedido_ids.add(pi.pedido_id)
         if (!existing.fornecedor) existing.fornecedor = ped.fornecedores?.nome ?? null
