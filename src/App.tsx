@@ -13,6 +13,8 @@ import { Toaster } from 'sonner'
 import '@/lib/tours/tour.css'
 
 import LandingPage from '@/pages/LandingPage'
+import PrivacidadePage from '@/pages/legal/PrivacidadePage'
+import TermosPage from '@/pages/legal/TermosPage'
 import Login from '@/pages/Login'
 import ResetSenhaPage from '@/pages/ResetSenhaPage'
 import AceitarConvitePage from '@/pages/AceitarConvitePage'
@@ -63,6 +65,8 @@ export default function App() {
             <Routes>
               {/* Public routes */}
               <Route path="/" element={<LandingPage />} />
+              <Route path="/privacidade" element={<PrivacidadePage />} />
+              <Route path="/termos" element={<TermosPage />} />
               <Route path="/login" element={<Login />} />
               <Route path="/reset-senha" element={<ResetSenhaPage />} />
               <Route path="/convite/:token" element={<AceitarConvitePage />} />
