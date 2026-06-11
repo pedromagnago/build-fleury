@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/ui/PageHeader'
 import BulkActionBar, { BulkButton } from '@/components/BulkActionBar'
 import { useSelection } from '@/hooks/useSelection'
@@ -488,10 +488,13 @@ type TempoFiltro  = 'todos' | 'vencido' | 'proximo30'
 
 export default function AdiantamentosPage() {
   const { data: adiantamentos = [] } = useAdiantamentos()
+  const [searchParams] = useSearchParams()
   const selection = useSelection()
   const excluirMut = useDeleteAdiantamento()
 
-  const [activeTab, setActiveTab] = useState<TabKey>('todos')
+  const [activeTab, setActiveTab] = useState<TabKey>(
+    searchParams.get('filtro') === 'em-aberto' ? 'pendentes' : 'todos'
+  )
   const [search, setSearch] = useState('')
   const [statusFiltro, setStatusFiltro] = useState<StatusFiltro>('todos')
   const [tempoFiltro, setTempoFiltro] = useState<TempoFiltro>('todos')

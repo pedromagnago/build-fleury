@@ -16,7 +16,7 @@
  *  - Aba Por Parceiro e Agenda
  */
 import { useState, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '@/components/ui/PageHeader'
 import {
@@ -134,6 +134,7 @@ async function estornarRecebimento(
 export default function RecebimentosPage() {
   const { data: medicoes = [] } = useMedicoes()
   const { data: mutuos = [] } = useMutuos()
+  const [searchParams] = useSearchParams()
   const qc = useQueryClient()
 
   // ── Navegação / view ────────────────────────────────────────────────────────
@@ -141,7 +142,9 @@ export default function RecebimentosPage() {
 
   // ── Filtros ─────────────────────────────────────────────────────────────────
   const [search, setSearch] = useState('')
-  const [quickFilter, setQuickFilter] = useState<QuickFilter>('todas')
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>(
+    searchParams.get('filtro') === 'vencidas' ? 'atrasadas' : 'todas'
+  )
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('todas')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [parceiroFilter, setParceiroFilter] = useState('')
