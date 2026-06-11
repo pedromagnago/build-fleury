@@ -31,8 +31,9 @@ import {
   Wallet, Plus, X, Check, AlertTriangle, Clock,
   CheckCircle2, CreditCard, Search, CalendarClock,
   Calendar, Users, Upload, Paperclip, ChevronDown, ChevronRight, Trash2,
-  Pencil, Package, Power, PowerOff, Link as LinkIcon, Inbox, Download,
+  Pencil, Package, Power, PowerOff, Link as LinkIcon, Inbox, Download, Handshake,
 } from 'lucide-react'
+import AcordosTab from '@/components/financeiro/AcordosTab'
 import { useTour } from '@/lib/tours/useTour'
 import { pageTours } from '@/lib/tours/page-tours'
 import RecepcaoPage from '@/pages/RecepcaoPage'
@@ -75,9 +76,10 @@ const statusConfig: Record<string, { label: string; color: string; icon: typeof 
   paga: { label: 'Paga', color: 'bg-emerald-500/10 text-emerald-600', icon: CheckCircle2 },
   vencida: { label: 'Vencida', color: 'bg-red-500/10 text-red-500', icon: AlertTriangle },
   parcialmente_paga: { label: 'Parcial', color: 'bg-blue-500/10 text-blue-500', icon: CreditCard },
+  renegociada: { label: 'Renegociada', color: 'bg-violet-500/10 text-violet-600', icon: Handshake },
 }
 
-type Tab = 'parcelas' | 'agenda' | 'por_pedido' | 'por_fornecedor' | 'recepcao'
+type Tab = 'parcelas' | 'agenda' | 'por_pedido' | 'por_fornecedor' | 'acordos' | 'recepcao'
 
 // ---------------------------------------------------------------------------
 // Main
@@ -94,6 +96,7 @@ export default function PagamentosPage() {
     { key: 'agenda', label: 'Agenda', icon: Calendar },
     { key: 'por_pedido', label: 'Por Pedido', icon: Package },
     { key: 'por_fornecedor', label: 'Por Fornecedor', icon: Users },
+    { key: 'acordos', label: 'Acordos', icon: Handshake },
     { key: 'recepcao', label: 'Recepção (NF/IA)', icon: Inbox },
   ]
 
@@ -132,6 +135,7 @@ export default function PagamentosPage() {
       }} />}
       {tab === 'por_pedido' && <PorPedidoTab />}
       {tab === 'por_fornecedor' && <PorFornecedorTab />}
+      {tab === 'acordos' && <AcordosTab />}
       {tab === 'recepcao' && <RecepcaoPage />}
     </div>
   )
@@ -143,7 +147,7 @@ export default function PagamentosPage() {
 
 type TypeFilter = 'todos' | 'pedidos' | 'mutuos' | 'avulsas' | 'amortizacoes'
 type ParcelaTipoFilter = 'todos' | 'contratual' | 'adiantamento'
-type DueFilter = 'todas' | 'hoje' | 'semana' | 'mes' | 'vencidas' | 'pagas' | 'parcial'
+type DueFilter = 'todas' | 'hoje' | 'semana' | 'mes' | 'vencidas' | 'pagas' | 'parcial' | 'renegociadas'
 
 // Estorno unificado: limpa conciliacao + mov + zera parcela/mutuo_parcela.
 async function estornarParcela(p: Parcela, isMutuo: boolean, qc: ReturnType<typeof useQueryClient>) {
@@ -353,6 +357,10 @@ function ParcelasTab({ search }: { search: string }) {
     const venc = dataPrev(p)
     if (vencDe && venc < vencDe) return false
     if (vencAte && venc > vencAte) return false
+    // Renegociadas são histórico: só aparecem no filtro próprio. O saldo
+    // delas vive nas parcelas do acordo (badge ACORDO na lista).
+    if (dueFilter === 'renegociadas') return p.status === 'renegociada'
+    if (p.status === 'renegociada') return false
     if (dueFilter === 'pagas') return p.status === 'paga'
     if (dueFilter === 'parcial') return p.status === 'parcialmente_paga'
     if (p.status === 'paga') return dueFilter === 'todas'
@@ -492,7 +500,7 @@ function ParcelasTab({ search }: { search: string }) {
     let hoje = 0, hojeValor = 0
     let semana = 0, semanaValor = 0
     allParcelasCombined.forEach((p) => {
-      if (p.status === 'paga') return
+      if (p.status === 'paga' || p.status === 'renegociada') return
       const v = dataPrev(p)
       const restante = Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0))
       if (v && v < today) { vencidas++; vencidasValor += restante }
@@ -583,12 +591,14 @@ function ParcelasTab({ search }: { search: string }) {
             ['mes', 'Este mês'],
             ['pagas', 'Pagas'],
             ['parcial', 'Parcial'],
+            ['renegociadas', 'Reneg.'],
           ] as const).map(([k, label]) => {
             const tone =
               k === 'vencidas' ? 'data-[on=true]:text-red-600' :
               k === 'hoje' ? 'data-[on=true]:text-amber-600' :
               k === 'pagas' ? 'data-[on=true]:text-emerald-600' :
-              k === 'parcial' ? 'data-[on=true]:text-blue-600' : ''
+              k === 'parcial' ? 'data-[on=true]:text-blue-600' :
+              k === 'renegociadas' ? 'data-[on=true]:text-violet-600' : ''
             return (
               <button key={k} onClick={() => { setDueFilter(k); if (k === 'pagas' || k === 'parcial') setSoAberto(false) }} data-on={dueFilter === k}
                 className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors ${tone} ${
@@ -822,9 +832,10 @@ function ParcelasTab({ search }: { search: string }) {
                 const isMutuo = (p as any)._source === 'mutuo'
                 const isEditingRow = editingParcela?.id === p.id || payingParcela?.id === p.id
                 const venc = dataPrev(p)
-                const isVencida = p.status !== 'paga' && venc && venc < today
-                const isHoje = p.status !== 'paga' && venc === today
-                const isSemana = p.status !== 'paga' && venc > today && venc <= weekEnd
+                const emAberto = p.status !== 'paga' && p.status !== 'renegociada'
+                const isVencida = emAberto && venc && venc < today
+                const isHoje = emAberto && venc === today
+                const isSemana = emAberto && venc > today && venc <= weekEnd
                 const pedidoNumero = (p as any).pedido_numero as number | null | undefined
                 const fornecedorNome = (p as any).fornecedor_nome as string | null | undefined
                 const nfNumero = (p as any).nf_numero as string | null | undefined
@@ -855,6 +866,8 @@ function ParcelasTab({ search }: { search: string }) {
                     <td className="px-3 py-2.5 text-xs">
                       {isMutuo ? (
                         <span className="rounded bg-amber-100 px-1 py-0.5 text-[8px] font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">MÚTUO</span>
+                      ) : (p as any).acordo_id ? (
+                        <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-bold text-violet-600" title={(p as any).acordo_nome ?? 'Acordo de renegociação'}>ACORDO</span>
                       ) : pedidoNumero != null ? (
                         <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">PED #{pedidoNumero}</span>
                       ) : (
@@ -903,7 +916,7 @@ function ParcelasTab({ search }: { search: string }) {
                             <Pencil className="h-3 w-3" />
                           </button>
                         )}
-                        {p.status !== 'paga' && !isMutuo && (
+                        {emAberto && !isMutuo && (
                           <button onClick={() => setPayingParcela(p)} className="rounded-md bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/20 transition-colors">
                             Pagar
                           </button>
@@ -916,7 +929,7 @@ function ParcelasTab({ search }: { search: string }) {
                             Baixar
                           </button>
                         )}
-                        {p.status !== 'paga' && !isMutuo && (
+                        {emAberto && !isMutuo && (
                           <button onClick={() => { if (window.confirm('Excluir parcela?')) deleteParcela.mutate(p.id) }} className="rounded-md p-1 text-red-500 hover:bg-red-500/10 transition-colors text-[10px]" title="Excluir">
                             <Trash2 className="h-3 w-3" />
                           </button>
@@ -1507,7 +1520,7 @@ function AgendaTab({ onPickDay }: { onPickDay?: (isoDate: string) => void }) {
     const map = new Map<string, Parcela[]>()
     days.forEach((d) => map.set(d, []))
     parcelas
-      .filter((p) => p.status !== 'paga' && days.includes(dataPrev(p)))
+      .filter((p) => p.status !== 'paga' && p.status !== 'renegociada' && days.includes(dataPrev(p)))
       .forEach((p) => {
         map.get(dataPrev(p))?.push(p)
       })
@@ -1642,6 +1655,7 @@ function PorPedidoTab() {
     const map = new Map<string, { pedido: Pedido | null; parcelas: Parcela[] }>()
     parcelas.forEach((p) => {
       if (!p.pedido_id) return
+      if (p.status === 'renegociada') return // pendência migrou para o acordo
       if (!map.has(p.pedido_id)) {
         const ped = pedidos.find((pd) => pd.id === p.pedido_id) ?? null
         map.set(p.pedido_id, { pedido: ped, parcelas: [] })
@@ -2090,6 +2104,7 @@ function PorFornecedorTab() {
     const map = new Map<string, { fornecedor: Fornecedor | null; parcelas: (Parcela & { pedido?: Pedido })[] }>()
 
     parcelas.forEach((p) => {
+      if (p.status === 'renegociada') return // pendência migrou para o acordo
       const ped = pedidos.find((pd) => pd.id === p.pedido_id)
       const fid = ped?.fornecedor_id ?? '__avulso__'
       if (!map.has(fid)) {

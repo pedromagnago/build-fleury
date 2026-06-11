@@ -115,7 +115,12 @@ export function useEquacoesContabeis() {
       }, 0)
     const sigmaDespesas = (despesas as any[])
       .reduce((s, d) => s + Number(d.valor_orcado || 0), 0)
-    const sigmaParcelas = parcelas.reduce((s, p) => s + Number(p.valor || 0), 0)
+    // Parcelas de acordo (renegociação) ficam FORA da Eq A: as originais
+    // renegociadas continuam contando com o valor cheio contra suas origens;
+    // somar também o plano do acordo duplicaria o mesmo compromisso.
+    const sigmaParcelas = parcelas
+      .filter(p => !(p as any).acordo_id)
+      .reduce((s, p) => s + Number(p.valor || 0), 0)
     const origensTotal = sigmaPedidos + sigmaDespesas
 
     // Buckets do gap A
@@ -170,6 +175,7 @@ export function useEquacoesContabeis() {
     const bOrfasContr: BucketItem[] = []
     for (const p of parcelas) {
       if (p.pedido_id || p.despesa_indireta_id) continue
+      if ((p as any).acordo_id) continue // parcela de acordo tem origem rastreada (acordo_origens)
       const item: BucketItem = {
         id: p.id,
         label: `Parcela ${p.numero_parcela} — ${p.descricao || p.fornecedor_nome || 'sem descrição'}`,

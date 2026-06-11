@@ -8,8 +8,9 @@ import { formatCurrency } from '@/lib/utils'
 import { localDate } from '@/lib/parcelas'
 import { exportToExcel } from '@/lib/exportExcel'
 import { toast } from 'sonner'
+import RenegociarAcordoModal from '@/components/financeiro/RenegociarAcordoModal'
 import {
-  X, CreditCard, CalendarClock, Download, AlertTriangle, ArrowRight, Trash2, Pencil, RotateCcw,
+  X, CreditCard, CalendarClock, Download, AlertTriangle, ArrowRight, Trash2, Pencil, RotateCcw, Handshake,
 } from 'lucide-react'
 
 interface Props {
@@ -20,7 +21,7 @@ interface Props {
   onDone: () => void
 }
 
-type ModalType = 'pagar' | 'adiar' | 'excluir' | 'editar' | 'estornar' | null
+type ModalType = 'pagar' | 'adiar' | 'excluir' | 'editar' | 'estornar' | 'renegociar' | null
 
 export default function PagamentosBulkActions({ parcelas, allParcelas, selectedIds, fornecedorMap, onDone }: Props) {
   const [modal, setModal] = useState<ModalType>(null)
@@ -30,16 +31,22 @@ export default function PagamentosBulkActions({ parcelas, allParcelas, selectedI
     [allParcelas, parcelas, selectedIds]
   )
   const hasPagas = selected.some(p => p.status === 'paga')
+  const hasRenegociaveis = selected.some(p =>
+    p.status !== 'paga' && p.status !== 'renegociada' && !(p as any).acordo_id &&
+    Number(p.valor) - Number(p.valor_pago || 0) > 0.005
+  )
 
   return (
     <>
       <BulkBtn icon={CreditCard} label="Pagar" onClick={() => setModal('pagar')} />
       <BulkBtn icon={Pencil} label="Editar em Lote" onClick={() => setModal('editar')} />
       <BulkBtn icon={CalendarClock} label="Adiar" onClick={() => setModal('adiar')} />
+      {hasRenegociaveis && <BulkBtn icon={Handshake} label="Renegociar" onClick={() => setModal('renegociar')} />}
       <BulkBtn icon={Download} label="Exportar" onClick={() => handleExport(selectedForExport, fornecedorMap)} />
       {hasPagas && <BulkBtn icon={RotateCcw} label="Estornar" onClick={() => setModal('estornar')} />}
       <BulkBtn icon={Trash2} label="Excluir" onClick={() => setModal('excluir')} />
 
+      {modal === 'renegociar' && <RenegociarAcordoModal parcelas={selected} onClose={() => setModal(null)} onDone={onDone} />}
       {modal === 'pagar' && <PagarLoteModal parcelas={selected} fornecedorMap={fornecedorMap} onClose={() => setModal(null)} onDone={onDone} />}
       {modal === 'adiar' && <AdiarModal parcelas={selected} onClose={() => setModal(null)} onDone={onDone} />}
       {modal === 'excluir' && <ExcluirLoteModal parcelas={selected} onClose={() => setModal(null)} onDone={onDone} />}

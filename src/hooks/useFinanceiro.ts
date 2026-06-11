@@ -19,7 +19,11 @@ export interface Parcela {
   valor_pago: number
   forma_pagamento: string | null
   conta_bancaria_id: string | null
-  status: 'futura' | 'a_vencer' | 'paga' | 'vencida' | 'parcialmente_paga'
+  /** renegociada = saldo transferido para um acordo (fora do fluxo projetado; histórico preservado) */
+  status: 'futura' | 'a_vencer' | 'paga' | 'vencida' | 'parcialmente_paga' | 'renegociada'
+  /** Preenchido quando a parcela é do plano de um acordo de renegociação. */
+  acordo_id?: string | null
+  acordo_nome?: string | null
   /** contratual = parcela do cronograma cond_pagamento; adiantamento = PIX antecipado fora do cronograma */
   tipo?: 'contratual' | 'adiantamento'
   comprovante_path: string | null
@@ -64,7 +68,7 @@ export function useParcelas() {
       while (hasMore) {
         const { data, error } = await supabase
           .from('parcelas')
-          .select('*, conciliacao_parcelas(id), recepcao_docs(numero_doc, serie), pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, nf_origem_id, valor_total_real, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at), recepcao_docs(numero_doc, serie)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at)')
+          .select('*, conciliacao_parcelas(id), recepcao_docs(numero_doc, serie), pedidos(numero_pedido, cond_pagamento, data_entrega_prevista, item_compra_id, fornecedor_id, nf_origem_id, valor_total_real, fornecedores(nome), itens_compra(descricao, etapa_id, valor_total_orcado, valor_consumido, etapas(nome), deleted_at), recepcao_docs(numero_doc, serie)), despesas_indiretas(descricao, categoria, fornecedor_id, fornecedores(nome), deleted_at), acordos(nome, fornecedor_nome, fornecedor_id)')
           .eq('company_id', companyId)
           .is('deleted_at', null)
           .order('data_vencimento', { ascending: true })
@@ -98,6 +102,7 @@ export function useParcelas() {
         const item = pedido?.itens_compra as Record<string, any> | null
         const etapa = item?.etapas as Record<string, string> | null
         const despesa = p.despesas_indiretas as Record<string, unknown> | null
+        const acordo = p.acordos as Record<string, string> | null
         const fornPed = pedido?.fornecedores as Record<string, string> | null
         const fornDesp = despesa?.fornecedores as Record<string, string> | null
         const nfDocParcela = p.recepcao_docs as Record<string, string> | null
@@ -116,8 +121,9 @@ export function useParcelas() {
           ...p,
           pedido_item: item?.descricao ?? (despesa?.descricao as string) ?? null,
           item_compra_id: (pedido?.item_compra_id as string) ?? null,
-          fornecedor_nome: fornPed?.nome ?? fornDesp?.nome ?? null,
-          fornecedor_id: (pedido?.fornecedor_id as string) ?? (despesa?.fornecedor_id as string) ?? null,
+          fornecedor_nome: fornPed?.nome ?? fornDesp?.nome ?? acordo?.fornecedor_nome ?? null,
+          fornecedor_id: (pedido?.fornecedor_id as string) ?? (despesa?.fornecedor_id as string) ?? (acordo?.fornecedor_id as string) ?? null,
+          acordo_nome: acordo?.nome ?? null,
           // Enriquecimento para hierarquia Item → Pedido → Parcela na conciliação
           pedido_numero: (pedido?.numero_pedido as number) ?? null,
           pedido_cond_pagamento: (pedido?.cond_pagamento as string) ?? null,
@@ -589,8 +595,10 @@ export function useDashboardKPIs() {
       // Data efetiva: se ja paga, usa data_pagamento_real; senao, prevista_pagamento -> vencimento
       const efetiva = (p: { data_vencimento?: string | null; data_prevista_pagamento?: string | null; data_pagamento_real?: string | null }) =>
         p.data_pagamento_real || p.data_prevista_pagamento || p.data_vencimento || ''
-      const vencidas = parcelas.filter((p) => p.status !== 'paga' && efetiva(p) < (today ?? ''))
-      const aVencer = parcelas.filter((p) => p.status !== 'paga' && efetiva(p) >= (today ?? '') && efetiva(p) <= limit30)
+      // renegociada: saldo migrou para as parcelas do acordo — não conta como vencida/a vencer
+      const emAberto = (p: { status: string }) => p.status !== 'paga' && p.status !== 'renegociada'
+      const vencidas = parcelas.filter((p) => emAberto(p) && efetiva(p) < (today ?? ''))
+      const aVencer = parcelas.filter((p) => emAberto(p) && efetiva(p) >= (today ?? '') && efetiva(p) <= limit30)
 
       const faturamento = currentCompany?.faturamento_contrato ?? 0
       const custo = currentCompany?.custo_total_contrato ?? 0

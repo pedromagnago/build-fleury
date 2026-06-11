@@ -11,6 +11,7 @@ import { useEtapas } from '@/hooks/useEtapas'
 import { useMedicoes, useDistribuicao, useMovimentacoes } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
+import { useAcordos } from '@/hooks/useAcordos'
 import { useProject } from '@/contexts/ProjectContext'
 import { useConciliacaoLinks } from '@/hooks/useConciliacao'
 
@@ -57,6 +58,7 @@ export function useHealthChecks() {
   const { data: mutuos = [] } = useMutuos()
   const { data: movs = [] } = useMovimentacoes()
   const { despesas = [] } = useDespesasIndiretas()
+  const { data: acordos = [] } = useAcordos()
 
   // Cache compartilhado com useCashFlowEvents e useEquacoesContabeis —
   // garante que todos usam os mesmos dados de conciliação.
@@ -192,7 +194,7 @@ export function useHealthChecks() {
     // 4. Parcelas vencidas sem pagamento
     // ═══════════════════════════════════════════════════════════
     const parcelasVencidas = parcelas.filter(
-      p => p.status !== 'paga' && p.data_vencimento < today
+      p => p.status !== 'paga' && p.status !== 'renegociada' && p.data_vencimento < today
     )
     const valorVencido = parcelasVencidas.reduce(
       (s, p) => s + (Number(p.valor) - Number(p.valor_pago || 0)), 0
@@ -322,6 +324,7 @@ export function useHealthChecks() {
     const parcEsquecida: HealthCheckItem[] = []
     let valorEsquecido = 0
     parcelas.forEach(p => {
+      if (p.status === 'renegociada') return // saldo migrou para o acordo
       const v = Number(p.valor || 0)
       const vp = Number(p.valor_pago || 0)
       const saldo = v - vp
@@ -506,7 +509,7 @@ export function useHealthChecks() {
     // ═══════════════════════════════════════════════════════════
     // 15. Parcelas órfãs — sem pedido_id nem despesa_indireta_id
     // ═══════════════════════════════════════════════════════════
-    const orfas = parcelas.filter(p => !p.pedido_id && !p.despesa_indireta_id)
+    const orfas = parcelas.filter(p => !p.pedido_id && !p.despesa_indireta_id && !(p as any).acordo_id)
     const valorOrfas = orfas.reduce((s, p) => s + Number(p.valor || 0), 0)
     all.push({
       id: 'parcelas-orfas',
@@ -691,8 +694,40 @@ export function useHealthChecks() {
       routeLabel: 'Ver Medições',
     })
 
+    // ═══════════════════════════════════════════════════════════
+    // 20. Acordos — invariante: Σ parcelas do plano = valor do acordo
+    //     = Σ saldos renegociados das originais. Quebra indica edição
+    //     manual de parcela do acordo ou exclusão fora do fluxo.
+    // ═══════════════════════════════════════════════════════════
+    const acordosQuebrados: HealthCheckItem[] = []
+    for (const ac of acordos) {
+      if (ac.status === 'cancelado') continue
+      const somaPlano = ac.parcelas.reduce((s, p) => s + Number(p.valor || 0), 0)
+      const somaOrigens = ac.origens.reduce((s, o) => s + Number(o.valor_renegociado || 0), 0)
+      const difPlano = somaPlano - Number(ac.valor_total)
+      const difOrigens = somaOrigens - Number(ac.valor_total)
+      if (Math.abs(difPlano) <= 0.5 && Math.abs(difOrigens) <= 0.5) continue
+      acordosQuebrados.push({
+        id: ac.id,
+        label: `Acordo: ${ac.nome}${ac.fornecedor_nome ? ' — ' + ac.fornecedor_nome : ''}`,
+        description: `Total ${fmtBRL(Number(ac.valor_total))} • Σ plano ${fmtBRL(somaPlano)} • Σ origens ${fmtBRL(somaOrigens)}`,
+        value: Math.max(Math.abs(difPlano), Math.abs(difOrigens)),
+      })
+    }
+    all.push({
+      id: 'acordos-desbalanceados',
+      title: 'Acordos desbalanceados',
+      severity: acordosQuebrados.length === 0 ? 'ok' : 'critical',
+      summary: acordosQuebrados.length === 0
+        ? 'Planos de acordo batem com os saldos renegociados'
+        : `${acordosQuebrados.length} acordo(s) com plano divergente do saldo renegociado`,
+      items: acordosQuebrados,
+      route: '/pagamentos?tab=acordos',
+      routeLabel: 'Ver Acordos',
+    })
+
     return all
-  }, [parcelas, pedidos, itens, etapas, medicoes, distribuicoes, mutuos, despesas, movs, linksData])
+  }, [parcelas, pedidos, itens, etapas, medicoes, distribuicoes, mutuos, despesas, movs, linksData, acordos])
 
   // Aggregate stats
   const stats = useMemo(() => {

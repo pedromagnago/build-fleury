@@ -44,9 +44,9 @@ export interface CashFlowEvent {
     /** Status real da parcela no banco. */
     parcelaStatus?: string
     /** Origem da parcela: NF (pedido âncora), Saldo (regerada após consumo), Plan (planejado),
-     *  Despesa (indireta), Avulsa (sem pedido nem despesa). Pra rendering hierárquico
-     *  e badges visuais em fluxo de caixa. */
-    origem?: 'nf' | 'saldo' | 'planejado' | 'despesa' | 'avulsa' | 'medicao' | 'mutuo' | 'transferencia'
+     *  Despesa (indireta), Acordo (plano de renegociação), Avulsa (sem pedido nem despesa).
+     *  Pra rendering hierárquico e badges visuais em fluxo de caixa. */
+    origem?: 'nf' | 'saldo' | 'planejado' | 'despesa' | 'acordo' | 'avulsa' | 'medicao' | 'mutuo' | 'transferencia'
   }
 }
 
@@ -448,6 +448,13 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
             despesaId = par.despesa_indireta_id
             descPrefix = `Parc ${par.numero_parcela}${forn ? ' — ' + forn : ''} · `
             origemMov = 'despesa'
+          } else if ((par as any).acordo_id) {
+            cat = 'Acordo'
+            etapa = 'Acordos'
+            forn = (par as any).fornecedor_nome ?? (par as any).acordo_nome ?? 'Acordo'
+            item = (par as any).acordo_nome ?? par.descricao ?? 'Acordo'
+            descPrefix = `Parc ${par.numero_parcela}${forn ? ' — ' + forn : ''} · `
+            origemMov = 'acordo'
           }
         }
       } else {
@@ -569,6 +576,10 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
     // ═══════════════════════════════════════════════════════════
     parcelas.forEach(p => {
       if (!p.data_vencimento) return
+      // Renegociada: o saldo aberto migrou para as parcelas do acordo (que entram
+      // neste mesmo loop via acordo_id). O que ela já pagou segue no fluxo pelas
+      // movs reais; emitir o saldo aqui duplicaria a projeção.
+      if (p.status === 'renegociada') return
       // Considera paga também quando valor_pago cobre o valor (status pode estar dessincronizado em parcelas antigas)
       const isPaga = p.status === 'paga' || (Number(p.valor_pago || 0) >= Number(p.valor) - 0.005 && Number(p.valor) > 0)
       const movsCount = movsByParcelaId.get(p.id)?.size ?? 0
@@ -611,7 +622,7 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
       let fornStr: string | undefined = undefined
       let itemStr: string | undefined = undefined
       let descStr = partLbl
-      let origemKind: 'nf' | 'saldo' | 'planejado' | 'despesa' | 'avulsa' = 'planejado'
+      let origemKind: 'nf' | 'saldo' | 'planejado' | 'despesa' | 'acordo' | 'avulsa' = 'planejado'
 
       if (ped) {
         const itemObj = itens.find(i => i.id === ped.item_compra_id)
@@ -645,6 +656,16 @@ export function useCashFlowEvents(viewMode: FinancialViewMode = 'pedidos'): Cash
         itemStr = di.descricao
         descStr = `[Desp.] ${partLbl} — ${di.descricao || 'Despesa'}`
         origemKind = 'despesa'
+      } else if ((p as any).acordo_id) {
+        // Parcela do plano de um acordo de renegociação — carrega o cronograma
+        // novo das NFs/parcelas renegociadas.
+        const acordoNome = (p as any).acordo_nome as string | null
+        catStr = 'Acordo'
+        etapaStr = 'Acordos'
+        fornStr = (p as any).fornecedor_nome ?? acordoNome ?? 'Acordo'
+        itemStr = acordoNome ?? p.descricao ?? 'Acordo'
+        descStr = `[Acordo] ${partLbl} — ${acordoNome ?? fornStr}`
+        origemKind = 'acordo'
       } else {
         // Parcela avulsa (sem pedido nem despesa)
         descStr = p.descricao

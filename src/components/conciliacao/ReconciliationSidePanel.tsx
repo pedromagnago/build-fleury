@@ -112,26 +112,32 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
   // Quais candidatos tem o campo de observacao expandido (default: oculto)
   const [obsExpandidos, setObsExpandidos] = useState<Set<string>>(new Set())
 
+  // Pré-carrega a seleção com os vínculos existentes. Roda só quando muda a
+  // linha/conciliação (ou quando a conc carrega pela 1ª vez) — depender de
+  // `concs` direto fazia qualquer refetch em background resetar a seleção
+  // em andamento do usuário.
+  const concAtualId = row?.conciliacao_id
+    ? ((concs as any[]).find((c: any) => c.id === row.conciliacao_id)?.id ?? null)
+    : null
   useEffect(() => {
     if (row) {
       setSearch('')
       const pre = new Map<string, { valor: number; observacao: string }>()
-      if (row.conciliacao_id) {
-        const conc = concs.find((c: any) => c.id === row.conciliacao_id)
-        if (conc) {
-          const links = (conc as any).conciliacao_parcelas ?? []
-          for (const l of links) {
-            const cid = l.parcela_id ? l.parcela_id
-              : l.medicao_id ? `med-${l.medicao_id}`
-              : l.mutuo_parcela_id ? `mutparc-${l.mutuo_parcela_id}`
-              : l.mutuo_id ? `mut-${l.mutuo_id}` : null
-            if (cid) pre.set(cid, { valor: Number(l.valor_aplicado), observacao: l.observacao ?? '' })
-          }
+      if (concAtualId) {
+        const conc = concs.find((c: any) => c.id === concAtualId)
+        const links = (conc as any)?.conciliacao_parcelas ?? []
+        for (const l of links) {
+          const cid = l.parcela_id ? l.parcela_id
+            : l.medicao_id ? `med-${l.medicao_id}`
+            : l.mutuo_parcela_id ? `mutparc-${l.mutuo_parcela_id}`
+            : l.mutuo_id ? `mut-${l.mutuo_id}` : null
+          if (cid) pre.set(cid, { valor: Number(l.valor_aplicado), observacao: l.observacao ?? '' })
         }
       }
       setSelecao(pre)
     }
-  }, [row?.id, concs])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row?.id, concAtualId])
 
   useEffect(() => {
     if (!row) return
@@ -149,6 +155,25 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     // ID da conciliação atual — excluído do cálculo de saldo dos mútuos para
     // que itens já vinculados a esta mov apareçam como disponíveis ao trocar.
     const currentConcId = row.conciliacao_id ?? null
+
+    // Valor aplicado pela conciliação ATUAL em cada parcela/medição/parcela de
+    // mútuo — devolvido ao saldo do candidato. Sem isso, itens já baixados por
+    // esta mov ficam 'paga'/saldo 0, saem do pool e são descartados ao salvar,
+    // fazendo o "Trocar / adicionar" substituir mútuos por pedido (e vice-versa).
+    const aplicadoNestaConc = {
+      parcela: new Map<string, number>(),
+      medicao: new Map<string, number>(),
+      mutuoParcela: new Map<string, number>(),
+    }
+    if (currentConcId) {
+      const concAtual = (concs as any[]).find(c => c.id === currentConcId)
+      for (const l of (concAtual?.conciliacao_parcelas ?? []) as any[]) {
+        const v = Number(l.valor_aplicado) || 0
+        if (l.parcela_id) aplicadoNestaConc.parcela.set(l.parcela_id, (aplicadoNestaConc.parcela.get(l.parcela_id) ?? 0) + v)
+        else if (l.medicao_id) aplicadoNestaConc.medicao.set(l.medicao_id, (aplicadoNestaConc.medicao.get(l.medicao_id) ?? 0) + v)
+        else if (l.mutuo_parcela_id) aplicadoNestaConc.mutuoParcela.set(l.mutuo_parcela_id, (aplicadoNestaConc.mutuoParcela.get(l.mutuo_parcela_id) ?? 0) + v)
+      }
+    }
 
     // Movs fantasma (Pgto lote / Quitar) — conciliacoes status='aprovado'
     // representam baixas pré-feitas que ainda não foram associadas a um
@@ -190,10 +215,11 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     if (isSaida) {
       // Saída: parcelas a pagar (pedidos + despesas indiretas)
       for (const p of parcelas) {
-        if (p.status === 'paga') continue
+        const devolvido = aplicadoNestaConc.parcela.get(p.id) ?? 0
+        if (p.status === 'paga' && devolvido < 0.01) continue
         const valor = Number(p.valor)
         const pago = Number(p.valor_pago || 0)
-        const saldo = valor - pago
+        const saldo = valor - pago + devolvido
         if (saldo < 0.01) continue
         // Parcela de pedido: descricao = "P{n}" (fornecedor + #pedido vão no
         // header de grupo). Despesa indireta/avulsa: usa descricao/categoria
@@ -244,10 +270,11 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
         if (!ehAdiantamentoFeito) {
           // Captação genuína: as parcelas são devolução ao credor = SAÍDA
           for (const mp of (mut.parcelas ?? []) as any[]) {
-            if (mp.status === 'paga') continue
+            const devolvido = aplicadoNestaConc.mutuoParcela.get(mp.id) ?? 0
+            if (mp.status === 'paga' && devolvido < 0.01) continue
             const valor = Number(mp.valor) || 0
             const pago = Number(mp.valor_pago || 0)
-            const saldo = valor - pago
+            const saldo = valor - pago + devolvido
             if (saldo < 0.01) continue
             result.push({
               id: `mutparc-${mp.id}`,
@@ -282,10 +309,11 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     } else {
       // Entrada: medições + adiantamentos + parcelas de mútuo (devolução) + captações de mútuo
       for (const m of medicoes) {
-        if (m.status === 'paga') continue
+        const devolvido = aplicadoNestaConc.medicao.get(m.id) ?? 0
+        if (m.status === 'paga' && devolvido < 0.01) continue
         const valor = Number(m.valor_planejado) || 0
         const pago = Number(m.valor_liberado) || 0
-        const saldo = valor - pago
+        const saldo = valor - pago + devolvido
         if (saldo < 0.01 && m.status !== 'futura') continue
         result.push({
           id: `med-${m.id}`,
@@ -320,10 +348,11 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
           const parcs = (mut.parcelas ?? []) as any[]
           if (parcs.length > 0) {
             for (const mp of parcs) {
-              if (mp.status === 'paga') continue
+              const devolvido = aplicadoNestaConc.mutuoParcela.get(mp.id) ?? 0
+              if (mp.status === 'paga' && devolvido < 0.01) continue
               const valor = Number(mp.valor) || 0
               const pago = Number(mp.valor_pago || 0)
-              const saldo = valor - pago
+              const saldo = valor - pago + devolvido
               if (saldo < 0.01) continue
               result.push({
                 id: `mutparc-${mp.id}`,
@@ -764,7 +793,19 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     const phantomMovIds: string[] = []
     for (const [id, { valor, observacao }] of selecao.entries()) {
       const c = poolCandidatos.find(x => x.id === id)
-      if (!c) continue
+      if (!c) {
+        // Vínculo pré-existente que saiu do pool (ex.: refetch no meio da
+        // edição). Deriva a origem pelo prefixo do id em vez de descartar —
+        // descartar aqui era o que desconciliava os itens antigos ao salvar.
+        if (id.startsWith('movp-')) continue
+        const [origem, origem_id]: ['parcela' | 'medicao' | 'mutuo_parcela' | 'mutuo', string] =
+          id.startsWith('med-') ? ['medicao', id.slice(4)] :
+          id.startsWith('mutparc-') ? ['mutuo_parcela', id.slice(8)] :
+          id.startsWith('mut-') ? ['mutuo', id.slice(4)] :
+          ['parcela', id]
+        vinculos.push({ origem, origem_id, valor_aplicado: valor, observacao: observacao || null })
+        continue
+      }
       if (c.tipo === 'mov_pendente') {
         if (c.phantomMovId) phantomMovIds.push(c.phantomMovId)
         for (const cp of (c.phantomCps ?? [])) {
