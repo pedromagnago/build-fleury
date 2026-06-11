@@ -54,7 +54,12 @@ export function useCreateAvanco() {
       if (error) throw error
       return data
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['avancos'] }); toast.success('Avanço registrado') },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['avancos'] })
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      toast.success('Avanço registrado')
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 }
@@ -107,7 +112,14 @@ export function useCreateMedicao() {
       if (error) throw error
       return data
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['medicoes'] }); toast.success('Medição criada') },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['medicao_parcelas'] })
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
+      toast.success('Medição criada')
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 }
@@ -120,7 +132,14 @@ export function useUpdateMedicao() {
       if (error) throw error
       return data
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['medicoes'] }); toast.success('Medição atualizada') },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['medicao_parcelas'] })
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
+      toast.success('Medição atualizada')
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 }
@@ -150,7 +169,10 @@ export function useDeleteMedicao() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['medicao_parcelas'] })
       qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       toast.success('Medição excluída')
     },
     onError: (err: Error) => toast.error(err.message),
@@ -366,7 +388,12 @@ export function useCreateDistribuicao() {
       if (error) throw error
       return data as Distribuicao
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] }); toast.success('Distribuição criada') },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['medicao_parcelas'] })
+      toast.success('Distribuição criada')
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 }
@@ -384,7 +411,12 @@ export function useUpdateDistribuicao() {
       if (error) throw error
       return data as Distribuicao
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] }); toast.success('Distribuição atualizada') },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['medicao_parcelas'] })
+      toast.success('Distribuição atualizada')
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 }
@@ -405,7 +437,12 @@ export function useDeleteDistribuicao() {
         })
       }
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] }); toast.success('Distribuição removida') },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['medicao_parcelas'] })
+      toast.success('Distribuição removida')
+    },
     onError: (err: Error) => toast.error(err.message),
   })
 }
