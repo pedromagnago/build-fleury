@@ -216,25 +216,42 @@ function parseFornecedor(texto: string): { nome: string | null; cnpj: string | n
   const blocoEmitente = idxDestinatario > 0 ? texto.slice(0, idxDestinatario) : texto.slice(0, 3000)
   const linhasEmitente = blocoEmitente.split(/\n/).map(l => l.trim()).filter(l => l.length > 0)
 
+  // Linhas do canhoto ("RECEBEMOS DE ... OS PRODUTOS...") não são razão social
+  // — mas terminam com sufixo tipo "- ME" e enganavam a Estratégia A.
+  const RE_CANHOTO = /RECEBEMOS\s+DE|DATA\s+DE\s+RECEBIMENTO|ASSINATURA\s+DO\s+RECEBEDOR/i
+
   let nome: string | null = null
-  // Estratégia A: razão social com sufixo formal
-  for (const linha of linhasEmitente) {
-    // Pula linhas obviamente ruins (rótulos, números, endereços)
-    if (/^N[ºo°]\s|^DATA|^CEP|^CNPJ|NATUREZA\s+DA\s+OPERA|^PROTOCOLO|^CHAVE/i.test(linha)) continue
-    if (/^\d/.test(linha)) continue
-    const m = linha.match(RE_RAZAO_SUFIXO)
-    if (m) {
-      nome = `${m[1]} ${m[2]}`.replace(/\s+/g, ' ').trim().toUpperCase()
-      break
+  // Estratégia A: o canhoto declara o emitente — "RECEBEMOS DE <NOME> OS
+  // PRODUTOS [E/OU SERVIÇOS] CONSTANTES DA NOTA FISCAL..." é texto
+  // regulamentado da DANFE e traz o nome completo numa linha só (a box do
+  // emitente costuma quebrar o nome em 2+ linhas).
+  const mCanhoto = texto.match(/RECEBEMOS\s+DE\s+(.{3,100}?)\s+OS\s+PRODUTOS/i)
+  if (mCanhoto) nome = mCanhoto[1]!.replace(/\s+/g, ' ').trim().toUpperCase()
+
+  // Estratégia B: razão social com sufixo formal na área do emitente
+  if (!nome) {
+    for (const linha of linhasEmitente) {
+      // Pula linhas obviamente ruins (rótulos, números, endereços, canhoto,
+      // quadro 0-ENTRADA/1-SAÍDA — "SAÍDA" casa o sufixo S/A)
+      if (/^N[ºo°]\s|^DATA|^CEP|^CNPJ|NATUREZA\s+DA\s+OPERA|^PROTOCOLO|^CHAVE/i.test(linha)) continue
+      if (RE_CANHOTO.test(linha)) continue
+      if (/ENTRADA|SA[ÍI]DA/i.test(linha)) continue
+      if (/^\d/.test(linha)) continue
+      const m = linha.match(RE_RAZAO_SUFIXO)
+      if (m) {
+        nome = `${m[1]} ${m[2]}`.replace(/\s+/g, ' ').trim().toUpperCase()
+        break
+      }
     }
   }
 
-  // Estratégia B (fallback): primeira linha em CAIXA ALTA "decente"
+  // Estratégia C (último fallback): primeira linha em CAIXA ALTA "decente"
   if (!nome) {
     const candidatos = linhasEmitente
       .filter(l => l.length >= 6 && l === l.toUpperCase())
       .filter(l => /[A-Z]{3,}/.test(l))
       .filter(l => !/DANFE|NF-?E|CNPJ|CHAVE|NATUREZA|INSCRI[ÇC][ÃA]O|CONTROLE|S[ÉE]RIE|FOLHA|EMITENTE|DESTINAT[ÁA]RIO|FATURA|C[ÁA]LCULO|TRANSPORTADOR|PRODUTO|UF|CFOP|NCM|VENDA\s+PARA|ENTREGA\s+FUTURA|REMETENTE|RETIRADA|PROTOCOLO|RAZ[ÃA]O\s+SOCIAL|NOME\/RAZ/i.test(l))
+      .filter(l => !RE_CANHOTO.test(l))
       .filter(l => !/^\d/.test(l))
       .filter(l => !/CEP:|R\s|RUA\s|AV\.|AVENIDA|QUADRA|SETOR/i.test(l))
     nome = candidatos[0] ?? null
@@ -244,18 +261,35 @@ function parseFornecedor(texto: string): { nome: string | null; cnpj: string | n
 }
 
 function parseDocumento(texto: string) {
-  const matchN = texto.match(/N[ºo°]\s*([\d.]+)/i)
-  const numero = matchN ? matchN[1]!.replace(/\./g, '') : null
-  const matchS = texto.match(/S[ée]rie:?\s*(\d+)/i)
-  const serie = matchS ? matchS[1]! : null
-  const matchData = texto.match(/DATA\s+DA?\s+EMISS[ÃA]O[\s\S]{0,40}?(\d{2}\/\d{2}\/\d{4})/i)
-    ?? texto.match(/(\d{2}\/\d{2}\/\d{4})\s*DATA\s+DA?\s+EMISS[ÃA]O/i)
+  const chave_acesso = extrairChaveAcesso(texto)
+  // Fonte mais confiável: nNF embutido na chave de acesso (layout SEFAZ:
+  // cUF(2) AAMM(4) CNPJ(14) mod(2) série(3) nNF(9) tpEmis(1) cNF(8) DV(1)).
+  // O regex de texto era frágil: "Nº." capturava só o ponto e gravava "" no banco.
+  let numero: string | null = null
+  let serie: string | null = null
+  if (chave_acesso) {
+    numero = chave_acesso.slice(25, 34).replace(/^0+(?=\d)/, '')
+    serie = chave_acesso.slice(22, 25)
+  }
+  if (!numero) {
+    // Tolerante a "Nº 123", "Nº.: 30.698", "N°: 3605" — exige 1º char dígito
+    const matchN = texto.match(/N[ºo°]\s*\.?\s*:?\s*(\d[\d.]*)/i)
+    numero = matchN ? matchN[1]!.replace(/\./g, '') : null
+  }
+  if (!serie) {
+    const matchS = texto.match(/S[ée]rie:?\s*(\d+)/i)
+    serie = matchS ? matchS[1]! : null
+  }
+  // Janela de 160 chars: no texto coord-based o rótulo "DATA DA EMISSÃO" fica
+  // na linha do cabeçalho do destinatário e a data só aparece na linha seguinte,
+  // depois de razão social + CNPJ (~70-100 chars).
+  const matchData = texto.match(/DATA\s+D[AE]?\s+EMISS[ÃA]O[\s\S]{0,160}?(\d{2}\/\d{2}\/\d{4})/i)
+    ?? texto.match(/(\d{2}\/\d{2}\/\d{4})\s*DATA\s+D[AE]?\s+EMISS[ÃA]O/i)
     ?? texto.match(/EMISS[ÃA]O[:\s]+(\d{2}\/\d{2}\/\d{4})/i)
   const data_emissao = matchData ? parseDateBr(matchData[1]) : null
   const matchValor = texto.match(/VALOR\s+TOTAL\s+DA\s+NOTA[\s\S]{0,80}?([\d.,]+\d{2})/i)
     ?? texto.match(/V\.\s*TOTAL\s+DA\s+NOTA[\s\S]{0,80}?([\d.,]+\d{2})/i)
   const valor_total = matchValor ? parseNumberBr(matchValor[1]) : null
-  const chave_acesso = extrairChaveAcesso(texto)
   return { numero, serie, data_emissao, data_vencimento: null, valor_total, tipo: 'NFE' as const, chave_acesso }
 }
 
