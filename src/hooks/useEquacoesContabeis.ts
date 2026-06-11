@@ -8,11 +8,14 @@
  *   A. PLANO     — Σ origens (pedidos + despesas) = Σ parcelas
  *   B. EXECUÇÃO  — Σ valor_pago parcelas         = Σ saídas conciliadas a parcela
  *   C. EXTRATO   — Σ movs do extrato             = Σ movs conciliadas a alguma origem
+ *   D. CAIXA     — Σ saídas reais                = Σ saídas categorizadas por destino
+ *   E. WBS       — Σ itens_compra.valor_consumido (trigger) = Σ pedido_itens recomputado
+ *   F. VÍNCULO   — Σ parcelas de pedido          = Σ parcelas atribuíveis a item de orçamento
  */
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useParcelas } from '@/hooks/useFinanceiro'
-import { usePedidos } from '@/hooks/useCompras'
+import { usePedidos, usePedidoItens, useItensCompra } from '@/hooks/useCompras'
 import { useDespesasIndiretas } from '@/hooks/useDespesasIndiretas'
 import { useMovimentacoes } from '@/hooks/useOperacional'
 import { useProject } from '@/contexts/ProjectContext'
@@ -44,7 +47,7 @@ export interface EquacaoBucket {
 }
 
 export interface Equacao {
-  id: 'plano' | 'execucao' | 'extrato' | 'caixa'
+  id: 'plano' | 'execucao' | 'extrato' | 'caixa' | 'wbs' | 'vinculo'
   title: string
   /** Texto curto exibido no card explicando o que cada lado representa. */
   formula: string
@@ -61,6 +64,8 @@ export function useEquacoesContabeis() {
   const { data: pedidos = [] } = usePedidos()
   const { despesas = [] } = useDespesasIndiretas()
   const { data: movs = [] } = useMovimentacoes()
+  const { data: itensCompra = [], isLoading: loadingItens } = useItensCompra()
+  const { data: pedidoItens = [], isLoading: loadingPedidoItens } = usePedidoItens()
 
   // Σ pago em mutuo_parcelas (separado de parcelas — tabela própria).
   // Necessário para a Eq D (caixa).
@@ -84,7 +89,7 @@ export function useEquacoesContabeis() {
   const links: ConciliacaoLink[] = linksResult?.links ?? []
   const movsConciliadas = linksResult?.movsConciliadasIds ?? new Set<string>()
 
-  const isLoading = !parcelas || !pedidos || !despesas || !movs || loadingLinks || loadingMutuosPago
+  const isLoading = !parcelas || !pedidos || !despesas || !movs || loadingLinks || loadingMutuosPago || loadingItens || loadingPedidoItens
 
   const equacoes = useMemo<Equacao[]>(() => {
     if (isLoading) return []
@@ -410,6 +415,91 @@ export function useEquacoesContabeis() {
       { id: 'd-saida-orfa',        label: 'Saídas órfãs (sem origem cadastrada)',                 qtd: itensSaidaOrfa.length,       valor: sumValor(itensSaidaOrfa),       items: itensSaidaOrfa },
     ].filter(b => b.qtd > 0)
 
+    // ═════════════════════════════════════════════════════════════════════════
+    // EQUAÇÃO E — WBS: Σ itens_compra.valor_consumido (mantido por trigger)
+    //                = Σ pedido_itens.valor_total_real recomputado
+    //                  (pedido ≠ cancelado, fora_orcamento ≠ true, item vivo)
+    //
+    // Se o trigger dessincronizou (consumo fantasma, estorno não propagado),
+    // o WBS mostra saldo errado. O bucket lista item a item onde diverge.
+    // ═════════════════════════════════════════════════════════════════════════
+    const itensVivosIds = new Set(itensCompra.map(i => i.id))
+    const consumoRecomputado = new Map<string, number>()
+    for (const pi of pedidoItens as any[]) {
+      const ped = pi.pedidos
+      if (!ped || ped.status === 'cancelado') continue
+      if (pi.fora_orcamento === true) continue
+      if (!itensVivosIds.has(pi.item_compra_id)) continue
+      consumoRecomputado.set(pi.item_compra_id, (consumoRecomputado.get(pi.item_compra_id) ?? 0) + Number(pi.valor_total_real ?? 0))
+    }
+    const sigmaTrigger = itensCompra.reduce((s, i) => s + Number(i.valor_consumido || 0), 0)
+    const sigmaRecomputado = Array.from(consumoRecomputado.values()).reduce((s, v) => s + v, 0)
+    const gapE = sigmaRecomputado - sigmaTrigger
+
+    const bItemDivergente: BucketItem[] = []
+    for (const i of itensCompra) {
+      const trigger = Number(i.valor_consumido || 0)
+      const recomputado = consumoRecomputado.get(i.id) ?? 0
+      const dif = recomputado - trigger
+      if (Math.abs(dif) <= 0.5) continue
+      bItemDivergente.push({
+        id: i.id,
+        label: `${i.codigo} — ${i.descricao}`,
+        description: `Trigger ${fmtBRL(trigger)} ≠ recomputado ${fmtBRL(recomputado)} (${dif > 0 ? '+' : ''}${fmtBRL(dif)})`,
+        value: dif,
+      })
+    }
+    const bucketsE: EquacaoBucket[] = [
+      { id: 'e-item-divergente', label: 'Itens com valor_consumido dessincronizado', qtd: bItemDivergente.length, valor: sumValor(bItemDivergente), items: bItemDivergente },
+    ].filter(b => b.qtd > 0)
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // EQUAÇÃO F — VÍNCULO PARCELA→ITEM: toda parcela viva de pedido precisa
+    // resolver para um item de orçamento válido (é esse vínculo que alimenta a
+    // coluna "Pago" do WBS em /compras).
+    //
+    // O item_compra_id da parcela é derivado do header do pedido (useParcelas).
+    // Incoerências: vínculo nulo, item inválido/fora do orçamento vivo, ou
+    // pedido multi-item — o pago inteiro cai no item do header e o WBS por
+    // item fica incoerente.
+    // ═════════════════════════════════════════════════════════════════════════
+    const pedidoByIdF = new Map(pedidos.map(p => [p.id, p]))
+    const bVincNulo: BucketItem[] = []
+    const bVincInvalido: BucketItem[] = []
+    const bVincMultiItem: BucketItem[] = []
+    let sigmaParcPedido = 0
+    let sigmaParcCoerentes = 0
+    for (const p of parcelas) {
+      if (!p.pedido_id || (p as any).acordo_id) continue
+      if (p.status === 'renegociada') continue
+      const valor = Number(p.valor || 0)
+      sigmaParcPedido += valor
+      const ped = pedidoByIdF.get(p.pedido_id)
+      const itemId = p.item_compra_id ?? ped?.item_compra_id ?? null
+      const label = `Parcela ${p.numero_parcela} — ${p.pedido_item ?? p.descricao ?? p.fornecedor_nome ?? ''}`
+      const pedLabel = ped ? `Pedido #${ped.numero_pedido ?? '?'}` : 'pedido não carregado'
+      if (!itemId) {
+        bVincNulo.push({ id: p.id, label, description: `${pedLabel} sem item_compra_id — parcela invisível no WBS (${fmtBRL(valor)})`, value: -valor })
+        continue
+      }
+      if (!itensVivosIds.has(itemId)) {
+        bVincInvalido.push({ id: p.id, label, description: `${pedLabel} aponta item inexistente/excluído — pago não chega ao WBS (${fmtBRL(valor)})`, value: -valor })
+        continue
+      }
+      const outrosItens = (ped?.itens ?? []).some(pi => !pi.fora_orcamento && pi.item_compra_id !== itemId)
+      if (outrosItens) {
+        bVincMultiItem.push({ id: p.id, label, description: `${pedLabel} multi-item: pago inteiro atribuído ao item do header (${fmtBRL(valor)})`, value: -valor })
+        continue
+      }
+      sigmaParcCoerentes += valor
+    }
+    const gapF = sigmaParcCoerentes - sigmaParcPedido
+    const bucketsF: EquacaoBucket[] = [
+      { id: 'f-vinculo-nulo',    label: 'Parcela de pedido sem item_compra_id',          qtd: bVincNulo.length,      valor: sumValor(bVincNulo),      items: bVincNulo },
+      { id: 'f-item-invalido',   label: 'Vínculo aponta item excluído/inexistente',      qtd: bVincInvalido.length,  valor: sumValor(bVincInvalido),  items: bVincInvalido },
+      { id: 'f-multi-item',      label: 'Pedido multi-item — rateio do pago indefinido', qtd: bVincMultiItem.length, valor: sumValor(bVincMultiItem), items: bVincMultiItem },
+    ].filter(b => b.qtd > 0)
+
     return [
       {
         id: 'plano',
@@ -451,8 +541,28 @@ export function useEquacoesContabeis() {
         status: classify(gapD),
         buckets: bucketsD,
       },
+      {
+        id: 'wbs',
+        title: 'E — WBS',
+        formula: 'Σ valor_consumido (trigger) = Σ pedido_itens recomputado',
+        esquerdo: { label: 'Σ Trigger', value: sigmaTrigger },
+        direito:  { label: 'Σ Recomputado', value: sigmaRecomputado },
+        gap: gapE,
+        status: classify(gapE),
+        buckets: bucketsE,
+      },
+      {
+        id: 'vinculo',
+        title: 'F — Vínculo parcela→item',
+        formula: 'Σ parcelas de pedido = Σ parcelas com item de orçamento válido',
+        esquerdo: { label: 'Σ Parcelas de pedido', value: sigmaParcPedido },
+        direito:  { label: 'Σ Vínculo coerente', value: sigmaParcCoerentes },
+        gap: gapF,
+        status: classify(gapF),
+        buckets: bucketsF,
+      },
     ]
-  }, [parcelas, pedidos, despesas, movs, linksResult, pagoMutuos, isLoading])
+  }, [parcelas, pedidos, despesas, movs, linksResult, pagoMutuos, itensCompra, pedidoItens, isLoading])
 
   const totalGap = equacoes.reduce((s, e) => s + Math.abs(e.gap), 0)
 

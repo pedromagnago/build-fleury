@@ -2,8 +2,9 @@
  * PainelControlePage — Consistência do sistema
  *
  * 1. Semáforo global
- * 2. 4 Equações contábeis (A/B/C/D)
- * 3. Ações necessárias — expansível por check, ações inline onde possível
+ * 2. Equações contábeis (A–F)
+ * 3. Reconciliação entre módulos (ponte Compras ↔ Pagamentos)
+ * 4. Ações necessárias — expansível por check, ações inline onde possível
  */
 
 import { useState, useMemo } from 'react'
@@ -13,10 +14,11 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { AuditoriaContabilCard } from '@/components/financeiro/AuditoriaContabilCard'
 import {
   Gauge, CheckCircle2, XCircle, AlertTriangle, ArrowRight, Scale,
-  ChevronDown, ChevronRight, Trash2, Loader2, Plus,
+  ChevronDown, ChevronRight, Trash2, Loader2, Plus, GitCompareArrows, ExternalLink,
 } from 'lucide-react'
 import { useHealthChecks, type HealthCheck, type HealthCheckItem } from '@/hooks/useHealthChecks'
 import { useEquacoesContabeis } from '@/hooks/useEquacoesContabeis'
+import { useReconciliacaoModulos, type BridgeLine } from '@/hooks/useReconciliacaoModulos'
 import { useAlertasCriticos } from '@/hooks/useAlertasCriticos'
 import { useProject } from '@/contexts/ProjectContext'
 import { useMedicoes } from '@/hooks/useOperacional'
@@ -32,8 +34,8 @@ import { toast } from 'sonner'
 
 // ─── Semáforo global ─────────────────────────────────────────────────────────
 
-function FaixaSaude({ critical, warn, eqComGap, total }: {
-  critical: number; warn: number; eqComGap: number; total: number
+function FaixaSaude({ critical, warn, eqComGap, eqTotal, total }: {
+  critical: number; warn: number; eqComGap: number; eqTotal: number; total: number
 }) {
   const ok = critical === 0 && warn === 0 && eqComGap === 0
   if (ok) {
@@ -62,7 +64,7 @@ function FaixaSaude({ critical, warn, eqComGap, total }: {
       )}
       {eqComGap > 0 && (
         <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-400/40 bg-orange-500/10 px-2.5 py-1 text-xs font-semibold text-orange-600">
-          <Scale className="h-3 w-3" />{eqComGap}/4 equaç{eqComGap !== 1 ? 'ões' : 'ão'} com gap
+          <Scale className="h-3 w-3" />{eqComGap}/{eqTotal} equaç{eqComGap !== 1 ? 'ões' : 'ão'} com gap
         </span>
       )}
       <span className="ml-auto text-[10px] text-muted-foreground">{total - critical - warn} OK de {total}</span>
@@ -182,6 +184,106 @@ function CheckCard({
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Reconciliação entre módulos (ponte Compras ↔ Pagamentos) ────────────────
+
+function BridgeLineRow({ linha }: { linha: BridgeLine }) {
+  const [open, setOpen] = useState(false)
+  const negativo = linha.valor < -0.005
+  return (
+    <div className={`rounded-md border overflow-hidden ${linha.informativa ? 'border-border/30 bg-muted/30' : 'border-border/50 bg-background'}`}>
+      <div className="flex items-center gap-2 px-3 py-2 text-xs hover:bg-accent/30 transition-colors">
+        <button onClick={() => setOpen(o => !o)} className="flex flex-1 items-center gap-2 text-left min-w-0">
+          {open
+            ? <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+            : <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
+          <span className="flex-1 truncate font-medium">
+            {linha.label}
+            {linha.informativa && (
+              <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-[9px] font-semibold text-muted-foreground align-middle">informativo</span>
+            )}
+          </span>
+          <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">{linha.itens.length}</span>
+          <span className={`text-xs font-bold tabular-nums shrink-0 ${linha.informativa ? 'text-muted-foreground' : negativo ? 'text-red-600' : 'text-amber-600'}`}>
+            {linha.valor > 0 ? '+' : ''}{formatCurrency(linha.valor)}
+          </span>
+        </button>
+        {linha.rota && (
+          <Link
+            to={linha.rota}
+            className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary hover:bg-primary/20 transition-colors shrink-0"
+          >
+            <ExternalLink className="h-2.5 w-2.5" /> Ver
+          </Link>
+        )}
+      </div>
+      {open && linha.itens.length > 0 && (
+        <div className="border-t border-border/50 max-h-64 overflow-y-auto divide-y divide-border/30">
+          {linha.itens.map(it => (
+            <div key={it.id} className="flex items-center justify-between gap-3 px-3 py-1 text-[11px] hover:bg-accent/30">
+              <span className="truncate" title={it.label}>{it.label}</span>
+              <span className="tabular-nums font-semibold whitespace-nowrap">
+                {it.valor > 0 ? '+' : ''}{formatCurrency(it.valor)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReconciliacaoModulosCard() {
+  const { totalCompras, totalPagamentos, linhas, residuo, isLoading } = useReconciliacaoModulos()
+  const fecha = Math.abs(residuo) <= 0.01
+  if (isLoading) {
+    return (
+      <div className="rounded-xl border bg-card p-4">
+        <div className="text-xs text-muted-foreground">Calculando ponte entre módulos…</div>
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <GitCompareArrows className="h-4 w-4 text-muted-foreground" />
+        <h2 className="text-sm font-bold tracking-tight">Reconciliação entre módulos</h2>
+        <span className="text-[11px] text-muted-foreground">ponte entre o total de Compras e o total de Pagamentos</span>
+      </div>
+
+      <div className={`rounded-xl border overflow-hidden ${fecha ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/40 bg-red-500/5'}`}>
+        <div className="px-4 py-3 grid grid-cols-2 md:grid-cols-3 gap-3 text-[11px]">
+          <div>
+            <div className="text-muted-foreground">Total Compras (consumido WBS)</div>
+            <div className="text-sm font-bold tabular-nums">{formatCurrency(totalCompras)}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Total Pagamentos (parcelas + mútuos)</div>
+            <div className="text-sm font-bold tabular-nums">{formatCurrency(totalPagamentos)}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Resíduo sem explicação</div>
+            <div className={`text-sm font-bold tabular-nums ${fecha ? 'text-emerald-600' : 'text-red-600'}`}>
+              {residuo > 0 ? '+' : ''}{formatCurrency(residuo)}
+              <span className="ml-1.5 text-[10px] font-semibold">{fecha ? '· ponte fecha' : '· bug de dado'}</span>
+            </div>
+          </div>
+        </div>
+
+        {linhas.length > 0 && (
+          <div className="border-t bg-background/40 px-4 py-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
+              Pontes ({linhas.length})
+            </div>
+            <div className="space-y-1">
+              {linhas.map(l => <BridgeLineRow key={l.chave} linha={l} />)}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -400,13 +502,17 @@ export default function PainelControlePage() {
         critical={healthStats.critical + alertaStats.criticos}
         warn={healthStats.warn + alertaStats.advertencias}
         eqComGap={eqComGap}
+        eqTotal={equacoes.length || 6}
         total={healthStats.total + alertaStats.total}
       />
 
-      {/* 2. 4 Equações contábeis */}
+      {/* 2. Equações contábeis (A–F) */}
       <AuditoriaContabilCard onOrfasClick={() => setInspectOrigin('orfas')} />
 
-      {/* 3. Alertas críticos — vencidos por data + saldo */}
+      {/* 3. Reconciliação entre módulos — ponte Compras ↔ Pagamentos */}
+      <ReconciliacaoModulosCard />
+
+      {/* 4. Alertas críticos — vencidos por data + saldo */}
       {alertasAtivos.length > 0 && (
         <div className="space-y-2">
           <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground px-1">
@@ -418,7 +524,7 @@ export default function PainelControlePage() {
         </div>
       )}
 
-      {/* 4. Ações necessárias */}
+      {/* 5. Ações necessárias */}
       {acoes.length === 0 && alertasAtivos.length === 0 ? (
         <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
           <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
