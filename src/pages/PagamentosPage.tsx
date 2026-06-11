@@ -211,9 +211,14 @@ function ParcelasTab({ search }: { search: string }) {
   const [viewingVinculos, setViewingVinculos] = useState<Parcela | null>(null)
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('todos')
   const [parcelaTipoFilter, setParcelaTipoFilter] = useState<ParcelaTipoFilter>('todos')
-  const [dueFilter, setDueFilter] = useState<DueFilter>(
-    searchParams.get('filtro') === 'vencidas' ? 'vencidas' : 'todas'
-  )
+  const [dueFilter, setDueFilter] = useState<DueFilter>(() => {
+    const f = searchParams.get('filtro')
+    const validos: DueFilter[] = ['todas', 'hoje', 'semana', 'mes', 'vencidas', 'pagas', 'parcial', 'renegociadas']
+    return f && (validos as string[]).includes(f) ? (f as DueFilter) : 'todas'
+  })
+  // Parcelas de pedidos cancelados ficam fora do KPI e da listagem por padrão;
+  // o valor cheio delas é histórico do pedido morto, não compromisso de caixa.
+  const [incluirCanceladas, setIncluirCanceladas] = useState(searchParams.get('canceladas') === '1')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [fornecedorFilter, setFornecedorFilter] = useState('')
   const [soAberto, setSoAberto] = useState(false)
@@ -228,6 +233,17 @@ function ParcelasTab({ search }: { search: string }) {
   const { data: fornecedores = [] } = useFornecedores()
   const { data: mutuos = [] } = useMutuos()
   const { data: amortizacoesAvulsas = [] } = useAmortizacoesAvulsas()
+
+  const pedidosCanceladosIds = useMemo(
+    () => new Set(pedidos.filter(p => p.status === 'cancelado').map(p => p.id)),
+    [pedidos]
+  )
+  const isParcelaDePedidoCancelado = (p: { pedido_id?: string | null }) =>
+    !!p.pedido_id && pedidosCanceladosIds.has(p.pedido_id)
+  const qtdCanceladas = useMemo(
+    () => parcelas.filter(p => isParcelaDePedidoCancelado(p) && p.status !== 'renegociada').length,
+    [parcelas, pedidosCanceladosIds]
+  )
 
   // Build fornecedor lookup map for bulk actions
   const fornecedorMap = useMemo(() => {
@@ -336,6 +352,7 @@ function ParcelasTab({ search }: { search: string }) {
         (p.data_pagamento_real ?? '').includes(q)
       ))
     if (!matchesSearch) return false
+    if (!incluirCanceladas && isParcelaDePedidoCancelado(p)) return false
     if (typeFilter === 'pedidos' && !p.pedido_id) return false
     if (typeFilter === 'avulsas' && p.pedido_id) return false
     // Filtro pelo tipo da parcela: contratual = plano de cond_pagamento;
@@ -504,6 +521,7 @@ function ParcelasTab({ search }: { search: string }) {
     let semana = 0, semanaValor = 0
     allParcelasCombined.forEach((p) => {
       if (p.status === 'paga' || p.status === 'renegociada') return
+      if (!incluirCanceladas && isParcelaDePedidoCancelado(p)) return
       const v = dataPrev(p)
       const restante = Math.max(0, Number(p.valor || 0) - Number(p.valor_pago || 0))
       if (v && v < today) { vencidas++; vencidasValor += restante }
@@ -511,7 +529,7 @@ function ParcelasTab({ search }: { search: string }) {
       else if (v > today && v <= weekEnd) { semana++; semanaValor += restante }
     })
     return { vencidas, vencidasValor, hoje, hojeValor, semana, semanaValor }
-  }, [allParcelasCombined, today, weekEnd])
+  }, [allParcelasCombined, today, weekEnd, incluirCanceladas, pedidosCanceladosIds])
 
   const handleExportCSV = () => {
     const headers = ['Vencimento', 'Previsto', 'Parcela', 'Pedido', 'Fornecedor', 'Descrição', 'NF', 'Valor', 'Valor Pago', 'Pgto Real', 'Status']
@@ -630,6 +648,22 @@ function ParcelasTab({ search }: { search: string }) {
             >{label}</button>
           ))}
         </div>
+
+        {/* Toggle — parcelas de pedidos cancelados (fora do KPI/listagem por padrão) */}
+        <button
+          onClick={() => setIncluirCanceladas(v => !v)}
+          title="Parcelas de pedidos cancelados ficam ocultas por padrão. Ative para auditá-las."
+          className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[10px] font-semibold transition-colors ${
+            incluirCanceladas
+              ? 'border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          {incluirCanceladas
+            ? <Check className="h-3 w-3 text-amber-600" />
+            : <div className="h-3 w-3 rounded border border-muted-foreground/40" />}
+          Incluir canceladas ({qtdCanceladas})
+        </button>
 
         <div className="ml-auto flex gap-1.5">
           <button onClick={handleExportCSV} className="flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground" title={`Exportar ${allFiltered.length} parcelas como CSV`}>
@@ -867,15 +901,22 @@ function ParcelasTab({ search }: { search: string }) {
                       {p.numero_parcela}
                     </td>
                     <td className="px-3 py-2.5 text-xs">
-                      {isMutuo ? (
-                        <span className="rounded bg-amber-100 px-1 py-0.5 text-[8px] font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">MÚTUO</span>
-                      ) : (p as any).acordo_id ? (
-                        <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-bold text-violet-600" title={(p as any).acordo_nome ?? 'Acordo de renegociação'}>ACORDO</span>
-                      ) : pedidoNumero != null ? (
-                        <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">PED #{pedidoNumero}</span>
-                      ) : (
-                        <span className="text-muted-foreground text-[10px]">—</span>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {isMutuo ? (
+                          <span className="rounded bg-amber-100 px-1 py-0.5 text-[8px] font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">MÚTUO</span>
+                        ) : (p as any).acordo_id ? (
+                          <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-bold text-violet-600" title={(p as any).acordo_nome ?? 'Acordo de renegociação'}>ACORDO</span>
+                        ) : pedidoNumero != null ? (
+                          <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">PED #{pedidoNumero}</span>
+                        ) : (
+                          <span className="text-muted-foreground text-[10px]">—</span>
+                        )}
+                        {!isMutuo && isParcelaDePedidoCancelado(p as any) && (
+                          <span className="rounded border border-amber-400/40 bg-amber-500/10 px-1.5 py-0.5 text-[8px] font-bold text-amber-600" title="O pedido desta parcela foi cancelado — ela está fora do KPI e do caixa projetado.">
+                            Pedido cancelado
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2.5 text-xs text-muted-foreground truncate max-w-[180px]" title={fornecedorNome ?? ''}>
                       {fornecedorNome ?? '—'}
