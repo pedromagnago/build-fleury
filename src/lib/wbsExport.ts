@@ -1,10 +1,10 @@
-import * as XLSX from 'xlsx'
+import { newWorkbook, addJsonSheet, downloadWorkbook } from '@/lib/safeXlsx'
 import type { Etapa } from '@/hooks/useEtapas'
 import type { ItemCompra } from '@/hooks/useCompras'
 import type { Distribuicao } from '@/hooks/useOperacional'
 
-export function exportWBSToExcel(etapas: Etapa[], itensCompra: ItemCompra[], distribuicoes: Distribuicao[]) {
-  const wb = XLSX.utils.book_new()
+export async function exportWBSToExcel(etapas: Etapa[], itensCompra: ItemCompra[], distribuicoes: Distribuicao[]): Promise<void> {
+  const wb = newWorkbook()
   const etapaMap = new Map(etapas.map(e => [e.id, e]))
 
   // ── Aba 1: Etapas ─────────────────────────────────────
@@ -35,9 +35,7 @@ export function exportWBSToExcel(etapas: Etapa[], itensCompra: ItemCompra[], dis
     }
   })
 
-  const wsEtapas = XLSX.utils.json_to_sheet(etapaRows)
-  setColumnWidths(wsEtapas, [10, 30, 14, 8, 8, 16, 16, 12, 10, 16, 16, 16, 16, 14, 14, 14, 14, 30])
-  XLSX.utils.book_append_sheet(wb, wsEtapas, 'Etapas')
+  addJsonSheet(wb, 'Etapas', etapaRows, { widths: [10, 30, 14, 8, 8, 16, 16, 12, 10, 16, 16, 16, 16, 14, 14, 14, 14, 30] })
 
   // ── Aba 2: Itens de Compra ─────────────────────────────
   const itemRows = itensCompra.map(i => {
@@ -66,9 +64,7 @@ export function exportWBSToExcel(etapas: Etapa[], itensCompra: ItemCompra[], dis
     }
   })
 
-  const wsItens = XLSX.utils.json_to_sheet(itemRows)
-  setColumnWidths(wsItens, [10, 30, 14, 30, 12, 10, 8, 14, 14, 8, 10, 16, 16, 16, 20, 14])
-  XLSX.utils.book_append_sheet(wb, wsItens, 'Itens de Compra')
+  addJsonSheet(wb, 'Itens de Compra', itemRows, { widths: [10, 30, 14, 30, 12, 10, 8, 14, 14, 8, 10, 16, 16, 16, 20, 14] })
 
   // ── Aba 3: Distribuição Física ─────────────────────────
   const distRows = distribuicoes.map(d => {
@@ -85,16 +81,9 @@ export function exportWBSToExcel(etapas: Etapa[], itensCompra: ItemCompra[], dis
     }
   })
 
-  const wsDist = XLSX.utils.json_to_sheet(distRows)
-  setColumnWidths(wsDist, [10, 30, 10, 14, 14, 14, 14, 16])
-  XLSX.utils.book_append_sheet(wb, wsDist, 'Distribuição')
-
+  addJsonSheet(wb, 'Distribuição', distRows, { widths: [10, 30, 10, 14, 14, 14, 14, 16] })
 
   // Download
   const dateStr = new Date().toISOString().split('T')[0]
-  XLSX.writeFile(wb, `WBS_Projeto_${dateStr}.xlsx`)
-}
-
-function setColumnWidths(ws: XLSX.WorkSheet, widths: number[]) {
-  ws['!cols'] = widths.map(w => ({ wch: w }))
+  await downloadWorkbook(wb, `WBS_Projeto_${dateStr}.xlsx`)
 }

@@ -8,7 +8,7 @@
  * Colunas com [colchete] são read-only (contexto humano). O importador
  * ignora silenciosamente — não tente mexer nelas no Excel.
  */
-import * as XLSX from 'xlsx'
+import { newWorkbook, addJsonSheet, addAoaSheet, downloadWorkbook } from '@/lib/safeXlsx'
 import type { Etapa } from '@/hooks/useEtapas'
 import type { ItemCompra, Pedido, Fornecedor } from '@/hooks/useCompras'
 import type { Parcela } from '@/hooks/useFinanceiro'
@@ -25,7 +25,7 @@ interface ExportInput {
   mutuos?: Mutuo[]
 }
 
-export function exportComercialToExcel(input: ExportInput) {
+export async function exportComercialToExcel(input: ExportInput): Promise<void> {
   const { etapas, itensCompra, pedidos, parcelas, despesas, fornecedores, mutuos = [] } = input
 
   const etapaById = new Map(etapas.map(e => [e.id, e]))
@@ -34,7 +34,7 @@ export function exportComercialToExcel(input: ExportInput) {
   const pedidoById = new Map(pedidos.map(p => [p.id, p]))
   const despById = new Map(despesas.map(d => [d.id, d]))
 
-  const wb = XLSX.utils.book_new()
+  const wb = newWorkbook()
 
   // ── Aba 1: Pedidos ─────────────────────────────────────
   // Diff esperado entre Σ parcelas e valor_total_real:
@@ -78,9 +78,7 @@ export function exportComercialToExcel(input: ExportInput) {
       '[diff_contratuais_vs_total]': (valorTotal - somaContratuais).toFixed(2),
     }
   })
-  const wsPedidos = XLSX.utils.json_to_sheet(pedidoRows)
-  setColumnWidths(wsPedidos, [38, 12, 14, 14, 24, 10, 10, 14, 14, 16, 14, 14, 14, 30, 24, 30, 12, 12, 12, 14, 14, 14, 14])
-  XLSX.utils.book_append_sheet(wb, wsPedidos, 'Pedidos')
+  addJsonSheet(wb, 'Pedidos', pedidoRows, { widths: [38, 12, 14, 14, 24, 10, 10, 14, 14, 16, 14, 14, 14, 30, 24, 30, 12, 12, 12, 14, 14, 14, 14] })
 
   // ── Aba 2: Parcelas ────────────────────────────────────
   // Ordem: por pedido (data_entrega_prevista, depois numero_parcela), depois despesa
@@ -132,9 +130,7 @@ export function exportComercialToExcel(input: ExportInput) {
       '[saldo_aberto]': (Number(parc.valor || 0) - Number(parc.valor_pago || 0)).toFixed(2),
     }
   })
-  const wsParcelas = XLSX.utils.json_to_sheet(parcelaRows)
-  setColumnWidths(wsParcelas, [38, 16, 38, 38, 8, 14, 14, 14, 16, 14, 14, 24, 30, 24, 30, 12, 14])
-  XLSX.utils.book_append_sheet(wb, wsParcelas, 'Parcelas')
+  addJsonSheet(wb, 'Parcelas', parcelaRows, { widths: [38, 16, 38, 38, 8, 14, 14, 14, 16, 14, 14, 24, 30, 24, 30, 12, 14] })
 
   // ── Aba 3: Parcelas Mútuos (read-only) ─────────────────
   // Mútuos vivem em `mutuo_parcelas` (tabela separada de `parcelas`).
@@ -166,7 +162,8 @@ export function exportComercialToExcel(input: ExportInput) {
       '[saldo_aberto]': (Number(parc.valor || 0) - Number(parc.valor_pago || 0)).toFixed(2),
     }))
   // Mesmo sem dados, cria a aba pra deixar claro que mútuos NÃO estão na aba Parcelas
-  const wsMutParc = XLSX.utils.json_to_sheet(
+  addJsonSheet(
+    wb, 'Parcelas Mutuos',
     mutuoParcelaRows.length > 0
       ? mutuoParcelaRows
       : [{
@@ -174,10 +171,9 @@ export function exportComercialToExcel(input: ExportInput) {
           '[mutuo_nome]': '(sem mútuos cadastrados)', '[mutuo_tipo]': '', '[instituicao]': '',
           'numero_parcela': '', 'valor': '', 'data_vencimento': '', 'valor_pago': '',
           'data_pagamento_real': '', 'status': '', 'observacoes': '', '[saldo_aberto]': '',
-        }]
+        }],
+    { widths: [38, 12, 38, 28, 14, 22, 8, 14, 14, 14, 14, 22, 30, 14] },
   )
-  setColumnWidths(wsMutParc, [38, 12, 38, 28, 14, 22, 8, 14, 14, 14, 14, 22, 30, 14])
-  XLSX.utils.book_append_sheet(wb, wsMutParc, 'Parcelas Mutuos')
   // Suprime warning de mapa não-usado quando não há mútuos
   void mutuoById
 
@@ -203,9 +199,7 @@ export function exportComercialToExcel(input: ExportInput) {
       '[parcelas_count]': parcsDoCusto.length,
     }
   })
-  const wsDesp = XLSX.utils.json_to_sheet(despRows)
-  setColumnWidths(wsDesp, [38, 30, 18, 24, 14, 16, 14, 14, 12, 14, 8, 30, 14, 12])
-  XLSX.utils.book_append_sheet(wb, wsDesp, 'Custos Indiretos')
+  addJsonSheet(wb, 'Custos Indiretos', despRows, { widths: [38, 30, 18, 24, 14, 16, 14, 14, 12, 14, 8, 30, 14, 12] })
 
   // ── Aba 5: Fornecedores ────────────────────────────────
   const fornRows = fornecedores.map(f => ({
@@ -217,9 +211,7 @@ export function exportComercialToExcel(input: ExportInput) {
     'tipo': f.tipo ?? 'fornecedor',
     'observacoes': f.observacoes ?? '',
   }))
-  const wsForn = XLSX.utils.json_to_sheet(fornRows)
-  setColumnWidths(wsForn, [38, 28, 18, 22, 18, 12, 30])
-  XLSX.utils.book_append_sheet(wb, wsForn, 'Fornecedores')
+  addJsonSheet(wb, 'Fornecedores', fornRows, { widths: [38, 28, 18, 22, 18, 12, 30] })
 
   // ── Aba 6: Instruções (opcional, ajuda o usuário) ──────
   const instrucoes = [
@@ -278,15 +270,9 @@ export function exportComercialToExcel(input: ExportInput) {
     [''],
     ['Em caso de dúvida, mantenha um backup do arquivo original antes de editar.'],
   ]
-  const wsInstr = XLSX.utils.aoa_to_sheet(instrucoes)
-  setColumnWidths(wsInstr, [120])
-  XLSX.utils.book_append_sheet(wb, wsInstr, '_Instruções')
+  addAoaSheet(wb, '_Instruções', instrucoes, { widths: [120] })
 
   // Download
   const dateStr = new Date().toISOString().split('T')[0]
-  XLSX.writeFile(wb, `Comercial_Projeto_${dateStr}.xlsx`)
-}
-
-function setColumnWidths(ws: XLSX.WorkSheet, widths: number[]) {
-  ws['!cols'] = widths.map(w => ({ wch: w }))
+  await downloadWorkbook(wb, `Comercial_Projeto_${dateStr}.xlsx`)
 }

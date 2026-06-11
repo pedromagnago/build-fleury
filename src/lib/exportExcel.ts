@@ -1,31 +1,28 @@
-import * as XLSX from 'xlsx'
+import { newWorkbook, addJsonSheet, addAoaSheet, workbookToBlob, downloadWorkbook, XLSX_MIME } from '@/lib/safeXlsx'
 
 /**
  * Export an array of objects to an Excel file (.xlsx).
  * Columns are auto-detected from object keys.
  */
-export function exportToExcel(
+export async function exportToExcel(
   data: Record<string, unknown>[],
   filename: string,
   sheetName = 'Dados',
-) {
+): Promise<void> {
   if (data.length === 0) return
 
-  const ws = XLSX.utils.json_to_sheet(data)
-
   // Auto-size columns
-  const colWidths = Object.keys(data[0]!).map(key => {
+  const widths = Object.keys(data[0]!).map(key => {
     const maxLen = Math.max(
       key.length,
       ...data.map(row => String(row[key] ?? '').length),
     )
-    return { wch: Math.min(maxLen + 2, 50) }
+    return Math.min(maxLen + 2, 50)
   })
-  ws['!cols'] = colWidths
 
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, ws, sheetName)
-  XLSX.writeFile(wb, `${filename}.xlsx`)
+  const wb = newWorkbook()
+  addJsonSheet(wb, sheetName, data, { widths })
+  await downloadWorkbook(wb, `${filename}.xlsx`)
 }
 
 /**
@@ -35,7 +32,7 @@ export function exportToExcel(
  * If `rows` is empty, exports a single example row (or an empty placeholder)
  * so the user still gets a usable file.
  */
-export function downloadFilledTemplate(opts: {
+export async function downloadFilledTemplate(opts: {
   filename: string
   sheetName?: string
   headers: readonly string[] | string[]
@@ -61,13 +58,9 @@ export function downloadFilledTemplate(opts: {
     }
   }
 
-  const ws = XLSX.utils.aoa_to_sheet(aoa)
-  ws['!cols'] = headersArr.map(h => ({ wch: Math.max(h.length + 2, 14) }))
-
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, ws, sheetName)
-  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
-  const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const wb = newWorkbook()
+  addAoaSheet(wb, sheetName, aoa, { widths: headersArr.map(h => Math.max(h.length + 2, 14)) })
+  const blob = await workbookToBlob(wb)
 
   const safeName = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`
   triggerDownload(blob, safeName)
@@ -79,7 +72,7 @@ function triggerDownload(blob: Blob, filename: string) {
     (window as unknown as { showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle> })
       .showSaveFilePicker({
         suggestedName: filename,
-        types: [{ description: 'Excel', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }],
+        types: [{ description: 'Excel', accept: { [XLSX_MIME]: ['.xlsx'] } }],
       })
       .then(async (handle) => {
         const w = await handle.createWritable()

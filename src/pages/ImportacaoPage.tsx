@@ -16,8 +16,7 @@ import { exportWBSToExcel } from '@/lib/wbsExport'
 import { exportComercialToExcel } from '@/lib/comercialExport'
 import { parseComercialImport, buildComercialPreview, type ComercialPreview } from '@/lib/comercialImport'
 import ComercialImportPreviewModal from '@/components/cronograma/ComercialImportPreviewModal'
-import * as XLSX from 'xlsx'
-import { safeSheetToJson } from '@/lib/safeXlsx'
+import { safeRead, safeSheetToJson, newWorkbook, addAoaSheet, workbookToBlob, XLSX_MIME, type SafeWorkSheet } from '@/lib/safeXlsx'
 import {
   Upload, FileSpreadsheet, AlertCircle, CheckCircle2, X, Download,
   ArrowRight, ShoppingCart, Calendar, BarChart3, Plus, Trash2,
@@ -81,7 +80,7 @@ function parseNumberCell(v: unknown): number {
   return n
 }
 
-function parseSheetToRows(worksheet: XLSX.WorkSheet): { headers: string[]; rows: ParsedRow[] } {
+function parseSheetToRows(worksheet: SafeWorkSheet): { headers: string[]; rows: ParsedRow[] } {
   // Read as array-of-arrays to detect the real header row when the sheet has
   // descriptive lines on top (ex.: SFP template has 3 descriptive rows before
   // the ETAPA/ITEM/... header).
@@ -148,10 +147,10 @@ function processFile(file: File, onDone: (p: ImportPreview) => void, preferredSh
     reader.readAsText(file, 'UTF-8')
   } else {
     const reader = new FileReader()
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer)
-        const wb = XLSX.read(data, { type: 'array' })
+        const wb = await safeRead(data)
         let sheet = wb.SheetNames[0]
         if (preferredSheetKeyword) {
           const kw = preferredSheetKeyword.toLowerCase()
@@ -170,20 +169,17 @@ function processFile(file: File, onDone: (p: ImportPreview) => void, preferredSh
   }
 }
 
-function downloadTemplate(name: string, headers: string[], exampleRow: string[]) {
-  const ws = XLSX.utils.aoa_to_sheet([headers, exampleRow])
-  ws['!cols'] = headers.map((h) => ({ wch: Math.max(h.length + 4, 16) }))
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, ws, 'Template')
-  const wbOut = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
-  const blob = new Blob([wbOut], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+async function downloadTemplate(name: string, headers: string[], exampleRow: string[]) {
+  const wb = newWorkbook()
+  addAoaSheet(wb, 'Template', [headers, exampleRow], { widths: headers.map((h) => Math.max(h.length + 4, 16)) })
+  const blob = await workbookToBlob(wb)
   const filename = `template_${name}.xlsx`
 
   if ('showSaveFilePicker' in window) {
     (window as unknown as { showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle> })
       .showSaveFilePicker({
         suggestedName: filename,
-        types: [{ description: 'Excel', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }],
+        types: [{ description: 'Excel', accept: { [XLSX_MIME]: ['.xlsx'] } }],
       })
       .then(async (handle) => {
         const w = await handle.createWritable(); await w.write(blob); await w.close()
@@ -2188,8 +2184,8 @@ function LogsImportacaoTab() {
 // Tab: WBS Completa (Excel)
 // ═══════════════════════════════════════════════════════════════
 
-function downloadWBSTemplate() {
-  const wb = XLSX.utils.book_new()
+async function downloadWBSTemplate() {
+  const wb = newWorkbook()
 
   // Aba 1: Etapas — mesmas colunas do exportador
   const etapaHeaders = [
@@ -2199,9 +2195,7 @@ function downloadWBSTemplate() {
   ]
   const etapaEx1 = ['INFRA', 'Infraestrutura', 'futuro', 64, 1, 320000, 5000, 1, 'vb', '2026-01-15', '2026-06-30', '']
   const etapaEx2 = ['SUPER', 'Superestrutura', 'futuro', 64, 2, 480000, 7500, 1, 'vb', '2026-04-01', '2026-10-30', '']
-  const wsEtapas = XLSX.utils.aoa_to_sheet([etapaHeaders, etapaEx1, etapaEx2])
-  wsEtapas['!cols'] = [10, 30, 14, 8, 8, 16, 18, 14, 12, 16, 16, 30].map(w => ({ wch: w }))
-  XLSX.utils.book_append_sheet(wb, wsEtapas, 'Etapas')
+  addAoaSheet(wb, 'Etapas', [etapaHeaders, etapaEx1, etapaEx2], { widths: [10, 30, 14, 8, 8, 16, 18, 14, 12, 16, 16, 30] })
 
   // Aba 2: Itens de Compra — mesmas colunas do exportador
   const itemHeaders = [
@@ -2212,9 +2206,7 @@ function downloadWBSTemplate() {
   const itemEx1 = ['INFRA', 'Infraestrutura', 'INFRA-001', 'Concreto Usinado FCK 25', 'MATERIAL', 2.5, 'm³', 450, 'Concreteira ABC', '30/60/90']
   const itemEx2 = ['INFRA', 'Infraestrutura', 'INFRA-002', 'Aço CA-50', 'MATERIAL', 120, 'kg', 8.5, 'Aço Brasil', '30 DDL']
   const itemEx3 = ['SUPER', 'Superestrutura', 'SUPER-001', 'Alvenaria Bloco 14', 'MATERIAL', 35, 'm²', 42, '', '28 DDL']
-  const wsItens = XLSX.utils.aoa_to_sheet([itemHeaders, itemEx1, itemEx2, itemEx3])
-  wsItens['!cols'] = [10, 30, 14, 30, 12, 10, 8, 14, 20, 14].map(w => ({ wch: w }))
-  XLSX.utils.book_append_sheet(wb, wsItens, 'Itens de Compra')
+  addAoaSheet(wb, 'Itens de Compra', [itemHeaders, itemEx1, itemEx2, itemEx3], { widths: [10, 30, 14, 30, 12, 10, 8, 14, 20, 14] })
 
   // Aba 3: Distribuição — mesmas colunas do exportador
   const distHeaders = [
@@ -2225,20 +2217,17 @@ function downloadWBSTemplate() {
   const distEx2 = ['INFRA', 'Infraestrutura', 2, 16, '2026-03-16', '2026-05-15', 80000]
   const distEx3 = ['INFRA', 'Infraestrutura', 3, 16, '2026-05-16', '2026-06-30', 80000]
   const distEx4 = ['INFRA', 'Infraestrutura', 4, 16, '', '', 80000]
-  const wsDist = XLSX.utils.aoa_to_sheet([distHeaders, distEx1, distEx2, distEx3, distEx4])
-  wsDist['!cols'] = [10, 30, 10, 16, 14, 14, 16].map(w => ({ wch: w }))
-  XLSX.utils.book_append_sheet(wb, wsDist, 'Distribuição')
+  addAoaSheet(wb, 'Distribuição', [distHeaders, distEx1, distEx2, distEx3, distEx4], { widths: [10, 30, 10, 16, 14, 14, 16] })
 
   // Download
-  const wbOut = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
-  const blob = new Blob([wbOut], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const blob = await workbookToBlob(wb)
   const filename = 'template_wbs_completa.xlsx'
 
   if ('showSaveFilePicker' in window) {
     (window as unknown as { showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle> })
       .showSaveFilePicker({
         suggestedName: filename,
-        types: [{ description: 'Excel', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }],
+        types: [{ description: 'Excel', accept: { [XLSX_MIME]: ['.xlsx'] } }],
       })
       .then(async (handle) => {
         const w = await handle.createWritable(); await w.write(blob); await w.close()
@@ -2278,7 +2267,7 @@ function WBSTab() {
     try {
       setIsWbsImporting(true)
       const buffer = await file.arrayBuffer()
-      const { etapaRows, itemRows, distRows } = parseWBSImport(buffer)
+      const { etapaRows, itemRows, distRows } = await parseWBSImport(buffer)
       const preview = await buildImportPreview(etapaRows, itemRows, distRows, currentCompany.id)
       setImportPreview(preview)
     } catch (err: any) {
@@ -2393,7 +2382,7 @@ function ComercialTab() {
     setIsProcessing(true)
     try {
       const buffer = await file.arrayBuffer()
-      const rows = parseComercialImport(buffer)
+      const rows = await parseComercialImport(buffer)
       if (rows.pedidoRows.length === 0 && rows.parcelaRows.length === 0 && rows.despesaRows.length === 0 && rows.fornecedorRows.length === 0) {
         toast.error('Nenhuma das abas esperadas foi encontrada (Pedidos, Parcelas, Custos Indiretos, Fornecedores).')
         return
@@ -2473,7 +2462,7 @@ function PagamentosRealizadosTab() {
     try {
       const { parseBdRealizado } = await import('@/lib/bdRealizadoImport')
       const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true })
+      const wb = await safeRead(buf)
 
       // Buscar mútuos existentes para detecção de duplicatas
       const { data: rawMutuos } = await supabase
