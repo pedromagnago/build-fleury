@@ -400,7 +400,7 @@ export function useRunConciliacao() {
       // 4. Buscar regras bancárias
       const { data: regras } = await supabase
         .from('regras_conciliacao')
-        .select('*')
+        .select('*, fornecedores(nome)')
         .eq('company_id', currentCompany.id)
         .eq('auto_aplicar', true)
         .order('created_at', { ascending: true })
@@ -506,7 +506,7 @@ export function useRunConciliacao() {
         valorMax: r.valor_max ? Number(r.valor_max) : null,
         acao: r.acao || 'classificar',
         categoria: r.categoria,
-        fornecedorNome: null, // TODO: join fornecedor if needed
+        fornecedorNome: r.fornecedores?.nome ?? null,
         descricaoPadrao: r.descricao_padrao,
       }))
 

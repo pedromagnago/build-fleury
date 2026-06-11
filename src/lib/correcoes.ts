@@ -70,6 +70,16 @@ export async function aplicarCorrecaoParcela({
       break
     }
     case 'reabrir': {
+      const { data: vinculos, error: errVinc } = await supabase
+        .from('conciliacao_parcelas')
+        .select('conciliacao_id, conciliacoes!inner(status)')
+        .eq('parcela_id', parcela.id)
+        .in('conciliacoes.status', ['confirmado', 'aprovado'])
+        .limit(1)
+      if (errVinc) throw errVinc
+      if ((vinculos ?? []).length > 0) {
+        throw new Error(`P${parcela.numero_parcela} possui conciliação bancária vinculada. Reabrir zeraria o valor pago e deixaria a conciliação órfã — desfaça a conciliação antes de reabrir.`)
+      }
       updates = { status: 'a_vencer', valor_pago: 0, data_pagamento_real: null }
       resumo = `Reabrir P${parcela.numero_parcela} (zerar valor_pago e voltar para a vencer)`
       break
@@ -77,6 +87,9 @@ export async function aplicarCorrecaoParcela({
     case 'criar_residuo': {
       if (!valorResiduo || valorResiduo <= 0) throw new Error('valorResiduo obrigatorio.')
       if (!dataVencimentoResiduo) throw new Error('dataVencimentoResiduo obrigatorio.')
+      if (Number(parcela.valor_pago || 0) < 0.01) {
+        throw new Error(`P${parcela.numero_parcela} não tem valor pago para reter na parcela origem — dividir não faz sentido sem pagamento. Use outra ação (ex.: reabrir ou ajustar o vencimento).`)
+      }
       // pega proximo numero_parcela do pedido
       const { data: ultima } = await supabase
         .from('parcelas')
