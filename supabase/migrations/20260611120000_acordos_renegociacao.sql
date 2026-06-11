@@ -44,9 +44,13 @@ CREATE TABLE IF NOT EXISTS public.acordo_origens (
   created_at         TIMESTAMPTZ   NOT NULL DEFAULT now()
 );
 
--- ─── 3. FK em parcelas: parcelas NOVAS do plano apontam pro acordo ─────────
+-- ─── 3. FK em parcelas + status 'renegociada' no CHECK ─────────────────────
 ALTER TABLE public.parcelas
   ADD COLUMN IF NOT EXISTS acordo_id UUID REFERENCES public.acordos(id);
+
+ALTER TABLE public.parcelas DROP CONSTRAINT IF EXISTS parcelas_status_check;
+ALTER TABLE public.parcelas ADD CONSTRAINT parcelas_status_check
+  CHECK (status IN ('futura', 'a_vencer', 'paga', 'vencida', 'parcialmente_paga', 'renegociada'));
 
 CREATE INDEX IF NOT EXISTS idx_parcelas_acordo        ON public.parcelas(acordo_id) WHERE acordo_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_acordos_company        ON public.acordos(company_id);
@@ -200,13 +204,14 @@ BEGIN
     RAISE EXCEPTION 'Cronograma vazio ou inválido';
   END IF;
 
-  -- Trava as parcelas e valida elegibilidade
-  SELECT COUNT(*) INTO v_count
-  FROM parcelas
-  WHERE id = ANY(p_parcela_ids)
-    AND company_id = p_company_id
-    AND deleted_at IS NULL
-  FOR UPDATE;
+  -- Trava as parcelas e valida elegibilidade (FOR UPDATE não aceita agregação direta)
+  SELECT COUNT(*) INTO v_count FROM (
+    SELECT id FROM parcelas
+    WHERE id = ANY(p_parcela_ids)
+      AND company_id = p_company_id
+      AND deleted_at IS NULL
+    FOR UPDATE
+  ) locked;
   IF v_count != array_length(p_parcela_ids, 1) THEN
     RAISE EXCEPTION 'Parcela inexistente, excluída ou de outra empresa na seleção';
   END IF;
@@ -282,7 +287,7 @@ BEGIN
     );
   END LOOP;
 
-  INSERT INTO audit_logs (user_id, company_id, tabela, registro_id, acao, agente, dados_depois)
+  INSERT INTO audit_logs (usuario_id, company_id, tabela, registro_id, acao, agente, dados_depois)
   VALUES (
     auth.uid(), p_company_id, 'acordos', v_acordo_id, 'INSERT', 'humano',
     jsonb_build_object(
@@ -366,7 +371,7 @@ BEGIN
 
   UPDATE acordos SET status = 'cancelado', updated_at = now() WHERE id = p_acordo_id;
 
-  INSERT INTO audit_logs (user_id, company_id, tabela, registro_id, acao, agente, dados_antes, dados_depois)
+  INSERT INTO audit_logs (usuario_id, company_id, tabela, registro_id, acao, agente, dados_antes, dados_depois)
   VALUES (
     auth.uid(), v_acordo.company_id, 'acordos', p_acordo_id, 'UPDATE', 'humano',
     jsonb_build_object('status', v_acordo.status, 'valor_total', v_acordo.valor_total),
