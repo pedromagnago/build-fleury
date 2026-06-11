@@ -8,8 +8,7 @@
  *
  * Custos registrados a nível de ETAPA (departamento), não de item WBS.
  */
-import * as XLSX from 'xlsx'
-import { safeSheetToJson } from '@/lib/safeXlsx'
+import { safeSheetToJson, type SafeWorkBook } from '@/lib/safeXlsx'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -177,7 +176,7 @@ function findColumn(headers: string[], ...candidates: string[]): string | null {
  * Detecta a aba correta e a linha de header real (pulando descrições no topo).
  * Retorna um array de objetos com headers normalizados + dados.
  */
-function extractRows(workbook: XLSX.WorkBook): Record<string, any>[] {
+function extractRows(workbook: SafeWorkBook): Record<string, any>[] {
   // Preferir abas com nomes tipo "BD", "Realiz", "Pagamentos"
   const preferred = workbook.SheetNames.find(n => {
     const ln = n.toLowerCase()
@@ -210,7 +209,7 @@ function extractRows(workbook: XLSX.WorkBook): Record<string, any>[] {
 }
 
 export function parseBdRealizado(
-  workbook: XLSX.WorkBook,
+  workbook: SafeWorkBook,
   mutuos: DbMutuo[],
 ): BdRealizadoResult {
   const raw = extractRows(workbook)

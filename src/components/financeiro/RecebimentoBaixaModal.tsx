@@ -197,6 +197,7 @@ export default function RecebimentoBaixaModal({ item, onClose, onDone }: Props) 
         qc.invalidateQueries({ queryKey: ['mutuos'] }),
         qc.invalidateQueries({ queryKey: ['movimentacoes'] }),
         qc.invalidateQueries({ queryKey: ['conciliacoes'] }),
+        qc.invalidateQueries({ queryKey: ['conciliacao-links'] }),
         qc.invalidateQueries({ queryKey: ['parcelas'] }),
         qc.invalidateQueries({ queryKey: ['dashboard-kpis'] }),
       ])

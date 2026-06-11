@@ -5,7 +5,7 @@
  * Cada célula mostra se o pedido será entregue antes do início da medição.
  */
 
-import { useState, useMemo } from 'react'
+import { Fragment, useState, useMemo } from 'react'
 import {
   CheckCircle2, AlertTriangle, XCircle, AlertCircle,
   Calendar, CreditCard, Package, Loader2, X, Building2,
@@ -454,9 +454,9 @@ export function ConferenciaPedidos({ search = '' }: { search?: string }) {
                 </tr>
               ) : (
                 grupos.map(grupo => (
-                  <>
+                  <Fragment key={grupo.etapa_codigo}>
                     {/* Etapa header row */}
-                    <tr key={`etapa-${grupo.etapa_codigo}`} className="bg-muted/20 border-y border-border/60">
+                    <tr className="bg-muted/20 border-y border-border/60">
                       <td
                         colSpan={5 + data.colunas.length}
                         className="sticky left-0 px-3 py-1.5"
@@ -544,7 +544,7 @@ export function ConferenciaPedidos({ search = '' }: { search?: string }) {
                         </tr>
                       )
                     })}
-                  </>
+                  </Fragment>
                 ))
               )}
             </tbody>

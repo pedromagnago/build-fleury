@@ -727,10 +727,10 @@ function Footer() {
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Legal</p>
             <ul className="mt-3 space-y-2 text-sm">
-              {/* TODO Pedro: substituir por páginas reais de privacidade/termos/LGPD */}
-              <li><a href="#" className="text-slate-600 hover:text-slate-900">Política de privacidade</a></li>
-              <li><a href="#" className="text-slate-600 hover:text-slate-900">Termos de uso</a></li>
-              <li><a href="#" className="text-slate-600 hover:text-slate-900">LGPD</a></li>
+              {/* TODO Pedro: preencher razão social/CNPJ/encarregado nos marcadores [PREENCHER] de /privacidade e /termos */}
+              <li><Link to="/privacidade" className="text-slate-600 hover:text-slate-900">Política de privacidade</Link></li>
+              <li><Link to="/termos" className="text-slate-600 hover:text-slate-900">Termos de uso</Link></li>
+              <li><Link to="/privacidade#direitos-do-titular" className="text-slate-600 hover:text-slate-900">LGPD</Link></li>
             </ul>
           </div>
         </div>

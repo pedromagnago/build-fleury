@@ -400,7 +400,7 @@ export function useRunConciliacao() {
       // 4. Buscar regras bancárias
       const { data: regras } = await supabase
         .from('regras_conciliacao')
-        .select('*')
+        .select('*, fornecedores(nome)')
         .eq('company_id', currentCompany.id)
         .eq('auto_aplicar', true)
         .order('created_at', { ascending: true })
@@ -506,7 +506,7 @@ export function useRunConciliacao() {
         valorMax: r.valor_max ? Number(r.valor_max) : null,
         acao: r.acao || 'classificar',
         categoria: r.categoria,
-        fornecedorNome: null, // TODO: join fornecedor if needed
+        fornecedorNome: r.fornecedores?.nome ?? null,
         descricaoPadrao: r.descricao_padrao,
       }))
 
@@ -743,6 +743,46 @@ function inferirFormaPagamento(descricao?: string | null, memoRaw?: string | nul
 
 // ─── Undo Confirmed Reconciliation ──────────────────────────
 
+export interface StatusParcelaDerivado {
+  status: 'a_vencer' | 'vencida' | 'parcialmente_paga' | 'paga'
+  data_pagamento_real: string | null
+}
+
+/**
+ * Regra pura de derivação de status de parcela a partir do saldo pago.
+ * Extraída de computeParcelaStatus para ser testável sem Supabase.
+ *
+ * - valorPago <= tolerância        → 'a_vencer' | 'vencida' (zera data_pagamento_real)
+ * - valorPago <  valor - tolerância → 'parcialmente_paga' (preserva data real existente)
+ * - valorPago >= valor - tolerância → 'paga'
+ */
+export function derivarStatusParcela(params: {
+  valor: number
+  valorPago: number
+  /** data_prevista_pagamento || data_vencimento — referência para 'vencida' */
+  dataReferencia: string
+  /** data do pagamento sendo registrado (dataPgto || data real atual || hoje) */
+  dataEfetiva: string
+  dataPagamentoRealAtual?: string | null
+  hoje?: string
+  tolerancia?: number
+}): StatusParcelaDerivado {
+  const {
+    valor, valorPago, dataReferencia, dataEfetiva,
+    dataPagamentoRealAtual = null, tolerancia = 0.005,
+  } = params
+  const hoje = params.hoje ?? new Date().toISOString().split('T')[0]!
+
+  if (valorPago <= tolerancia) {
+    const vencida = dataReferencia < hoje
+    return { status: vencida ? 'vencida' : 'a_vencer', data_pagamento_real: null }
+  }
+  if (valorPago < valor - tolerancia) {
+    return { status: 'parcialmente_paga', data_pagamento_real: dataPagamentoRealAtual ?? dataEfetiva }
+  }
+  return { status: 'paga', data_pagamento_real: dataEfetiva }
+}
+
 async function computeParcelaStatus(
   parcelaId: string,
   novoValorPago: number,
@@ -755,19 +795,15 @@ async function computeParcelaStatus(
     .single()
   if (!p) return { status: 'a_vencer', data_pagamento_real: null }
 
-  const total = Number(p.valor)
   const today = new Date().toISOString().split('T')[0]!
-  const dataEfetiva = dataPgto || p.data_pagamento_real || today
-
-  if (novoValorPago <= 0.005) {
-    const dataReferencia = (p as any).data_prevista_pagamento || p.data_vencimento
-    const vencida = dataReferencia < today
-    return { status: vencida ? 'vencida' : 'a_vencer', data_pagamento_real: null }
-  }
-  if (novoValorPago < total - 0.005) {
-    return { status: 'parcialmente_paga', data_pagamento_real: p.data_pagamento_real ?? dataEfetiva }
-  }
-  return { status: 'paga', data_pagamento_real: dataEfetiva }
+  return derivarStatusParcela({
+    valor: Number(p.valor),
+    valorPago: novoValorPago,
+    dataReferencia: (p as any).data_prevista_pagamento || p.data_vencimento,
+    dataEfetiva: dataPgto || p.data_pagamento_real || today,
+    dataPagamentoRealAtual: p.data_pagamento_real,
+    hoje: today,
+  })
 }
 
 // ─── Helpers para v\u00ednculos polim\u00f3rficos (N:N com 4 tipos de origem) ─────
@@ -1768,7 +1804,7 @@ export function useExportConciliacao() {
       const naoConciliadas  = (ncRes.data ?? []) as unknown as NaoConciliadaRow[]
       const extrato         = (extratoRes.data ?? []) as unknown as ExtratoRow[]
 
-      exportConciliacaoXlsx({
+      await exportConciliacaoXlsx({
         realizado,
         aberto,
         naoConciliadas,

@@ -197,6 +197,7 @@ async function estornarParcela(p: Parcela, isMutuo: boolean, qc: ReturnType<type
 
 function ParcelasTab({ search }: { search: string }) {
   const { currentCompany } = useProject()
+  const [searchParams] = useSearchParams()
   const qc = useQueryClient()
   const { data: parcelas = [], isLoading } = useParcelas()
   const { data: pedidos = [] } = usePedidos()
@@ -210,7 +211,9 @@ function ParcelasTab({ search }: { search: string }) {
   const [viewingVinculos, setViewingVinculos] = useState<Parcela | null>(null)
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('todos')
   const [parcelaTipoFilter, setParcelaTipoFilter] = useState<ParcelaTipoFilter>('todos')
-  const [dueFilter, setDueFilter] = useState<DueFilter>('todas')
+  const [dueFilter, setDueFilter] = useState<DueFilter>(
+    searchParams.get('filtro') === 'vencidas' ? 'vencidas' : 'todas'
+  )
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [fornecedorFilter, setFornecedorFilter] = useState('')
   const [soAberto, setSoAberto] = useState(false)

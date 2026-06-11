@@ -15,6 +15,7 @@ import { formatCurrency } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
+import { useProject } from '@/contexts/ProjectContext'
 import type { CashFlowEvent } from '@/hooks/useCashFlowEvents'
 
 export type Override = { newDate?: string; newValue?: number }
@@ -35,6 +36,7 @@ type EventType = 'entrada' | 'firme' | 'bruto'
 
 export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverride, onClearOverride, onClose }: Props) {
   const qc = useQueryClient()
+  const { currentCompany } = useProject()
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValor, setEditValor] = useState<string>('')
@@ -106,6 +108,8 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
   }
 
   const salvarNoReal = async (ev: CashFlowEvent) => {
+    if (!currentCompany) { toast.error('Nenhuma empresa selecionada'); return }
+    const companyId = currentCompany.id
     const v = parseFloat(editValor)
     const updates: Record<string, any> = {}
     // Compara com valor TOTAL e data_vencimento da parcela (não com saldo/ev.date)
@@ -114,10 +118,20 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
     const newDate = editData !== dataBase ? editData : null
     const newValue = !isNaN(v) && Math.abs(v - valorBase) > 0.005 ? v : null
 
+    const gravarAudit = async (tabela: string, dadosAntes: Record<string, any>, dadosDepois: Record<string, any>) => {
+      await supabase.from('audit_logs').insert({
+        company_id: companyId, tabela,
+        acao: 'UPDATE', agente: 'humano',
+        dados_antes: dadosAntes, dados_depois: dadosDepois,
+      })
+    }
+
     try {
       if (ev.id.startsWith('par-')) {
         const id = ev.id.replace('par-', '')
-        const { data: parc } = await supabase.from('parcelas').select('status, valor_pago, valor').eq('id', id).single()
+        const { data: parc } = await supabase.from('parcelas')
+          .select('status, valor_pago, valor, data_vencimento, data_pagamento_real')
+          .eq('id', id).eq('company_id', companyId).single()
         const totalmentePaga = parc?.status === 'paga' || (Number(parc?.valor_pago || 0) >= Number(parc?.valor || 0) - 0.005 && Number(parc?.valor || 0) > 0)
         // Regra:
         // - 100% paga: edita data_pagamento_real (data efetiva do banco) e/ou valor total.
@@ -128,32 +142,50 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
         }
         if (newValue !== null) updates.valor = newValue
         if (Object.keys(updates).length === 0) { toast.info('Nada a salvar'); return }
-        const { error } = await supabase.from('parcelas').update(updates).eq('id', id)
+        const { error } = await supabase.from('parcelas').update(updates).eq('id', id).eq('company_id', companyId)
         if (error) throw error
+        await gravarAudit('parcelas', {
+          id, valor: parc?.valor, data_vencimento: parc?.data_vencimento, data_pagamento_real: parc?.data_pagamento_real,
+        }, updates)
       } else if (ev.id.startsWith('mutpar-')) {
         const id = ev.id.replace('mutpar-', '')
+        const { data: antes } = await supabase.from('mutuo_parcelas')
+          .select('valor, data_vencimento').eq('id', id).eq('company_id', companyId).single()
         if (newDate) updates.data_vencimento = newDate
         if (newValue !== null) updates.valor = newValue
-        const { error } = await supabase.from('mutuo_parcelas').update(updates).eq('id', id)
+        if (Object.keys(updates).length === 0) { toast.info('Nada a salvar'); return }
+        const { error } = await supabase.from('mutuo_parcelas').update(updates).eq('id', id).eq('company_id', companyId)
         if (error) throw error
+        await gravarAudit('mutuo_parcelas', { id, ...antes }, updates)
       } else if (ev.id.startsWith('mutcap-')) {
         const id = ev.id.replace('mutcap-', '')
+        const { data: antes } = await supabase.from('mutuos')
+          .select('valor_captado, data_captacao').eq('id', id).eq('company_id', companyId).single()
         if (newDate) updates.data_captacao = newDate
         if (newValue !== null) updates.valor_captado = newValue
-        const { error } = await supabase.from('mutuos').update(updates).eq('id', id)
+        if (Object.keys(updates).length === 0) { toast.info('Nada a salvar'); return }
+        const { error } = await supabase.from('mutuos').update(updates).eq('id', id).eq('company_id', companyId)
         if (error) throw error
+        await gravarAudit('mutuos', { id, ...antes }, updates)
       } else if (ev.id.startsWith('med-') && !ev.id.includes('-srv-')) {
         const id = ev.id.replace('med-', '')
+        const { data: antes } = await supabase.from('medicoes')
+          .select('valor_planejado, data_prevista').eq('id', id).eq('company_id', companyId).single()
         if (newDate) updates.data_prevista = newDate
         if (newValue !== null) updates.valor_planejado = newValue
-        const { error } = await supabase.from('medicoes').update(updates).eq('id', id)
+        if (Object.keys(updates).length === 0) { toast.info('Nada a salvar'); return }
+        const { error } = await supabase.from('medicoes').update(updates).eq('id', id).eq('company_id', companyId)
         if (error) throw error
+        await gravarAudit('medicoes', { id, ...antes }, updates)
       } else if (ev.id.startsWith('pedsol-')) {
         const m = ev.id.match(/^pedsol-([0-9a-f-]{36})-(\d+)$/i)
         const pedidoId = m?.[1]
         if (pedidoId && newDate) {
-          const { error } = await supabase.from('pedidos').update({ data_entrega_prevista: newDate }).eq('id', pedidoId)
+          const { data: antes } = await supabase.from('pedidos')
+            .select('data_entrega_prevista').eq('id', pedidoId).eq('company_id', companyId).single()
+          const { error } = await supabase.from('pedidos').update({ data_entrega_prevista: newDate }).eq('id', pedidoId).eq('company_id', companyId)
           if (error) throw error
+          await gravarAudit('pedidos', { id: pedidoId, ...antes }, { data_entrega_prevista: newDate })
         }
       } else {
         toast.error('Este tipo de evento não pode ser editado diretamente.')
@@ -162,7 +194,11 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['pedidos'] })
       qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['medicao_parcelas'] })
       qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
+      qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
       onClearOverride?.(ev.id)
       setEditingId(null)
       toast.success('Salvo no projeto real')
@@ -173,15 +209,38 @@ export function CellInspector({ bucketLabel, events, overrides = {}, onAddOverri
 
   const excluirParcela = async (ev: CashFlowEvent) => {
     if (!ev.id.startsWith('par-') && !ev.id.startsWith('mutpar-')) return
+    if (!currentCompany) { toast.error('Nenhuma empresa selecionada'); return }
     if (!window.confirm('Excluir esta parcela do projeto? Ação irreversível.')) return
+    const companyId = currentCompany.id
     try {
-      if (ev.id.startsWith('par-')) {
-        await supabase.from('parcelas').delete().eq('id', ev.id.replace('par-', ''))
-      } else {
-        await supabase.from('mutuo_parcelas').delete().eq('id', ev.id.replace('mutpar-', ''))
+      const isParcela = ev.id.startsWith('par-')
+      const id = ev.id.replace(isParcela ? 'par-' : 'mutpar-', '')
+      const tabela = isParcela ? 'parcelas' : 'mutuo_parcelas'
+
+      const { data: vinculos } = await supabase
+        .from('conciliacao_parcelas')
+        .select('id')
+        .eq(isParcela ? 'parcela_id' : 'mutuo_parcela_id', id)
+        .limit(1)
+      if (vinculos && vinculos.length > 0) {
+        toast.error('Esta parcela tem conciliação vinculada. Desfaça a conciliação antes de excluir.')
+        return
       }
+
+      const { data: antes } = await supabase.from(tabela).select('*').eq('id', id).eq('company_id', companyId).single()
+      const { error } = await supabase.from(tabela).delete().eq('id', id).eq('company_id', companyId)
+      if (error) throw error
+
+      await supabase.from('audit_logs').insert({
+        company_id: companyId, tabela,
+        acao: 'DELETE', agente: 'humano',
+        dados_antes: antes, dados_depois: null,
+      })
+
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['mutuos'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       toast.success('Parcela excluída')
     } catch (e: any) {
       toast.error('Erro ao excluir: ' + e.message)

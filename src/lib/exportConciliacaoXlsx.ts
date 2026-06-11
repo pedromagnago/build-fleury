@@ -16,9 +16,15 @@
  * o saldo bancário — transferências internas e ajustes ficam no Extrato sem
  * vínculo de origem.
  */
-import * as XLSX from 'xlsx'
+import { newWorkbook, addAoaSheet, downloadWorkbook } from '@/lib/safeXlsx'
 
 // ─── Tipos espelhando as views SQL ──────────────────────────
+
+interface BuiltSheet {
+  aoa: (string | number)[][]
+  widths: number[]
+  freeze?: boolean
+}
 
 export interface RealizadoRow {
   vinculo_id: string
@@ -191,18 +197,19 @@ function buildRealizadoSheet(rows: RealizadoRow[]) {
       r.movimentacao_id ?? '',
     ])
   }
-  const ws = XLSX.utils.aoa_to_sheet(aoa)
-  ws['!cols'] = [
-    { wch: 11 }, { wch: 18 }, { wch: 14 }, { wch: 40 }, { wch: 8 }, { wch: 14 },
-    { wch: 18 }, { wch: 8 }, { wch: 9 }, { wch: 36 }, { wch: 28 },
-    { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 },
-    { wch: 14 }, { wch: 14 }, { wch: 14 },
-    { wch: 12 }, { wch: 11 }, { wch: 14 }, { wch: 18 }, { wch: 10 },
-    { wch: 14 }, { wch: 12 }, { wch: 20 }, { wch: 30 },
-    { wch: 16 }, { wch: 36 }, { wch: 36 },
-  ]
-  ws['!freeze'] = { xSplit: 0, ySplit: 1 }
-  return ws
+  return {
+    aoa,
+    widths: [
+      11, 18, 14, 40, 8, 14,
+      18, 8, 9, 36, 28,
+      16, 12, 12, 12, 16,
+      14, 14, 14,
+      12, 11, 14, 18, 10,
+      14, 12, 20, 30,
+      16, 36, 36,
+    ],
+    freeze: true,
+  } satisfies BuiltSheet
 }
 
 function buildEncargosSheet(rows: RealizadoRow[]) {
@@ -247,15 +254,16 @@ function buildEncargosSheet(rows: RealizadoRow[]) {
       r.vinculo_observacao ?? '',
     ])
   }
-  const ws = XLSX.utils.aoa_to_sheet(aoa)
-  ws['!cols'] = [
-    { wch: 11 }, { wch: 18 }, { wch: 40 }, { wch: 18 }, { wch: 8 }, { wch: 9 },
-    { wch: 36 }, { wch: 28 }, { wch: 14 }, { wch: 12 }, { wch: 12 },
-    { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 13 },
-    { wch: 11 }, { wch: 14 }, { wch: 30 },
-  ]
-  ws['!freeze'] = { xSplit: 0, ySplit: 1 }
-  return ws
+  return {
+    aoa,
+    widths: [
+      11, 18, 40, 18, 8, 9,
+      36, 28, 14, 12, 12,
+      12, 16, 14, 13,
+      11, 14, 30,
+    ],
+    freeze: true,
+  } satisfies BuiltSheet
 }
 
 function buildAbertoSheet(rows: AbertoRow[]) {
@@ -282,14 +290,15 @@ function buildAbertoSheet(rows: AbertoRow[]) {
       r.origem_id ?? '',
     ])
   }
-  const ws = XLSX.utils.aoa_to_sheet(aoa)
-  ws['!cols'] = [
-    { wch: 18 }, { wch: 8 }, { wch: 9 }, { wch: 40 }, { wch: 28 }, { wch: 12 },
-    { wch: 12 }, { wch: 13 }, { wch: 13 }, { wch: 14 }, { wch: 14 },
-    { wch: 14 }, { wch: 11 }, { wch: 36 },
-  ]
-  ws['!freeze'] = { xSplit: 0, ySplit: 1 }
-  return ws
+  return {
+    aoa,
+    widths: [
+      18, 8, 9, 40, 28, 12,
+      12, 13, 13, 14, 14,
+      14, 11, 36,
+    ],
+    freeze: true,
+  } satisfies BuiltSheet
 }
 
 function buildExtratoSheet(rows: ExtratoRow[]) {
@@ -341,16 +350,17 @@ function buildExtratoSheet(rows: ExtratoRow[]) {
       r.movimentacao_id ?? '',
     ])
   }
-  const ws = XLSX.utils.aoa_to_sheet(aoa)
-  ws['!cols'] = [
-    { wch: 11 }, { wch: 18 }, { wch: 14 }, { wch: 40 }, { wch: 8 }, { wch: 13 }, { wch: 14 },
-    { wch: 17 }, { wch: 15 }, { wch: 14 },
-    { wch: 11 }, { wch: 14 }, { wch: 22 }, { wch: 10 },
-    { wch: 14 }, { wch: 13 }, { wch: 11 }, { wch: 11 }, { wch: 11 },
-    { wch: 18 }, { wch: 30 }, { wch: 16 }, { wch: 36 },
-  ]
-  ws['!freeze'] = { xSplit: 0, ySplit: 1 }
-  return ws
+  return {
+    aoa,
+    widths: [
+      11, 18, 14, 40, 8, 13, 14,
+      17, 15, 14,
+      11, 14, 22, 10,
+      14, 13, 11, 11, 11,
+      18, 30, 16, 36,
+    ],
+    freeze: true,
+  } satisfies BuiltSheet
 }
 
 function buildNaoConciliadasSheet(rows: NaoConciliadaRow[]) {
@@ -374,13 +384,14 @@ function buildNaoConciliadasSheet(rows: NaoConciliadaRow[]) {
       r.movimentacao_id ?? '',
     ])
   }
-  const ws = XLSX.utils.aoa_to_sheet(aoa)
-  ws['!cols'] = [
-    { wch: 11 }, { wch: 18 }, { wch: 14 }, { wch: 40 }, { wch: 8 }, { wch: 14 },
-    { wch: 16 }, { wch: 10 }, { wch: 12 }, { wch: 30 }, { wch: 16 }, { wch: 36 },
-  ]
-  ws['!freeze'] = { xSplit: 0, ySplit: 1 }
-  return ws
+  return {
+    aoa,
+    widths: [
+      11, 18, 14, 40, 8, 14,
+      16, 10, 12, 30, 16, 36,
+    ],
+    freeze: true,
+  } satisfies BuiltSheet
 }
 
 function buildResumoSheet(
@@ -556,9 +567,7 @@ function buildResumoSheet(
     const v = porMes.get(mes)!
     aoa.push([mes, fmtMoney(v.entradas), fmtMoney(v.saidas), fmtMoney(v.entradas - v.saidas)])
   }
-  const ws = XLSX.utils.aoa_to_sheet(aoa)
-  ws['!cols'] = [{ wch: 32 }, { wch: 14 }, { wch: 16 }, { wch: 16 }]
-  return ws
+  return { aoa, widths: [32, 14, 16, 16] } satisfies BuiltSheet
 }
 
 // ─── Export público ─────────────────────────────────────────
@@ -572,35 +581,23 @@ export interface ConciliacaoExportInput {
   filename?: string
 }
 
-export function exportConciliacaoXlsx(input: ConciliacaoExportInput): void {
+export async function exportConciliacaoXlsx(input: ConciliacaoExportInput): Promise<void> {
   const { realizado, aberto, naoConciliadas, extrato } = input
-  const wb = XLSX.utils.book_new()
+  const wb = newWorkbook()
 
-  XLSX.utils.book_append_sheet(wb, buildResumoSheet(realizado, aberto, naoConciliadas, extrato), 'Resumo')
-  XLSX.utils.book_append_sheet(wb, buildExtratoSheet(extrato), 'Extrato')
-  XLSX.utils.book_append_sheet(wb, buildRealizadoSheet(realizado), 'Realizado')
-  XLSX.utils.book_append_sheet(wb, buildEncargosSheet(realizado), 'Encargos')
-  XLSX.utils.book_append_sheet(wb, buildAbertoSheet(aberto), 'Aberto')
-  XLSX.utils.book_append_sheet(wb, buildNaoConciliadasSheet(naoConciliadas), 'Movs sem conciliacao')
+  const append = (name: string, s: BuiltSheet) =>
+    addAoaSheet(wb, name, s.aoa, { widths: s.widths, freezeHeader: s.freeze })
+
+  append('Resumo', buildResumoSheet(realizado, aberto, naoConciliadas, extrato))
+  append('Extrato', buildExtratoSheet(extrato))
+  append('Realizado', buildRealizadoSheet(realizado))
+  append('Encargos', buildEncargosSheet(realizado))
+  append('Aberto', buildAbertoSheet(aberto))
+  append('Movs sem conciliacao', buildNaoConciliadasSheet(naoConciliadas))
 
   const today = new Date().toISOString().slice(0, 10)
   const base = input.filename ?? `conciliacao_export_${today}`
   const filename = base.endsWith('.xlsx') ? base : `${base}.xlsx`
 
-  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
-  const blob = new Blob([out], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  })
-
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.style.display = 'none'
-  document.body.appendChild(a)
-  a.click()
-  setTimeout(() => {
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }, 200)
+  await downloadWorkbook(wb, filename)
 }

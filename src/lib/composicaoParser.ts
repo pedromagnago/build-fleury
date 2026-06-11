@@ -1,5 +1,4 @@
-import * as XLSX from 'xlsx';
-import { safeSheetToJson } from '@/lib/safeXlsx';
+import { safeRead, safeSheetToJson } from '@/lib/safeXlsx';
 import { supabase } from '@/lib/supabase';
 
 export interface ParsedServico {
@@ -49,8 +48,8 @@ function excelDateToISO(val: unknown): string {
   return String(val).split('T')[0] ?? '';
 }
 
-export function parseComposicaoMedicoes(file: ArrayBuffer): ComposicaoParsed {
-  const wb = XLSX.read(file, { type: 'array', cellDates: true });
+export async function parseComposicaoMedicoes(file: ArrayBuffer): Promise<ComposicaoParsed> {
+  const wb = await safeRead(file);
   const sheet = wb.Sheets[wb.SheetNames[0]!]!;
   const data = safeSheetToJson<unknown[]>(sheet, { header: 1, defval: null });
 

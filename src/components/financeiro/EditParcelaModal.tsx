@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import {
@@ -36,6 +37,7 @@ interface ParcelaDetail {
 
 export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
 
+  const qc = useQueryClient()
   const { data: contas = [] } = useContasBancarias()
   const updateParcela = useUpdateParcela()
   const estornarParcela = useEstornarParcela()
@@ -82,23 +84,43 @@ export default function EditParcelaModal({ parcela, onClose, onDone }: Props) {
 
   const handleEstornarVinculo = async (v: VinculoConc) => {
     if (!window.confirm(`Desfazer o vínculo de ${v.mov_data} (R$ ${v.valor_aplicado.toLocaleString('pt-BR', { minimumFractionDigits: 2 })})? A parcela voltará ${v.valor_aplicado < parcela.valor ? 'para pendente/parcial' : 'para A Vencer'}.`)) return
-    // Reduz valor_pago
-    const novoPago = Math.max(0, Number(parcela.valor_pago || 0) - v.valor_aplicado)
-    const totalValor = Number(parcela.valor)
-    const novoStatus = novoPago <= 0.005 ? 'a_vencer' : (novoPago >= totalValor - 0.005 ? 'paga' : 'parcialmente_paga')
-    await supabase.from('parcelas').update({
-      valor_pago: novoPago,
-      status: novoStatus,
-      ...(novoPago <= 0.005 ? { data_pagamento_real: null } : {}),
-    }).eq('id', parcela.id)
-    // Remove link e marca mov como não conciliada
+    // Remove link — o trigger trg_sync_parcela_valor_pago recalcula valor_pago/status
+    // da parcela a partir do SUM dos vínculos restantes (não fazer UPDATE direto aqui).
     await supabase.from('conciliacao_parcelas').delete().eq('conciliacao_id', v.conc_id).eq('parcela_id', parcela.id)
+    await supabase.from('audit_logs').insert({
+      company_id: parcela.company_id,
+      tabela: 'conciliacao_parcelas',
+      registro_id: v.conc_id,
+      acao: 'DELETE',
+      agente: 'humano',
+      dados_antes: { conciliacao_id: v.conc_id, parcela_id: parcela.id, valor_aplicado: v.valor_aplicado, movimentacao_id: v.mov_id, mov_data: v.mov_data },
+      dados_depois: { type: 'estorno_baixa_parcial' },
+    })
+    // O trigger não toca data_pagamento_real — limpa quando a parcela zera
+    const { data: pAtual } = await supabase.from('parcelas').select('valor_pago').eq('id', parcela.id).single()
+    if (pAtual && Number(pAtual.valor_pago || 0) <= 0.005) {
+      await supabase.from('parcelas').update({ data_pagamento_real: null }).eq('id', parcela.id)
+    }
     // Se a conciliação não tem mais nenhum link, deleta e libera o movimento
     const { data: linksRestantes } = await supabase.from('conciliacao_parcelas').select('conciliacao_id').eq('conciliacao_id', v.conc_id).limit(1)
     if (!linksRestantes || linksRestantes.length === 0) {
+      const { data: concAntes } = await supabase.from('conciliacoes').select('*').eq('id', v.conc_id).single()
       await supabase.from('conciliacoes').delete().eq('id', v.conc_id)
       await supabase.from('movimentacoes_bancarias').update({ conciliado: false, conciliado_em: null, parcela_id: null }).eq('id', v.mov_id)
+      await supabase.from('audit_logs').insert({
+        company_id: parcela.company_id,
+        tabela: 'conciliacoes',
+        registro_id: v.conc_id,
+        acao: 'DELETE',
+        agente: 'humano',
+        dados_antes: concAntes ?? { id: v.conc_id },
+        dados_depois: { type: 'estorno_baixa_parcial' },
+      })
     }
+    qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+    qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
+    qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+    qc.invalidateQueries({ queryKey: ['parcelas'] })
     toast.success('Baixa parcial estornada')
     onDone()
   }

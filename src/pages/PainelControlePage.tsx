@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { useHealthChecks, type HealthCheck, type HealthCheckItem } from '@/hooks/useHealthChecks'
 import { useEquacoesContabeis } from '@/hooks/useEquacoesContabeis'
-import { useAdiantamentos } from '@/hooks/useAdiantamentos'
+import { useAlertasCriticos } from '@/hooks/useAlertasCriticos'
 import { useProject } from '@/contexts/ProjectContext'
 import { useMedicoes } from '@/hooks/useOperacional'
 import { usePedidos, useItensCompra } from '@/hooks/useCompras'
@@ -197,9 +197,9 @@ export default function PainelControlePage() {
   const { data: parcelas = [] } = useParcelas()
   const { despesas = [] } = useDespesasIndiretas()
   const { data: mutuos = [] } = useMutuos()
-  const { data: adiantamentos = [] } = useAdiantamentos()
   const { events: fcEvents } = useCashFlowEvents('completo')
   const { stats: healthStats, checks } = useHealthChecks()
+  const { alertas, stats: alertaStats } = useAlertasCriticos()
   const { equacoes } = useEquacoesContabeis()
   const createParcela = useCreateParcela()
   const deleteParcela = useDeleteParcela()
@@ -214,11 +214,10 @@ export default function PainelControlePage() {
     return [...com.filter(c => c.severity === 'critical'), ...com.filter(c => c.severity === 'warn')]
   }, [checks])
 
-  const hoje = new Date().toISOString().split('T')[0]!
-  const adiantamentosEmRisco = useMemo(
-    () => adiantamentos.filter(a => a.status !== 'abatido' && a.data_prevista_abatimento && a.data_prevista_abatimento < hoje),
-    [adiantamentos, hoje]
-  )
+  const alertasAtivos = useMemo(() => {
+    const com = alertas.filter(a => a.items.length > 0)
+    return [...com.filter(a => a.severity === 'critical'), ...com.filter(a => a.severity === 'warn')]
+  }, [alertas])
 
   // ─── Ações inline ──────────────────────────────────────────────────────────
 
@@ -371,6 +370,23 @@ export default function PainelControlePage() {
     },
   }
 
+  // ─── Deep-links dos alertas críticos (Zona 1) ─────────────────────────────
+
+  const alertaNavConfig: Record<string, { label: string; fn: (item: HealthCheckItem) => string }> = {
+    'alerta-parcelas-pedido-vencidas': {
+      label: 'Ver',
+      fn: (i) => i.pedidoId ? `/pagamentos?pedido=${i.pedidoId}` : `/pagamentos?filtro=vencidas`,
+    },
+    'alerta-recebimentos-vencidos': {
+      label: 'Ver',
+      fn: () => `/recebimentos?filtro=vencidas`,
+    },
+    'alerta-adiantamentos-sem-abatimento': {
+      label: 'Ver',
+      fn: () => `/adiantamentos?filtro=em-aberto`,
+    },
+  }
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -380,42 +396,41 @@ export default function PainelControlePage() {
       />
 
       {/* 1. Semáforo */}
-      <FaixaSaude critical={healthStats.critical} warn={healthStats.warn} eqComGap={eqComGap} total={healthStats.total} />
+      <FaixaSaude
+        critical={healthStats.critical + alertaStats.criticos}
+        warn={healthStats.warn + alertaStats.advertencias}
+        eqComGap={eqComGap}
+        total={healthStats.total + alertaStats.total}
+      />
 
       {/* 2. 4 Equações contábeis */}
       <AuditoriaContabilCard onOrfasClick={() => setInspectOrigin('orfas')} />
 
-      {/* 3. Ações necessárias */}
-      {acoes.length === 0 && adiantamentosEmRisco.length === 0 ? (
+      {/* 3. Alertas críticos — vencidos por data + saldo */}
+      {alertasAtivos.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground px-1">
+            Alertas críticos ({alertasAtivos.length})
+          </div>
+          {alertasAtivos.map(a => (
+            <CheckCard key={a.id} check={a} navRoute={alertaNavConfig[a.id]} />
+          ))}
+        </div>
+      )}
+
+      {/* 4. Ações necessárias */}
+      {acoes.length === 0 && alertasAtivos.length === 0 ? (
         <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
           <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
           <span className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
             Nenhuma ação necessária — sistema consistente.
           </span>
         </div>
-      ) : (
+      ) : acoes.length > 0 && (
         <div className="space-y-2">
           <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground px-1">
-            Ações necessárias ({acoes.length + (adiantamentosEmRisco.length > 0 ? 1 : 0)})
+            Ações necessárias ({acoes.length})
           </div>
-
-          {/* Adiantamentos em risco */}
-          {adiantamentosEmRisco.length > 0 && (
-            <div className="flex items-center justify-between gap-3 rounded-lg border-l-[3px] border-l-red-500 bg-red-500/5 border border-red-200/30 dark:border-red-900/30 px-4 py-3">
-              <div className="flex items-center gap-3">
-                <XCircle className="h-4 w-4 text-red-500 shrink-0" />
-                <div>
-                  <div className="text-sm font-semibold text-red-700 dark:text-red-400">Adiantamentos com prazo vencido</div>
-                  <div className="text-xs text-muted-foreground tabular-nums mt-0.5">
-                    {adiantamentosEmRisco.length} item{adiantamentosEmRisco.length !== 1 ? 's' : ''} · {formatCurrency(adiantamentosEmRisco.reduce((s, a) => s + (a.valor - a.valor_abatido), 0))}
-                  </div>
-                </div>
-              </div>
-              <Link to="/adiantamentos" className="shrink-0 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold bg-red-600 text-white hover:bg-red-700 transition-colors">
-                Ver <ArrowRight className="h-3 w-3" />
-              </Link>
-            </div>
-          )}
 
           {/* Checks expansíveis */}
           {acoes.map(c => {

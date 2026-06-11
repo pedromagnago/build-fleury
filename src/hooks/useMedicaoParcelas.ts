@@ -60,7 +60,9 @@ const INVALIDATE_KEYS = [
   QUERY_KEY,
   'medicoes',
   'conciliacoes',
+  'conciliacao-links',
   'movimentacoes',
+  'cronograma_distribuicao',
 ]
 
 export function useMedicaoParcelas(medicaoId?: string) {

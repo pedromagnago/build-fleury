@@ -1,5 +1,4 @@
-import * as XLSX from 'xlsx'
-import { safeSheetToJson } from '@/lib/safeXlsx'
+import { safeRead, safeSheetToJson } from '@/lib/safeXlsx'
 import { supabase } from '@/lib/supabase'
 
 // ─── Types ────────────────────────────────────────────────
@@ -182,8 +181,8 @@ export function sanitizeTipo(val: any): string {
 }
 
 // ─── Parse ────────────────────────────────────────────────
-export function parseWBSImport(buffer: ArrayBuffer): { etapaRows: Record<string, unknown>[]; itemRows: Record<string, unknown>[]; distRows: Record<string, unknown>[] } {
-  const wb = XLSX.read(buffer, { type: 'array' })
+export async function parseWBSImport(buffer: ArrayBuffer): Promise<{ etapaRows: Record<string, unknown>[]; itemRows: Record<string, unknown>[]; distRows: Record<string, unknown>[] }> {
+  const wb = await safeRead(buffer)
 
   const etapaSheet = wb.Sheets['Etapas']
   const etapaRows = etapaSheet ? safeSheetToJson<Record<string, unknown>>(etapaSheet) : []

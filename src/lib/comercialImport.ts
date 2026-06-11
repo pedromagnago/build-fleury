@@ -9,8 +9,7 @@
  *  - Σ parcelas vs valor_total_real do pedido: warning > R$ 0,01 (não bloqueia)
  *  - cond_pagamento mudou e parcelas NÃO foram editadas → flag "regenerar?"
  */
-import * as XLSX from 'xlsx'
-import { safeSheetToJson } from '@/lib/safeXlsx'
+import { safeRead, safeSheetToJson } from '@/lib/safeXlsx'
 import { supabase } from '@/lib/supabase'
 import { toDateISO, findCol } from '@/lib/wbsImport'
 
@@ -116,13 +115,13 @@ export interface ApplyResult {
 
 // ─── Parse ──────────────────────────────────────────────────
 
-export function parseComercialImport(buffer: ArrayBuffer): {
+export async function parseComercialImport(buffer: ArrayBuffer): Promise<{
   pedidoRows: Record<string, unknown>[]
   parcelaRows: Record<string, unknown>[]
   despesaRows: Record<string, unknown>[]
   fornecedorRows: Record<string, unknown>[]
-} {
-  const wb = XLSX.read(buffer, { type: 'array', cellDates: false })
+}> {
+  const wb = await safeRead(buffer)
   const read = (name: string): Record<string, unknown>[] => {
     const sheet = wb.Sheets[name]
     return sheet ? safeSheetToJson<Record<string, unknown>>(sheet) : []
@@ -184,7 +183,7 @@ function diffField(label: string, oldVal: unknown, newVal: unknown, isNumeric = 
 // ─── Build Preview ──────────────────────────────────────────
 
 export async function buildComercialPreview(
-  rows: ReturnType<typeof parseComercialImport>,
+  rows: Awaited<ReturnType<typeof parseComercialImport>>,
   companyId: string,
 ): Promise<ComercialPreview> {
   // Carrega estado atual
