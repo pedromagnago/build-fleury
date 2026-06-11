@@ -23,6 +23,7 @@ import {
 import { useParcelas } from '@/hooks/useFinanceiro'
 import { useMedicoes, useMovimentacoes } from '@/hooks/useOperacional'
 import { useMutuos } from '@/hooks/useMutuos'
+import { useProject } from '@/contexts/ProjectContext'
 import { formatCurrency } from '@/lib/utils'
 import { EditConciliacaoDialog } from './EditConciliacaoDialog'
 import { CriarLancamentoFromMovDialog } from './CriarLancamentoFromMovDialog'
@@ -90,6 +91,7 @@ function norm(s: string): string {
 }
 
 export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
+  const { currentCompany } = useProject()
   const { data: parcelas = [] } = useParcelas()
   const { data: medicoes = [] } = useMedicoes()
   const { data: mutuos = [] } = useMutuos()
@@ -849,7 +851,21 @@ export function ReconciliationSidePanel({ row, onClose, onRefresh }: Props) {
     if (row.origem !== 'parcela_fantasma' || !row.parcela_id) return
     if (!confirm('Excluir permanentemente esta parcela? Se a despesa vinculada tinha só essa parcela, considere apagar a despesa inteira na tela de Custos Indiretos.')) return
     const { supabase } = await import('@/lib/supabase')
+    const { data: antes } = await supabase
+      .from('parcelas')
+      .select('*')
+      .eq('id', row.parcela_id)
+      .single()
     await supabase.from('parcelas').delete().eq('id', row.parcela_id)
+    await supabase.from('audit_logs').insert({
+      company_id: currentCompany?.id,
+      tabela: 'parcelas',
+      registro_id: row.parcela_id,
+      acao: 'DELETE',
+      agente: 'humano',
+      dados_antes: antes ?? { id: row.parcela_id },
+      dados_depois: { type: 'excluir_parcela_fantasma' },
+    })
     onClose()
     onRefresh()
   }
