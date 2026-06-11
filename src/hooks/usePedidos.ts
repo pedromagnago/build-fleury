@@ -200,6 +200,7 @@ export function usePedidosConformidade() {
           .from('pedidos')
           .select('id, item_compra_id, fornecedor_id, cond_pagamento, data_entrega_prevista, valor_total_real, numero_pedido')
           .eq('company_id', cid)
+          .neq('status', 'cancelado')
           .not('data_entrega_prevista', 'is', null),
 
         supabase
@@ -313,6 +314,7 @@ export function useAtualizarPedidoConformidade() {
         .from('pedidos')
         .select('id, cond_pagamento, data_entrega_prevista')
         .eq('id', payload.pedido_id)
+        .eq('company_id', cid)
         .single()
       if (pedErr) throw pedErr
 
@@ -324,6 +326,7 @@ export function useAtualizarPedidoConformidade() {
         .from('parcelas')
         .select('id, status, valor_pago')
         .eq('pedido_id', payload.pedido_id)
+        .eq('company_id', cid)
         .is('deleted_at', null)
       if (parcErr) throw parcErr
 
@@ -349,6 +352,7 @@ export function useAtualizarPedidoConformidade() {
           .from('parcelas')
           .update({ deleted_at: new Date().toISOString() })
           .in('id', parcelasParaDeletar)
+          .eq('company_id', cid)
         if (error) throw error
       }
 
@@ -364,7 +368,7 @@ export function useAtualizarPedidoConformidade() {
       if (payload.nova_cond_pagamento !== undefined) updates['cond_pagamento']       = payload.nova_cond_pagamento
 
       if (Object.keys(updates).length > 0) {
-        const { error } = await supabase.from('pedidos').update(updates).eq('id', payload.pedido_id)
+        const { error } = await supabase.from('pedidos').update(updates).eq('id', payload.pedido_id).eq('company_id', cid)
         if (error) throw error
       }
 
@@ -389,6 +393,10 @@ export function useAtualizarPedidoConformidade() {
       qc.invalidateQueries({ queryKey: ['tabela_conformidade'] })
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['pedidos'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
+      qc.invalidateQueries({ queryKey: ['medicoes'] })
+      qc.invalidateQueries({ queryKey: ['mutuos'] })
     },
     onError: (err: Error) => toast.error('Erro: ' + err.message),
   })
@@ -412,6 +420,7 @@ export function useMedicoesConformidade() {
           .from('pedidos')
           .select('id, item_compra_id, fornecedor_id, cond_pagamento, data_entrega_prevista, valor_total_real, numero_pedido')
           .eq('company_id', cid)
+          .neq('status', 'cancelado')
           .not('data_entrega_prevista', 'is', null),
 
         supabase
@@ -619,7 +628,8 @@ export function useTabelaConformidade() {
         supabase
           .from('pedidos')
           .select('id, item_compra_id, fornecedor_id, cond_pagamento, data_entrega_prevista, valor_total_real, numero_pedido')
-          .eq('company_id', cid),
+          .eq('company_id', cid)
+          .neq('status', 'cancelado'),
 
         supabase
           .from('itens_compra')
