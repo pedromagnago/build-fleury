@@ -204,11 +204,19 @@ export default function UnitCostPanel() {
 
   // Bulk actions
   const handleBulkDelete = async () => {
+    if (!currentCompany) { toast.error('Nenhuma empresa selecionada'); return }
     if (!window.confirm(`Excluir ${selected.size} itens de compra permanentemente?`)) return
     const ids = [...selected]
+    const { data: antes } = await supabase.from('itens_compra').select('*').in('id', ids).eq('company_id', currentCompany.id)
     for (let i = 0; i < ids.length; i += 50) {
-      await supabase.from('itens_compra').delete().in('id', ids.slice(i, i + 50))
+      await supabase.from('itens_compra').delete().in('id', ids.slice(i, i + 50)).eq('company_id', currentCompany.id)
     }
+    await supabase.from('audit_logs').insert({
+      company_id: currentCompany.id, tabela: 'itens_compra',
+      acao: 'DELETE', agente: 'humano',
+      dados_antes: { operacao: 'excluir_lote', itens: ids.length, registros: antes ?? [] },
+      dados_depois: null,
+    })
     qc.invalidateQueries({ queryKey: ['itens_compra'] })
     toast.success(`${selected.size} itens excluídos`)
     clearSelection()

@@ -606,14 +606,38 @@ export default function SimuladorPanel({ viewMode: externalMode, onViewModeChang
                   const canDelete = id.startsWith('par-') || id.startsWith('mutpar-')
                   if (!canDelete) return null
                   const handleDelete = async () => {
+                    if (!currentCompany) { toast.error('Nenhuma empresa selecionada'); return }
                     if (!window.confirm('Certeza que deseja excluir este item? Esta ação apagará do banco de dados e recarregará o fluxo de caixa.')) return
                     try {
-                      if (id.startsWith('par-')) await supabase.from('parcelas').delete().eq('id', id.replace('par-', ''))
-                      if (id.startsWith('mutpar-')) await supabase.from('mutuo_parcelas').delete().eq('id', id.replace('mutpar-', ''))
-                      
+                      const isParcela = id.startsWith('par-')
+                      const rowId = id.replace(isParcela ? 'par-' : 'mutpar-', '')
+                      const tabela = isParcela ? 'parcelas' : 'mutuo_parcelas'
+
+                      const { data: vinculos } = await supabase
+                        .from('conciliacao_parcelas')
+                        .select('id')
+                        .eq(isParcela ? 'parcela_id' : 'mutuo_parcela_id', rowId)
+                        .limit(1)
+                      if (vinculos && vinculos.length > 0) {
+                        toast.error('Esta parcela tem conciliação vinculada. Desfaça a conciliação antes de excluir.')
+                        return
+                      }
+
+                      const { data: antes } = await supabase.from(tabela).select('*').eq('id', rowId).eq('company_id', currentCompany.id).single()
+                      const { error } = await supabase.from(tabela).delete().eq('id', rowId).eq('company_id', currentCompany.id)
+                      if (error) throw error
+
+                      await supabase.from('audit_logs').insert({
+                        company_id: currentCompany.id, tabela,
+                        acao: 'DELETE', agente: 'humano',
+                        dados_antes: antes, dados_depois: null,
+                      })
+
                       toast.success('Excluído com sucesso!')
                       qc.invalidateQueries({ queryKey: ['parcelas'] })
                       qc.invalidateQueries({ queryKey: ['mutuos'] })
+                      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+                      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
                       setEditing(null)
                     } catch (e: any) {
                       toast.error('Erro ao excluir: ' + e.message)

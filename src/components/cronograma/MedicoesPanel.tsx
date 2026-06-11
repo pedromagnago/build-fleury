@@ -272,11 +272,19 @@ export default function MedicoesPanel() {
   }
 
   const handleBulkDeleteDist = async () => {
+    if (!currentCompany) { toast.error('Nenhuma empresa selecionada'); return }
     if (!window.confirm(`Excluir TODAS as distribuições de ${selected.size} etapas?`)) return
     const ids = distribuicoes.filter(d => selected.has(d.etapa_id)).map(d => d.id)
+    const { data: antes } = await supabase.from('cronograma_distribuicao').select('*').in('id', ids).eq('company_id', currentCompany.id)
     for (let i = 0; i < ids.length; i += 50) {
-      await supabase.from('cronograma_distribuicao').delete().in('id', ids.slice(i, i + 50))
+      await supabase.from('cronograma_distribuicao').delete().in('id', ids.slice(i, i + 50)).eq('company_id', currentCompany.id)
     }
+    await supabase.from('audit_logs').insert({
+      company_id: currentCompany.id, tabela: 'cronograma_distribuicao',
+      acao: 'DELETE', agente: 'humano',
+      dados_antes: { operacao: 'excluir_lote_distribuicoes', distribuicoes: ids.length, registros: antes ?? [] },
+      dados_depois: null,
+    })
     qc.invalidateQueries({ queryKey: ['cronograma_distribuicao'] })
     toast.success(`${ids.length} distribuições excluídas`)
     clearSelection()
