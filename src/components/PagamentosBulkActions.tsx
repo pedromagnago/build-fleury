@@ -144,6 +144,8 @@ function PagarLoteModal({ parcelas, fornecedorMap, onClose, onDone }: {
       qc.invalidateQueries({ queryKey: ['itens_compra'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['contas_bancarias'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       toast.success(`${parcelas.length} parcelas pagas — ${formatCurrency(total)}`)
       onDone(); onClose()
     } catch { toast.error('Erro ao processar pagamentos') } finally { setSaving(false) }
@@ -372,6 +374,9 @@ function ExcluirLoteModal({ parcelas, onClose, onDone }: { parcelas: Parcela[]; 
       }
 
       qc.invalidateQueries({ queryKey: ['parcelas'] })
+      qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
+      qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       toast.success(`${parcelas.length} parcelas excluídas com sucesso`)
       onDone()
       onClose()
@@ -529,6 +534,7 @@ function EstornarLoteModal({ parcelas, onClose, onDone }: { parcelas: Parcela[];
       qc.invalidateQueries({ queryKey: ['parcelas'] })
       qc.invalidateQueries({ queryKey: ['movimentacoes'] })
       qc.invalidateQueries({ queryKey: ['conciliacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao-links'] })
       qc.invalidateQueries({ queryKey: ['dashboard-kpis'] })
       toast.success(`${parcelas.length} parcelas estornadas`)
       onDone()
